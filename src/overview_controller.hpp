@@ -415,6 +415,7 @@ class OverviewController {
     [[nodiscard]] bool         gestureInvertVerticalEnabled() const;
     [[nodiscard]] bool         workspaceSwipeInvertEnabled() const;
     [[nodiscard]] bool         workspaceChangeKeepsOverviewEnabled() const;
+    [[nodiscard]] bool         damageTrackingOverrideEnabled() const;
     [[nodiscard]] bool         hideBarsWhenStripShownEnabled() const;
     [[nodiscard]] bool         hideBarAnimationEffectsEnabled() const;
     [[nodiscard]] bool         hideBarAnimationBlurEnabled() const;
@@ -462,6 +463,7 @@ class OverviewController {
     void                       setInputFollowMouseOverride(bool disable);
     void                       setScrollingFollowFocusOverride(bool disable);
     void                       setAnimationsEnabledOverride(bool disable, std::optional<std::chrono::milliseconds> restoreDelay = std::nullopt);
+    void                       setDamageTrackingOverride(bool disable);
     void                       applyWorkspaceNameOverrides(const State& state);
     void                       restoreWorkspaceNameOverrides();
     void                       clearRegisteredTrackpadGestures();
@@ -703,6 +705,8 @@ class OverviewController {
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
+    bool                      m_damageTrackingOverridden = false;
+    long                      m_damageTrackingBackup = 2;
     SP<CEventLoopTimer>       m_toggleSwitchReleasePollTimer;
     std::unordered_map<PHLWINDOW, std::uint64_t> m_windowMruSerials;
     std::uint64_t            m_nextWindowMruSerial = 1;
