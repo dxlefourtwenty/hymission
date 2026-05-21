@@ -2795,19 +2795,6 @@ void OverviewController::handleWorkspaceChange(PHLWORKSPACE workspace) {
     const auto action = resolveOverviewWorkspaceChangeAction(isVisible(), m_applyingWorkspaceTransitionCommit, m_workspaceTransition.active,
                                                              m_beginCloseInProgress || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle,
                                                              liveFocusWorkspaceChange || stripWorkspaceChange, allowsWorkspaceSwitchInOverview());
-    const auto refreshWorkspaceStripActivity = [this]() {
-        bool changed = false;
-        for (auto& entry : m_state.stripEntries) {
-            const bool active = entry.monitor && entry.workspace && entry.monitor->m_activeWorkspace == entry.workspace;
-            if (entry.active == active)
-                continue;
-
-            entry.active = active;
-            changed = true;
-        }
-        return changed;
-    };
-
     if (action == OverviewWorkspaceChangeAction::Ignore)
         return;
 
@@ -2822,7 +2809,7 @@ void OverviewController::handleWorkspaceChange(PHLWORKSPACE workspace) {
         m_pendingLiveFocusWorkspaceChangeTarget.reset();
 
         if (!m_state.collectionPolicy.onlyActiveWorkspace) {
-            const bool stripActivityChanged = refreshWorkspaceStripActivity();
+            const bool stripActivityChanged = refreshWorkspaceStripActivity(m_state);
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] skip overview rebuild for live focus workspace change outside active-workspace scope";
@@ -4886,6 +4873,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
 
     if (workspace)
         target.ownerWorkspace = workspace;
+    refreshWorkspaceStripActivity(target, monitor, workspaceId);
 
     target.phase = Phase::Active;
     target.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, target, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
@@ -4924,6 +4912,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     if (mode == WorkspaceTransitionMode::TimedCommit)
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
+    refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
     armWorkspaceTransitionRenderState();
 
     if (debugLogsEnabled()) {
@@ -5249,6 +5238,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         }
 
         next.phase = Phase::Active;
+        refreshWorkspaceStripActivity(next, transitionMonitor, targetWorkspaceId);
         next.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, next, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
         next.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, next, false) ? m_state.pendingExitFocus : PHLWINDOW{};
         next.closeMode = m_state.closeMode;
@@ -9693,6 +9683,24 @@ void OverviewController::applyWorkspaceStripCursorShape() const {
 
     const bool hoveredStrip = m_state.hoveredStripIndex && *m_state.hoveredStripIndex < m_state.stripEntries.size();
     g_pHyprRenderer->setCursorFromName(hoveredStrip ? "pointer" : "default", true);
+}
+
+bool OverviewController::refreshWorkspaceStripActivity(State& state, const PHLMONITOR& overrideMonitor, WORKSPACEID overrideWorkspaceId) const {
+    bool changed = false;
+    for (auto& entry : state.stripEntries) {
+        bool active = false;
+        if (entry.monitor && overrideMonitor && entry.monitor == overrideMonitor && overrideWorkspaceId != WORKSPACE_INVALID)
+            active = entry.workspaceId == overrideWorkspaceId;
+        else
+            active = entry.monitor && entry.workspace && entry.monitor->m_activeWorkspace == entry.workspace;
+
+        if (entry.active == active)
+            continue;
+
+        entry.active = active;
+        changed = true;
+    }
+    return changed;
 }
 
 void OverviewController::resetStaleClientCursorShape() const {

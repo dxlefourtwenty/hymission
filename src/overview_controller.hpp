@@ -646,6 +646,7 @@ class OverviewController {
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
     void applyWorkspaceStripCursorShape() const;
+    bool refreshWorkspaceStripActivity(State& state, const PHLMONITOR& overrideMonitor = {}, WORKSPACEID overrideWorkspaceId = WORKSPACE_INVALID) const;
     void resetStaleClientCursorShape() const;
     void refreshPostCloseCursorShape() const;
     void clearPendingStripWorkspaceChange();
