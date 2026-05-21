@@ -10531,10 +10531,6 @@ void OverviewController::renderWorkspaceStrip() const {
             g_pHyprOpenGL->renderRect(toBox(thumbRender), stateOverlayColor, {});
         }
 
-        if (hovered && !entry.newWorkspaceSlot) {
-            g_pHyprOpenGL->renderRect(toBox(thumbRender), CHyprColor(0.0, 0.0, 0.0, 0.34 * progress), {});
-        }
-
         if (!entry.newWorkspaceSlot) {
             const std::string label = entry.workspaceName.empty() ? std::to_string(entry.workspaceId) : entry.workspaceName;
             const double      labelOpacity = hovered ? 1.0 : workspaceStripLabelOpacity();
