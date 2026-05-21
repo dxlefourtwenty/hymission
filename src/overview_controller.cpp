@@ -29,6 +29,8 @@
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
 #include <hyprland/src/debug/log/Logger.hpp>
 #include <hyprland/src/helpers/Monitor.hpp>
@@ -214,6 +216,18 @@ std::string getConfigString(HANDLE handle, const char* name, std::string fallbac
     }
 
     return fallback;
+}
+
+CHyprColor activeBorderColorWithAlpha(double alpha) {
+    static auto PACTIVEBORDER = CConfigValue<Config::IComplexConfigValue>("general:col.active_border");
+
+    if (const auto* const gradient = dynamic_cast<Config::CGradientValueData*>(PACTIVEBORDER.ptr()); gradient && !gradient->m_colors.empty()) {
+        CHyprColor color = gradient->m_colors.front();
+        color.a = alpha;
+        return color;
+    }
+
+    return CHyprColor(0.97, 0.985, 1.0, alpha);
 }
 
 std::string luaStringLiteral(const std::string& value) {
@@ -10332,8 +10346,9 @@ void OverviewController::renderWorkspaceStrip() const {
                 makeRect(thumb.centerX() - plusArmLength * 0.5, thumb.centerY() - plusThickness * 0.5, plusArmLength, plusThickness);
             const Rect plusVertical =
                 makeRect(thumb.centerX() - plusThickness * 0.5, thumb.centerY() - plusArmLength * 0.5, plusThickness, plusArmLength);
-            g_pHyprOpenGL->renderRect(toBox(scaleRectForRender(plusHorizontal, renderMonitor)), CHyprColor(0.97, 0.985, 1.0, 0.88 * progress), {});
-            g_pHyprOpenGL->renderRect(toBox(scaleRectForRender(plusVertical, renderMonitor)), CHyprColor(0.97, 0.985, 1.0, 0.88 * progress), {});
+            const CHyprColor plusColor = activeBorderColorWithAlpha(0.88 * progress);
+            g_pHyprOpenGL->renderRect(toBox(scaleRectForRender(plusHorizontal, renderMonitor)), plusColor, {});
+            g_pHyprOpenGL->renderRect(toBox(scaleRectForRender(plusVertical, renderMonitor)), plusColor, {});
         }
     }
 }
