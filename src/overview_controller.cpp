@@ -7447,8 +7447,14 @@ void OverviewController::refreshExitLayoutForFocus(const PHLWINDOW& window) cons
 }
 
 void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot) {
-    if (!shouldSyncRealFocusDuringOverview() || !window || !window->m_isMapped || !hasManagedWindow(window))
+    if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
+
+    if (!shouldSyncRealFocusDuringOverview()) {
+        if (syncScrollingSpot)
+            (void)syncScrollingWorkspaceSpotOnWindow(window);
+        return;
+    }
 
     if (Desktop::focusState()->window() == window) {
         if (syncScrollingSpot)
