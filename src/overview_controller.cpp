@@ -9364,6 +9364,9 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
 
     if (previousHoveredStrip != m_state.hoveredStripIndex || previousHovered != m_state.hoveredIndex || previousSelected != m_state.selectedIndex ||
         previousFocus != m_state.focusDuringOverview) {
+        if (previousHoveredStrip != m_state.hoveredStripIndex)
+            applyWorkspaceStripCursorShape();
+
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] hover pointer=" << pointer.x << ',' << pointer.y;
@@ -9682,6 +9685,14 @@ void OverviewController::clearStripWindowDragState() {
     m_draggedWindowIndex.reset();
     m_pressedWindowPointer = {};
     m_draggedWindowPointerOffset = {};
+}
+
+void OverviewController::applyWorkspaceStripCursorShape() const {
+    if (!g_pHyprRenderer)
+        return;
+
+    const bool hoveredStrip = m_state.hoveredStripIndex && *m_state.hoveredStripIndex < m_state.stripEntries.size();
+    g_pHyprRenderer->setCursorFromName(hoveredStrip ? "pointer" : "default", true);
 }
 
 void OverviewController::resetStaleClientCursorShape() const {
