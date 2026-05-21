@@ -639,6 +639,7 @@ class OverviewController {
     void clearPendingStripWorkspaceChange();
     [[nodiscard]] bool matchesPendingStripWorkspaceChange(const PHLWORKSPACE& workspace) const;
     void buildWorkspaceStripEntries(State& state) const;
+    bool selectWindowInState(State& state, const PHLWINDOW& window) const;
     State  buildState(const PHLMONITOR& monitor, ScopeOverride requestedScope, const std::vector<WorkspaceOverride>& workspaceOverrides = {},
                       bool keepEmptyParticipatingMonitors = false, bool suppressWorkspaceStrip = false, PHLWINDOW preferredSelectedWindow = {}) const;
     State  m_state;

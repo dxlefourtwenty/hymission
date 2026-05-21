@@ -4706,7 +4706,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .syntheticEmpty = syntheticEmpty,
     }};
 
-    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true);
+    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, focusCandidateForWorkspace(workspace));
     if (target.participatingMonitors.empty())
         return false;
 
@@ -5050,7 +5050,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         targetWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
         g_layoutManager->recalculateMonitor(transitionMonitor);
-        if (const auto targetFocus = focusCandidateForWorkspace(targetWorkspace))
+        const auto targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        if (targetFocus)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
@@ -5065,7 +5066,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
                 .syntheticEmpty = false,
             }};
 
-            if (State rebuilt = buildState(rebuildMonitor, m_state.collectionPolicy.requestedScope, overrides, true); !rebuilt.participatingMonitors.empty())
+            if (State rebuilt = buildState(rebuildMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
+                !rebuilt.participatingMonitors.empty())
                 next = std::move(rebuilt);
         }
 
@@ -5081,15 +5083,9 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         carryOverWorkspaceStripSnapshots(next, m_state);
         m_state = std::move(next);
         applyWorkspaceNameOverrides(m_state);
+        if (!selectWindowInState(m_state, targetFocus))
+            selectWindowInState(m_state, Desktop::focusState()->window());
         refreshWorkspaceStripSnapshots();
-        if (const auto focused = Desktop::focusState()->window()) {
-            const auto focusedIt =
-                std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == focused; });
-            if (focusedIt != m_state.windows.end()) {
-                m_state.selectedIndex = static_cast<std::size_t>(std::distance(m_state.windows.begin(), focusedIt));
-                m_state.focusDuringOverview = focused;
-            }
-        }
 
         if (g_pEventManager) {
             g_pEventManager->postEvent(SHyprIPCEvent{"workspace", targetWorkspace->m_name});
@@ -10540,6 +10536,19 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
     }
 }
 
+bool OverviewController::selectWindowInState(State& state, const PHLWINDOW& window) const {
+    if (!window)
+        return false;
+
+    const auto selectedIt = std::find_if(state.windows.begin(), state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == window; });
+    if (selectedIt == state.windows.end())
+        return false;
+
+    state.selectedIndex = static_cast<std::size_t>(std::distance(state.windows.begin(), selectedIt));
+    state.focusDuringOverview = window;
+    return true;
+}
+
 OverviewController::State OverviewController::buildState(const PHLMONITOR& monitor, ScopeOverride requestedScope, const std::vector<WorkspaceOverride>& workspaceOverrides,
                                                          bool keepEmptyParticipatingMonitors, bool suppressWorkspaceStrip,
                                                          PHLWINDOW preferredSelectedWindow) const {
@@ -11235,29 +11244,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     buildWorkspaceStripEntries(state);
 
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
-    for (std::size_t index = 0; index < state.windows.size(); ++index) {
-        if (state.windows[index].window == selectionTarget) {
-            state.selectedIndex = index;
-            break;
-        }
-    }
-
-    if (!state.selectedIndex) {
-        for (std::size_t index = 0; index < state.windows.size(); ++index) {
-            if (state.windows[index].window == focusedWindow) {
-                state.selectedIndex = index;
-                break;
-            }
-        }
-    }
-
-    if (!state.selectedIndex && !state.windows.empty())
+    if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty()) {
         state.selectedIndex = 0;
-
-    if (state.selectedIndex && *state.selectedIndex < state.windows.size())
         state.focusDuringOverview = state.windows[*state.selectedIndex].window;
-    else
-        state.focusDuringOverview = focusedWindow;
+    }
 
     return state;
 }
