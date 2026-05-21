@@ -3747,8 +3747,9 @@ bool OverviewController::workspaceSwipeUsesVerticalAxis(const PHLWORKSPACE& work
     if (!workspace)
         return false;
 
-    const auto style = workspace->m_renderOffset->getStyle();
-    return style == "slidevert" || style.starts_with("slidefadevert");
+    auto style = workspace->m_renderOffset->getStyle();
+    std::ranges::transform(style, style.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return style.starts_with("slidevert") || style.starts_with("slidefadevert");
 }
 
 double OverviewController::workspaceSwipeViewportDistance(const PHLMONITOR& monitor, WorkspaceTransitionAxis axis) const {
