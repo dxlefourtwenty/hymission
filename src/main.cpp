@@ -69,6 +69,13 @@ int luaDispatchResult(lua_State* L, const SDispatchResult& result) {
     return lua_error(L);
 }
 
+std::string luaOptionalUpvalueString(lua_State* L, int index) {
+    if (lua_isnil(L, lua_upvalueindex(index)))
+        return {};
+
+    return luaL_checkstring(L, lua_upvalueindex(index));
+}
+
 std::string luaOptionalString(lua_State* L, int index) {
     if (lua_gettop(L) < index || lua_isnil(L, index))
         return {};
@@ -140,20 +147,46 @@ std::string normalizeHymissionDispatcher(std::string dispatcher) {
     return dispatcher;
 }
 
-int luaToggle(lua_State* L) {
-    return luaDispatchResult(L, dispatchToggle(luaOptionalString(L, 1)));
+int runLuaToggle(lua_State* L) {
+    return luaDispatchResult(L, dispatchToggle(luaOptionalUpvalueString(L, 1)));
 }
 
-int luaOpen(lua_State* L) {
-    return luaDispatchResult(L, dispatchOpen(luaOptionalString(L, 1)));
+int runLuaOpen(lua_State* L) {
+    return luaDispatchResult(L, dispatchOpen(luaOptionalUpvalueString(L, 1)));
 }
 
-int luaClose(lua_State* L) {
+int runLuaClose(lua_State* L) {
     return luaDispatchResult(L, dispatchClose(""));
 }
 
-int luaDebugCurrentLayout(lua_State* L) {
+int runLuaDebugCurrentLayout(lua_State* L) {
     return luaDispatchResult(L, dispatchDebugCurrentLayout(""));
+}
+
+int pushLuaDispatcher(lua_State* L, lua_CFunction fn, const std::string& args = {}) {
+    if (args.empty())
+        lua_pushnil(L);
+    else
+        lua_pushstring(L, args.c_str());
+
+    lua_pushcclosure(L, fn, 1);
+    return 1;
+}
+
+int luaToggle(lua_State* L) {
+    return pushLuaDispatcher(L, runLuaToggle, luaOptionalString(L, 1));
+}
+
+int luaOpen(lua_State* L) {
+    return pushLuaDispatcher(L, runLuaOpen, luaOptionalString(L, 1));
+}
+
+int luaClose(lua_State* L) {
+    return pushLuaDispatcher(L, runLuaClose);
+}
+
+int luaDebugCurrentLayout(lua_State* L) {
+    return pushLuaDispatcher(L, runLuaDebugCurrentLayout);
 }
 
 int luaDispatch(lua_State* L) {
@@ -161,13 +194,13 @@ int luaDispatch(lua_State* L) {
     const std::string args       = luaOptionalString(L, 2);
 
     if (dispatcher == "hymission:toggle")
-        return luaDispatchResult(L, dispatchToggle(args));
+        return pushLuaDispatcher(L, runLuaToggle, args);
     if (dispatcher == "hymission:open")
-        return luaDispatchResult(L, dispatchOpen(args));
+        return pushLuaDispatcher(L, runLuaOpen, args);
     if (dispatcher == "hymission:close")
-        return luaDispatchResult(L, dispatchClose(args));
+        return pushLuaDispatcher(L, runLuaClose, args);
     if (dispatcher == "hymission:debug_current_layout")
-        return luaDispatchResult(L, dispatchDebugCurrentLayout(args));
+        return pushLuaDispatcher(L, runLuaDebugCurrentLayout, args);
 
     lua_pushstring(L, ("unknown hymission dispatcher: " + dispatcher).c_str());
     return lua_error(L);

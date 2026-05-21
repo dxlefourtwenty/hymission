@@ -142,23 +142,21 @@ switch_release_key = Super_L
 When using Hyprland's Lua config, Hymission exposes native plugin functions under `hl.plugin.hymission`:
 
 ```lua
-hl.bind("SUPER + TAB", hl.plugin.hymission.toggle)
+hl.bind("SUPER + TAB", hl.plugin.hymission.toggle())
 hl.bind("SUPER + A", function()
-    hl.plugin.hymission.toggle("forceall")
+    hl.dispatch(hl.plugin.hymission.toggle("forceall"))
 end)
-hl.bind("SUPER + S", function()
-    hl.plugin.hymission.open("onlycurrentworkspace")
-end)
-hl.bind("SUPER + Escape", hl.plugin.hymission.close)
+hl.bind("SUPER + S", hl.plugin.hymission.open("onlycurrentworkspace"))
+hl.bind("SUPER + Escape", hl.plugin.hymission.close())
 ```
 
 Available functions:
 
-- `hl.plugin.hymission.toggle(args?)`
-- `hl.plugin.hymission.open(args?)`
-- `hl.plugin.hymission.close()`
-- `hl.plugin.hymission.debug_current_layout()`
-- `hl.plugin.hymission.dispatch(name, args?)`
+- `hl.plugin.hymission.toggle(args?)` returns an `HL.Dispatcher`
+- `hl.plugin.hymission.open(args?)` returns an `HL.Dispatcher`
+- `hl.plugin.hymission.close()` returns an `HL.Dispatcher`
+- `hl.plugin.hymission.debug_current_layout()` returns an `HL.Dispatcher`
+- `hl.plugin.hymission.dispatch(name, args?)` returns an `HL.Dispatcher`
 - `hl.plugin.hymission.gesture(table|string, disable_inhibit?)`
 
 `toggle` and `open` accept the same optional scope arguments as the legacy dispatchers: `forceall` and `onlycurrentworkspace`.

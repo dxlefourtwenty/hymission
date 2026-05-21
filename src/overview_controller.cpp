@@ -2156,14 +2156,14 @@ SDispatchResult OverviewController::close() {
 
 SDispatchResult OverviewController::toggle(const std::string& args) {
     if (m_state.phase == Phase::Inactive || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) {
-        const bool activateSwitchSession = toggleSwitchModeEnabled();
+        const bool activateSwitchSession = toggleSwitchModeEnabled() && switchReleaseKeyHeld();
         const auto result = open(args);
         if (!result.success)
             return result;
 
         if (activateSwitchSession && isVisible()) {
             m_toggleSwitchSessionActive = true;
-            m_toggleSwitchReleaseArmed = switchReleaseKeyHeld();
+            m_toggleSwitchReleaseArmed = true;
             scheduleToggleSwitchReleasePoll();
             if (debugLogsEnabled()) {
                 std::ostringstream out;
