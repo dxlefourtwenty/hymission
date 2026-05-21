@@ -41,6 +41,7 @@
 #include <hyprland/src/managers/animation/AnimationManager.hpp>
 #include <hyprland/src/managers/animation/DesktopAnimationManager.hpp>
 #include <hyprland/src/managers/KeybindManager.hpp>
+#include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/EventManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
@@ -144,6 +145,10 @@ constexpr double HOVER_SELECTION_RETARGET_DISTANCE = 18.0;
 constexpr auto   HOVER_SELECTION_RETARGET_COOLDOWN = std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS + 48.0));
 constexpr auto   HOVER_SELECTION_RETARGET_DWELL = std::chrono::milliseconds(48);
 constexpr auto   TOGGLE_SWITCH_RELEASE_POLL_INTERVAL = std::chrono::milliseconds(16);
+constexpr std::size_t WAYBAR_CURSOR_SHAPE_RESET_FRAMES = 12;
+constexpr auto   POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL = std::chrono::milliseconds(16);
+constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
+constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
 OverviewController* g_controller = nullptr;
@@ -1656,6 +1661,14 @@ void focusWindowCompat(const PHLWINDOW& window, bool raw = false, Desktop::eFocu
     Desktop::focusState()->fullWindowFocus(window, reason);
 }
 
+void clearWindowFocusCompat(const PHLMONITOR& monitor) {
+    Desktop::focusState()->resetWindowFocus();
+    if (monitor)
+        Desktop::focusState()->rawMonitorFocus(monitor);
+    if (g_pSeatManager)
+        g_pSeatManager->setKeyboardFocus(nullptr);
+}
+
 CSurfacePassElement::SRenderData* surfaceRenderDataMutable(void* surfacePassThisptr) {
     if (!surfacePassThisptr)
         return nullptr;
@@ -1833,6 +1846,8 @@ OverviewController::~OverviewController() {
     setDamageTrackingOverride(false);
     destroyGaussianBlurPipeline();
     clearToggleSwitchReleasePollTimer();
+    clearPostCloseCursorShapeResetTimer();
+    clearPendingDeferredOpen();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
     clearPostCloseDispatcher();
@@ -2132,11 +2147,139 @@ void OverviewController::clearToggleSwitchSession() {
     clearToggleSwitchReleasePollTimer();
 }
 
+void OverviewController::schedulePostCloseCursorShapeReset() {
+    if (!g_pEventLoopManager) {
+        refreshPostCloseCursorShape();
+        return;
+    }
+
+    m_postCloseCursorShapeResetTicks = POST_CLOSE_CURSOR_SHAPE_RESET_TICKS;
+
+    if (!m_postCloseCursorShapeResetTimer) {
+        m_postCloseCursorShapeResetTimer = makeShared<CEventLoopTimer>(
+            POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL,
+            [this](SP<CEventLoopTimer> self, void*) {
+                if (g_controller != this || m_state.phase != Phase::Inactive || m_postCloseCursorShapeResetTicks == 0) {
+                    self->updateTimeout(std::nullopt);
+                    return;
+                }
+
+                refreshPostCloseCursorShape();
+                --m_postCloseCursorShapeResetTicks;
+
+                self->updateTimeout(m_postCloseCursorShapeResetTicks > 0 ? std::optional{POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL} : std::nullopt);
+            },
+            nullptr);
+        g_pEventLoopManager->addTimer(m_postCloseCursorShapeResetTimer);
+        return;
+    }
+
+    m_postCloseCursorShapeResetTimer->updateTimeout(POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL);
+}
+
+void OverviewController::clearPostCloseCursorShapeResetTimer() {
+    m_postCloseCursorShapeResetTicks = 0;
+    if (!m_postCloseCursorShapeResetTimer)
+        return;
+
+    m_postCloseCursorShapeResetTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_postCloseCursorShapeResetTimer);
+    m_postCloseCursorShapeResetTimer.reset();
+}
+
+void OverviewController::scheduleDeferredOpen(ScopeOverride requestedScope) {
+    m_pendingDeferredOpenScope = requestedScope;
+
+    if (!g_pEventLoopManager)
+        return;
+
+    if (!m_deferredOpenTimer) {
+        m_deferredOpenTimer = makeShared<CEventLoopTimer>(
+            DEFERRED_OPEN_POLL_INTERVAL,
+            [this](SP<CEventLoopTimer> self, void*) {
+                if (g_controller != this || !m_pendingDeferredOpenScope || isVisible()) {
+                    self->updateTimeout(std::nullopt);
+                    return;
+                }
+
+                if (g_pInputManager && g_pInputManager->hasHeldButtons()) {
+                    self->updateTimeout(DEFERRED_OPEN_POLL_INTERVAL);
+                    return;
+                }
+
+                const auto requestedScope = *m_pendingDeferredOpenScope;
+                m_pendingDeferredOpenScope.reset();
+                self->updateTimeout(std::nullopt);
+
+                const auto monitor = g_pCompositor->getMonitorFromCursor();
+                if (!monitor)
+                    return;
+
+                const ScopedFlag dispatching(m_deferredOpenTimerDispatching);
+                beginOpen(monitor, requestedScope);
+            },
+            nullptr);
+        g_pEventLoopManager->addTimer(m_deferredOpenTimer);
+        return;
+    }
+
+    m_deferredOpenTimer->updateTimeout(DEFERRED_OPEN_POLL_INTERVAL);
+}
+
+void OverviewController::clearPendingDeferredOpen() {
+    m_pendingDeferredOpenScope.reset();
+    if (m_deferredOpenTimerDispatching)
+        return;
+
+    if (!m_deferredOpenTimer)
+        return;
+
+    m_deferredOpenTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_deferredOpenTimer);
+    m_deferredOpenTimer.reset();
+}
+
+void OverviewController::armPostCloseOpenDebounce(ScopeOverride closedScope) {
+    const auto debounce = postCloseCrossScopeDebounce();
+    if (debounce.count() <= 0) {
+        m_postCloseOpenDebounceScope.reset();
+        m_postCloseOpenDebounceUntil = {};
+        return;
+    }
+
+    m_postCloseOpenDebounceScope = closedScope;
+    m_postCloseOpenDebounceUntil = std::chrono::steady_clock::now() + debounce;
+}
+
+bool OverviewController::shouldSuppressPostCloseOpen(ScopeOverride requestedScope) const {
+    if (!m_postCloseOpenDebounceScope || *m_postCloseOpenDebounceScope == requestedScope)
+        return false;
+
+    return std::chrono::steady_clock::now() < m_postCloseOpenDebounceUntil;
+}
+
 SDispatchResult OverviewController::open(const std::string& args) {
     std::string error;
     const auto requestedScope = parseScopeOverride(args, error);
     if (!requestedScope)
         return {.success = false, .error = error};
+
+    if (!isVisible() && shouldSuppressPostCloseOpen(*requestedScope)) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] suppress post-close cross-scope open requested=" << static_cast<int>(*requestedScope)
+                << " closed=" << static_cast<int>(*m_postCloseOpenDebounceScope);
+            debugLog(out.str());
+        }
+        return {};
+    }
+
+    if (!isVisible() && g_pEventLoopManager) {
+        scheduleDeferredOpen(*requestedScope);
+        return {};
+    }
 
     const auto monitor = g_pCompositor->getMonitorFromCursor();
     if (!monitor) {
@@ -2250,6 +2393,10 @@ void OverviewController::renderStage(eRenderStage stage) {
     expandRenderDamageToFullMonitor(monitor);
 
     if (stage == RENDER_POST_WALLPAPER) {
+        if (m_cursorShapeResetFrames > 0) {
+            resetStaleClientCursorShape();
+            --m_cursorShapeResetFrames;
+        }
         updateOverviewWorkspaceTransition();
         updateAnimation();
         flushQueuedSelectionRetargetDuringOverview();
@@ -3388,6 +3535,10 @@ bool OverviewController::workspaceChangeKeepsOverviewEnabled() const {
 
 bool OverviewController::damageTrackingOverrideEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:damage_tracking_override", 1) != 0;
+}
+
+std::chrono::milliseconds OverviewController::postCloseCrossScopeDebounce() const {
+    return std::chrono::milliseconds(std::clamp<long>(getConfigInt(m_handle, "plugin:hymission:post_close_cross_scope_debounce_ms", 750), 0, 2000));
 }
 
 bool OverviewController::hideBarsWhenStripShownEnabled() const {
@@ -4729,9 +4880,9 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         target.ownerWorkspace = workspace;
 
     target.phase = Phase::Active;
-    target.focusBeforeOpen = m_state.focusBeforeOpen;
+    target.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, target, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
     target.closeMode = m_state.closeMode;
-    target.pendingExitFocus = m_state.pendingExitFocus;
+    target.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, target, false) ? m_state.pendingExitFocus : PHLWINDOW{};
     target.relayoutActive = false;
     target.relayoutProgress = 1.0;
     target.relayoutStart = {};
@@ -5029,7 +5180,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
 
     auto targetWorkspace = g_pCompositor->getWorkspaceByID(targetWorkspaceId);
     if (!targetWorkspace && targetWorkspaceSyntheticEmpty) {
-        targetWorkspace = g_pCompositor->createNewWorkspace(targetWorkspaceId, transitionMonitor->m_id, targetWorkspaceName);
+        targetWorkspace = g_pCompositor->createNewWorkspace(targetWorkspaceId, transitionMonitor->m_id, targetWorkspaceName, false);
     }
     if (!targetWorkspace) {
         clearOverviewWorkspaceTransition();
@@ -5045,7 +5196,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
     {
         ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
 
-        transitionMonitor->changeWorkspace(targetWorkspace, true, true, true);
+        const bool targetHasFocusCandidateBeforeSwitch = static_cast<bool>(targetWorkspace->getFocusCandidate());
+        transitionMonitor->changeWorkspace(targetWorkspace, true, true, targetHasFocusCandidateBeforeSwitch);
 
         if (oldWorkspace && oldWorkspace != targetWorkspace) {
             for (const auto& window : g_pCompositor->m_windows) {
@@ -5068,6 +5220,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         const auto targetFocus = focusCandidateForWorkspace(targetWorkspace);
         if (targetFocus)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
+        else
+            clearWindowFocusCompat(transitionMonitor);
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
@@ -5087,8 +5241,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         }
 
         next.phase = Phase::Active;
-        next.focusBeforeOpen = m_state.focusBeforeOpen;
-        next.pendingExitFocus = m_state.pendingExitFocus;
+        next.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, next, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
+        next.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, next, false) ? m_state.pendingExitFocus : PHLWINDOW{};
         next.closeMode = m_state.closeMode;
         next.relayoutActive = false;
         next.relayoutProgress = 1.0;
@@ -5098,8 +5252,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         carryOverWorkspaceStripSnapshots(next, m_state);
         m_state = std::move(next);
         applyWorkspaceNameOverrides(m_state);
-        if (!selectWindowInState(m_state, targetFocus))
-            selectWindowInState(m_state, Desktop::focusState()->window());
+        if (targetFocus)
+            selectWindowInState(m_state, targetFocus);
         refreshWorkspaceStripSnapshots();
 
         if (g_pEventManager) {
@@ -8321,6 +8475,10 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
     clearToggleSwitchSession();
+    clearPostCloseCursorShapeResetTimer();
+    clearPendingDeferredOpen();
+    m_postCloseOpenDebounceScope.reset();
+    m_postCloseOpenDebounceUntil = {};
 
     const auto buildStart = std::chrono::steady_clock::now();
     const double fromVisual = isVisible() ? visualProgress() : 0.0;
@@ -8378,6 +8536,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     applyWorkspaceNameOverrides(m_state);
     clearHiddenStripLayerProxies();
     syncHiddenStripLayerProxies();
+    m_cursorShapeResetFrames = WAYBAR_CURSOR_SHAPE_RESET_FRAMES;
     resetStaleClientCursorShape();
     setInputFollowMouseOverride(true);
     setScrollingFollowFocusOverride(true);
@@ -8471,6 +8630,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_state.deferredFullscreenWorkspaceClear = false;
     m_state.deferredHiddenFullscreenReapply = false;
     m_deactivatePending = false;
+    m_cursorShapeResetFrames = 0;
+    resetStaleClientCursorShape();
     clearHiddenStripLayerProxies();
     syncHiddenStripLayerProxies();
 
@@ -8642,6 +8803,7 @@ void OverviewController::deactivate() {
     const auto originalFullscreenWindow = desiredFullscreenBackup ? desiredFullscreenBackup->originalFullscreenWindow : PHLWINDOW{};
     const auto originalFullscreenMode = desiredFullscreenBackup ? desiredFullscreenBackup->originalFullscreenMode : FSMODE_NONE;
     const auto desiredFocus = m_state.closeMode != CloseMode::Abort && m_state.pendingExitFocus && m_state.pendingExitFocus->m_isMapped ? m_state.pendingExitFocus : PHLWINDOW{};
+    const auto closedScope = m_state.collectionPolicy.requestedScope;
     const auto postCloseDispatcher = desiredFocus ? m_postCloseDispatcher : PostCloseDispatcher::None;
     const auto postCloseDispatcherArgs = desiredFocus ? m_postCloseDispatcherArgs : std::string{};
     const bool shouldDelayRestoreNativeAnimations = m_animationsEnabledOverridden && m_state.closeMode != CloseMode::Abort;
@@ -8652,6 +8814,8 @@ void OverviewController::deactivate() {
     const bool shouldWarpCursorForExitFocus = visiblePoint && desiredFocus != m_state.focusBeforeOpen;
     clearToggleSwitchSession();
     m_primaryButtonPressed = false;
+    m_cursorShapeResetFrames = 0;
+    resetStaleClientCursorShape();
     m_hoverSelectionAnchorValid = false;
     m_hoverSelectionRetargetBlockedUntil = {};
     m_hoverSelectionRetargetCandidateIndex.reset();
@@ -8782,6 +8946,7 @@ void OverviewController::deactivate() {
     clearPostCloseDispatcher();
     m_deactivatePending = false;
     m_deactivateScheduled = false;
+    m_cursorShapeResetFrames = 0;
     m_visibleStateRebuildScheduled = false;
     ++m_visibleStateRebuildGeneration;
     m_postOpenRefreshFrames = 0;
@@ -8817,6 +8982,9 @@ void OverviewController::deactivate() {
         setAnimationsEnabledOverride(true, NATIVE_ANIMATION_DISABLE_DURATION);
     else
         setAnimationsEnabledOverride(false);
+
+    schedulePostCloseCursorShapeReset();
+    armPostCloseOpenDebounce(closedScope);
 }
 
 void OverviewController::scheduleDeactivate() {
@@ -9515,6 +9683,22 @@ void OverviewController::resetStaleClientCursorShape() const {
     // Waybar can leave a pointer cursor active when Hymission opens from a bar
     // button and hides or replaces that layer before the client sees leave.
     g_pHyprRenderer->setCursorFromName("default", true);
+}
+
+void OverviewController::refreshPostCloseCursorShape() const {
+    resetStaleClientCursorShape();
+
+    if (g_pSeatManager)
+        g_pSeatManager->setPointerFocus(nullptr, {});
+
+    if (!g_pInputManager)
+        return;
+
+    g_pInputManager->refocus(g_pInputManager->getMouseCoordsInternal());
+    g_pInputManager->sendMotionEventsToFocused();
+
+    if (g_pSeatManager)
+        g_pSeatManager->resendEnterEvents();
 }
 
 void OverviewController::activateStripTarget(std::size_t index) {
@@ -10595,10 +10779,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
     state.suppressWorkspaceStrip = suppressWorkspaceStrip;
-    const auto focusedWindow = Desktop::focusState()->window();
-    state.focusBeforeOpen = focusedWindow;
-    state.focusDuringOverview = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
-
     const auto addMonitor = [&](const PHLMONITOR& candidate) {
         if (!candidate || containsHandle(state.participatingMonitors, candidate))
             return;
@@ -10667,6 +10847,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return lhs->m_id < rhs->m_id;
         });
     }
+
+    const auto focusedWindow = Desktop::focusState()->window();
+    const auto scopedFocusedWindow = windowMatchesOverviewScope(focusedWindow, state, false) ? focusedWindow : PHLWINDOW{};
+    const auto scopedPreferredWindow = windowMatchesOverviewScope(preferredSelectedWindow, state, false) ? preferredSelectedWindow : PHLWINDOW{};
+    state.focusBeforeOpen = scopedFocusedWindow;
+    state.focusDuringOverview = scopedPreferredWindow ? scopedPreferredWindow : scopedFocusedWindow;
 
     for (const auto& workspace : state.managedWorkspaces) {
         if (!workspace)

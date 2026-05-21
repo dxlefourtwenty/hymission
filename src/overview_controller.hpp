@@ -416,6 +416,7 @@ class OverviewController {
     [[nodiscard]] bool         workspaceSwipeInvertEnabled() const;
     [[nodiscard]] bool         workspaceChangeKeepsOverviewEnabled() const;
     [[nodiscard]] bool         damageTrackingOverrideEnabled() const;
+    [[nodiscard]] std::chrono::milliseconds postCloseCrossScopeDebounce() const;
     [[nodiscard]] bool         hideBarsWhenStripShownEnabled() const;
     [[nodiscard]] bool         hideBarAnimationEffectsEnabled() const;
     [[nodiscard]] bool         hideBarAnimationBlurEnabled() const;
@@ -621,6 +622,12 @@ class OverviewController {
     void                        scheduleToggleSwitchReleasePoll();
     void                        clearToggleSwitchReleasePollTimer();
     void                        clearToggleSwitchSession();
+    void                        schedulePostCloseCursorShapeReset();
+    void                        clearPostCloseCursorShapeResetTimer();
+    void                        scheduleDeferredOpen(ScopeOverride requestedScope);
+    void                        clearPendingDeferredOpen();
+    void                        armPostCloseOpenDebounce(ScopeOverride closedScope);
+    [[nodiscard]] bool          shouldSuppressPostCloseOpen(ScopeOverride requestedScope) const;
     void latchHoverSelectionAnchor(const Vector2D& pointer);
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
     [[nodiscard]] bool workspaceStripEntriesMatchForSnapshot(const WorkspaceStripEntry& lhs, const WorkspaceStripEntry& rhs) const;
@@ -637,6 +644,7 @@ class OverviewController {
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
     void resetStaleClientCursorShape() const;
+    void refreshPostCloseCursorShape() const;
     void clearPendingStripWorkspaceChange();
     [[nodiscard]] bool matchesPendingStripWorkspaceChange(const PHLWORKSPACE& workspace) const;
     void buildWorkspaceStripEntries(State& state) const;
@@ -711,6 +719,9 @@ class OverviewController {
     bool                      m_damageTrackingOverridden = false;
     long                      m_damageTrackingBackup = 2;
     SP<CEventLoopTimer>       m_toggleSwitchReleasePollTimer;
+    SP<CEventLoopTimer>       m_postCloseCursorShapeResetTimer;
+    SP<CEventLoopTimer>       m_deferredOpenTimer;
+    bool                      m_deferredOpenTimerDispatching = false;
     std::unordered_map<PHLWINDOW, std::uint64_t> m_windowMruSerials;
     std::uint64_t            m_nextWindowMruSerial = 1;
     bool                      m_deactivatePending = false;
@@ -734,6 +745,11 @@ class OverviewController {
     std::size_t               m_pendingWindowGeometryRetryRemaining = 0;
     std::size_t               m_pendingWindowGeometryRetryGeneration = 0;
     PHLWORKSPACEREF           m_pendingStripWorkspaceChangeTarget;
+    std::optional<ScopeOverride> m_pendingDeferredOpenScope;
+    std::optional<ScopeOverride> m_postCloseOpenDebounceScope;
+    std::chrono::steady_clock::time_point m_postCloseOpenDebounceUntil = {};
+    std::size_t               m_cursorShapeResetFrames = 0;
+    std::size_t               m_postCloseCursorShapeResetTicks = 0;
     PHLWINDOWREF              m_postCloseForcedFocus;
     bool                      m_postCloseForcedFocusLatched = false;
     std::size_t               m_ignorePostCloseMouseMoveCount = 0;
