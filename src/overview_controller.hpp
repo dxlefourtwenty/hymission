@@ -568,6 +568,7 @@ class OverviewController {
     [[nodiscard]] bool         shouldClearWorkspaceFullscreenForExitTarget(const PHLWINDOW& window) const;
     [[nodiscard]] bool         activateWindowWorkspaceForFocus(const PHLWINDOW& window) const;
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
+    [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const;
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true);

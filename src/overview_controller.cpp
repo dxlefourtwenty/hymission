@@ -5050,6 +5050,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         targetWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
         g_layoutManager->recalculateMonitor(transitionMonitor);
+        if (const auto targetFocus = focusCandidateForWorkspace(targetWorkspace))
+            (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
@@ -7330,6 +7332,22 @@ void OverviewController::commitOverviewExitFocus(const PHLWINDOW& window) {
             out << "<null>";
         debugLog(out.str());
     }
+}
+
+PHLWINDOW OverviewController::focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const {
+    if (!workspace)
+        return {};
+
+    if (const auto focused = Desktop::focusState()->window(); focused && focused->m_workspace == workspace && focused->m_isMapped)
+        return focused;
+
+    if (const auto lastFocused = workspace->getLastFocusedWindow(); lastFocused && lastFocused->m_isMapped)
+        return lastFocused;
+
+    if (const auto candidate = workspace->getFocusCandidate(); candidate && candidate->m_isMapped)
+        return candidate;
+
+    return workspace->getFirstWindow();
 }
 
 bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const {
