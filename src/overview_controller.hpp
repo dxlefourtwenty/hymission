@@ -636,6 +636,7 @@ class OverviewController {
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
+    void resetStaleClientCursorShape() const;
     void clearPendingStripWorkspaceChange();
     [[nodiscard]] bool matchesPendingStripWorkspaceChange(const PHLWORKSPACE& workspace) const;
     void buildWorkspaceStripEntries(State& state) const;

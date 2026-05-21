@@ -8364,6 +8364,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     applyWorkspaceNameOverrides(m_state);
     clearHiddenStripLayerProxies();
     syncHiddenStripLayerProxies();
+    resetStaleClientCursorShape();
     setInputFollowMouseOverride(true);
     setScrollingFollowFocusOverride(true);
     setFullscreenRenderOverride(true);
@@ -9491,6 +9492,15 @@ void OverviewController::clearStripWindowDragState() {
     m_draggedWindowIndex.reset();
     m_pressedWindowPointer = {};
     m_draggedWindowPointerOffset = {};
+}
+
+void OverviewController::resetStaleClientCursorShape() const {
+    if (!g_pHyprRenderer)
+        return;
+
+    // Waybar can leave a pointer cursor active when Hymission opens from a bar
+    // button and hides or replaces that layer before the client sees leave.
+    g_pHyprRenderer->setCursorFromName("default", true);
 }
 
 void OverviewController::activateStripTarget(std::size_t index) {
