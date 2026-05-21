@@ -448,6 +448,8 @@ class OverviewController {
     [[nodiscard]] WorkspaceStripEmptyMode workspaceStripEmptyMode() const;
     [[nodiscard]] double       workspaceStripThickness(const PHLMONITOR& monitor) const;
     [[nodiscard]] double       workspaceStripGap() const;
+    [[nodiscard]] int          workspaceStripLabelFontSize() const;
+    [[nodiscard]] double       workspaceStripLabelOpacity() const;
     [[nodiscard]] bool         workspaceStripEnabled(const State& state) const;
     [[nodiscard]] bool         isStripOnlyOverviewState(const State& state) const;
     [[nodiscard]] bool         shouldContinuouslyRefreshWorkspaceStripSnapshots() const;

@@ -323,6 +323,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     INT_CONF("post_close_cross_scope_debounce_ms", 750);
     INT_CONF("workspace_strip_thickness", 160);
     INT_CONF("workspace_strip_gap", 24);
+    INT_CONF("workspace_strip_label_font_size", 24);
+    FLOAT_CONF("workspace_strip_label_opacity", 0.30F);
     INT_CONF("hide_bar_when_strip", 1);
     INT_CONF("hide_bar_animation", 1);
     INT_CONF("hide_bar_animation_blur", 1);

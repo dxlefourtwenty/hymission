@@ -3883,6 +3883,14 @@ double OverviewController::workspaceStripGap() const {
     return std::max(0.0, static_cast<double>(getConfigInt(m_handle, "plugin:hymission:workspace_strip_gap", 24)));
 }
 
+int OverviewController::workspaceStripLabelFontSize() const {
+    return static_cast<int>(std::clamp(getConfigInt(m_handle, "plugin:hymission:workspace_strip_label_font_size", 24), 8L, 96L));
+}
+
+double OverviewController::workspaceStripLabelOpacity() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:workspace_strip_label_opacity", 0.30), 0.0, 1.0);
+}
+
 bool OverviewController::workspaceStripEnabled(const State& state) const {
     return state.collectionPolicy.onlyActiveWorkspace && !state.suppressWorkspaceStrip;
 }
@@ -10521,6 +10529,18 @@ void OverviewController::renderWorkspaceStrip() const {
 
         if (stateOverlayColor.a > 0.0) {
             g_pHyprOpenGL->renderRect(toBox(thumbRender), stateOverlayColor, {});
+        }
+
+        if (!entry.newWorkspaceSlot) {
+            const std::string label = entry.workspaceName.empty() ? std::to_string(entry.workspaceId) : entry.workspaceName;
+            const auto        labelTexture =
+                g_pHyprRenderer->renderText(label, activeBorderColorWithAlpha(workspaceStripLabelOpacity() * progress), scaleFontSizeForRender(renderMonitor, workspaceStripLabelFontSize()),
+                                            false, "", static_cast<int>(std::max(1.0, thumbRender.width * 0.86)));
+            if (labelTexture) {
+                const Rect labelRect = makeRect(thumbRender.centerX() - labelTexture->m_size.x * 0.5, thumbRender.centerY() - labelTexture->m_size.y * 0.5,
+                                                labelTexture->m_size.x, labelTexture->m_size.y);
+                g_pHyprOpenGL->renderTexture(labelTexture, toBox(labelRect), {});
+            }
         }
 
         if (entry.newWorkspaceSlot) {
