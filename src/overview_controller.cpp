@@ -151,7 +151,7 @@ constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
 constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
-constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardbnc,dashboard";
+constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard";
 OverviewController* g_controller = nullptr;
 
 enum class GestureDispatcherKind : uint8_t {
