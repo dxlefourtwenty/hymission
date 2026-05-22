@@ -260,6 +260,7 @@ plugin {
         expand_selected_window = 1
         multi_workspace_expand_selected_window = 1
         overview_focus_follows_mouse = 1
+        refresh_previews_on_config_reload = 1
         multi_workspace_sort_recent_first = 1
         niri_mode = 0
         niri_scroll_pixels_per_delta = 1.0
@@ -350,6 +351,7 @@ hl.config({
 | `multi_workspace_expand_selected_window` | bool | `1` | Multi-workspace overview only. Use the same selected-window magnification and neighbor push behavior as the non-niri single-workspace overview. |
 | `overview_focus_follows_mouse` | bool | `1` | Keep the overview selection aligned with hover, and sync real focus when allowed. Hover retargeting is frame-coalesced for smoother animation, and multi-workspace overview stays visually anchored when real focus crosses workspaces. |
 | `overview_center_cursor_on_hover_focus` | bool | `1` | Move the cursor to the newly focused preview center after hover focus recenters a niri scrolling overview. This prevents a stationary edge hover from chaining through adjacent windows. |
+| `refresh_previews_on_config_reload` | bool | `1` | Repaint cached workspace-strip preview snapshots after Hyprland config reloads, so live theme changes update preview colors while overview is open. |
 | `multi_workspace_sort_recent_first` | bool | `1` | Multi-workspace overview only. When enabled, `forceall` and any default overview scope that spans multiple workspaces place more recently used windows earlier in the grid, filling left-to-right then top-to-bottom. |
 | `niri_mode` | bool | `0` | Enable niri-like overflow behavior for the edge workspace strip. This is opt-in and does not turn the strip into the main overview content. |
 | `niri_scroll_pixels_per_delta` | float | `1.0` | Multiplier for `hymission:scroll,layout` movement outside overview. A value of `1.0` maps roughly one `gestures:workspace_swipe_distance` of finger travel to one viewport of scrolling-layout movement. Native `scrollMove` ignores this option. |

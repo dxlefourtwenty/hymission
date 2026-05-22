@@ -78,6 +78,7 @@ class OverviewController {
     void                          refreshAfterOfficialScrollMove(const char* source);
 
     void renderStage(eRenderStage stage);
+    void handleConfigReloaded();
     void handleMouseMove();
     bool handleMouseButton(const IPointer::SButtonEvent& event);
     void handleKeyboard(const IKeyboard::SKeyEvent& event, Event::SCallbackInfo& info);
@@ -411,6 +412,7 @@ class OverviewController {
     [[nodiscard]] bool         expandSelectedWindowEnabled() const;
     [[nodiscard]] bool         multiWorkspaceExpandSelectedWindowEnabled() const;
     [[nodiscard]] bool         focusFollowsMouseEnabled() const;
+    [[nodiscard]] bool         refreshPreviewsOnConfigReloadEnabled() const;
     [[nodiscard]] bool         multiWorkspaceSortRecentFirstEnabled() const;
     [[nodiscard]] bool         toggleSwitchModeEnabled() const;
     [[nodiscard]] bool         switchToggleAutoNextEnabled() const;

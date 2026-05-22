@@ -1970,7 +1970,7 @@ bool OverviewController::initialize() {
         if (isVisible() && shouldHandleInput())
             updateHoveredFromPointer(false, false, false, false, "monitor-focused");
     });
-    m_configReloadedListener = events.config.reloaded.listen([this] { replaceNativeWorkspaceGestures("config-reloaded"); });
+    m_configReloadedListener = events.config.reloaded.listen([this] { handleConfigReloaded(); });
 
     replaceNativeWorkspaceGestures("initialize");
 
@@ -2413,6 +2413,17 @@ void OverviewController::renderStage(eRenderStage stage) {
                 --m_postOpenRefreshFrames;
         }
     }
+}
+
+void OverviewController::handleConfigReloaded() {
+    replaceNativeWorkspaceGestures("config-reloaded");
+
+    if (!isVisible() || !refreshPreviewsOnConfigReloadEnabled())
+        return;
+
+    m_stripSnapshotsDirty = true;
+    scheduleWorkspaceStripSnapshotRefresh();
+    damageOwnedMonitors();
 }
 
 void OverviewController::handleMouseMove() {
@@ -3527,6 +3538,10 @@ bool OverviewController::multiWorkspaceExpandSelectedWindowEnabled() const {
 
 bool OverviewController::focusFollowsMouseEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:overview_focus_follows_mouse", 1) != 0;
+}
+
+bool OverviewController::refreshPreviewsOnConfigReloadEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:refresh_previews_on_config_reload", 1) != 0;
 }
 
 bool OverviewController::multiWorkspaceSortRecentFirstEnabled() const {
