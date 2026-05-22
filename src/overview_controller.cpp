@@ -2670,7 +2670,7 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     bool               handled = true;
     switch (keysym) {
         case XKB_KEY_Escape:
-            beginClose();
+            (void)close();
             break;
         case XKB_KEY_Return:
         case XKB_KEY_KP_Enter:
