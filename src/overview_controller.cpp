@@ -2411,7 +2411,7 @@ void OverviewController::renderStage(eRenderStage stage) {
                 m_lastStripThemeColor = currentStripThemeColor;
             } else if (currentStripThemeColor != m_lastStripThemeColor) {
                 m_lastStripThemeColor = currentStripThemeColor;
-                m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, STRIP_THEME_SURFACE_FEEDBACK_FRAMES);
+                m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames()));
                 m_stripSnapshotsDirty = true;
             }
         } else {
@@ -2438,7 +2438,7 @@ void OverviewController::handleConfigReloaded() {
         return;
 
     m_stripSnapshotsDirty = true;
-    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, STRIP_THEME_SURFACE_FEEDBACK_FRAMES);
+    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames()));
     scheduleWorkspaceStripSnapshotRefresh();
     damageOwnedMonitors();
 }
@@ -3559,6 +3559,10 @@ bool OverviewController::focusFollowsMouseEnabled() const {
 
 bool OverviewController::refreshPreviewsOnConfigReloadEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:refresh_previews_on_config_reload", 1) != 0;
+}
+
+int OverviewController::stripThemeSurfaceFeedbackFrames() const {
+    return getConfigInt(m_handle, "plugin:hymission:strip_theme_surface_feedback_frames", 300);
 }
 
 bool OverviewController::multiWorkspaceSortRecentFirstEnabled() const {

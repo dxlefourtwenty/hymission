@@ -413,6 +413,7 @@ class OverviewController {
     [[nodiscard]] bool         multiWorkspaceExpandSelectedWindowEnabled() const;
     [[nodiscard]] bool         focusFollowsMouseEnabled() const;
     [[nodiscard]] bool         refreshPreviewsOnConfigReloadEnabled() const;
+    [[nodiscard]] int          stripThemeSurfaceFeedbackFrames() const;
     [[nodiscard]] bool         multiWorkspaceSortRecentFirstEnabled() const;
     [[nodiscard]] bool         toggleSwitchModeEnabled() const;
     [[nodiscard]] bool         switchToggleAutoNextEnabled() const;

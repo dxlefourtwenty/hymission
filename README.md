@@ -261,6 +261,7 @@ plugin {
         multi_workspace_expand_selected_window = 1
         overview_focus_follows_mouse = 1
         refresh_previews_on_config_reload = 1
+        strip_theme_surface_feedback_frames = 300
         multi_workspace_sort_recent_first = 1
         niri_mode = 0
         niri_scroll_pixels_per_delta = 1.0
@@ -352,6 +353,7 @@ hl.config({
 | `overview_focus_follows_mouse` | bool | `1` | Keep the overview selection aligned with hover, and sync real focus when allowed. Hover retargeting is frame-coalesced for smoother animation, and multi-workspace overview stays visually anchored when real focus crosses workspaces. |
 | `overview_center_cursor_on_hover_focus` | bool | `1` | Move the cursor to the newly focused preview center after hover focus recenters a niri scrolling overview. This prevents a stationary edge hover from chaining through adjacent windows. |
 | `refresh_previews_on_config_reload` | bool | `1` | Repaint cached workspace-strip preview snapshots after Hyprland config reloads, so live theme changes update preview colors while overview is open. |
+| `strip_theme_surface_feedback_frames` | int | `300` | Number of frames to force surface feedback (sending wl_surface.frame callbacks to background windows) after a theme or config reload, giving hidden applications time to receive the reload and repaint their colors. |
 | `multi_workspace_sort_recent_first` | bool | `1` | Multi-workspace overview only. When enabled, `forceall` and any default overview scope that spans multiple workspaces place more recently used windows earlier in the grid, filling left-to-right then top-to-bottom. |
 | `niri_mode` | bool | `0` | Enable niri-like overflow behavior for the edge workspace strip. This is opt-in and does not turn the strip into the main overview content. |
 | `niri_scroll_pixels_per_delta` | float | `1.0` | Multiplier for `hymission:scroll,layout` movement outside overview. A value of `1.0` maps roughly one `gestures:workspace_swipe_distance` of finger travel to one viewport of scrolling-layout movement. Native `scrollMove` ignores this option. |
