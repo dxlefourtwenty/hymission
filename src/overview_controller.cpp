@@ -2634,7 +2634,7 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
     clearStripWindowDragState();
     if (debugLogsEnabled())
         debugLog("[hymission] mouse press fell through to background close");
-    beginClose();
+    (void)close();
     return true;
 }
 
@@ -3525,7 +3525,7 @@ bool OverviewController::damageTrackingOverrideEnabled() const {
 }
 
 std::chrono::milliseconds OverviewController::postCloseCrossScopeDebounce() const {
-    return std::chrono::milliseconds(std::clamp<long>(getConfigInt(m_handle, "plugin:hymission:post_close_cross_scope_debounce_ms", 750), 0, 2000));
+    return std::chrono::milliseconds(std::clamp<long>(getConfigInt(m_handle, "plugin:hymission:post_close_cross_scope_debounce_ms", 0), 0, 2000));
 }
 
 bool OverviewController::hideBarsWhenStripShownEnabled() const {

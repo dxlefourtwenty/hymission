@@ -320,7 +320,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     INT_CONF("switch_toggle_auto_next", 1);
     INT_CONF("workspace_change_keeps_overview", 1);
     INT_CONF("damage_tracking_override", 1);
-    INT_CONF("post_close_cross_scope_debounce_ms", 750);
+    INT_CONF("post_close_cross_scope_debounce_ms", 0);
     INT_CONF("workspace_strip_thickness", 160);
     INT_CONF("workspace_strip_gap", 24);
     INT_CONF("workspace_strip_label_font_size", 22);
