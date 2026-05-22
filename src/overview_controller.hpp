@@ -95,6 +95,7 @@ class OverviewController {
     [[nodiscard]] SDispatchResult changeWorkspaceDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult focusWorkspaceOnCurrentMonitorDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
+    [[nodiscard]] SDispatchResult moveFocusDispatcherHook(std::string args);
     bool                surfaceNeedsLiveBlurHook(void* surfacePassThisptr);
     bool                surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr);
     std::vector<UP<IPassElement>> surfaceDrawHook(void* surfacePassThisptr);
@@ -446,6 +447,7 @@ class OverviewController {
     [[nodiscard]] double       scrollLayoutPrimaryDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale) const;
     [[nodiscard]] bool         scrollActiveLayoutByGestureDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale);
     void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source);
+    void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source);
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         allowsWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldBlockWorkspaceSwitchInOverview() const;
@@ -706,11 +708,13 @@ class OverviewController {
     DispatcherHandler         m_changeWorkspaceOriginal;
     DispatcherHandler         m_focusWorkspaceOnCurrentMonitorOriginal;
     DispatcherHandler         m_layoutMessageOriginal;
+    DispatcherHandler         m_moveFocusOriginal;
     bool                      m_fullscreenActiveDispatcherWrapped = false;
     bool                      m_fullscreenStateDispatcherWrapped = false;
     bool                      m_changeWorkspaceDispatcherWrapped = false;
     bool                      m_focusWorkspaceOnCurrentMonitorDispatcherWrapped = false;
     bool                      m_layoutMessageDispatcherWrapped = false;
+    bool                      m_moveFocusDispatcherWrapped = false;
     WorkspaceSwipeBeginFn     m_workspaceSwipeBeginOriginal = nullptr;
     WorkspaceSwipeUpdateFn    m_workspaceSwipeUpdateOriginal = nullptr;
     WorkspaceSwipeEndFn       m_workspaceSwipeEndOriginal = nullptr;

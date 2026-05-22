@@ -3059,16 +3059,16 @@ SDispatchResult OverviewController::layoutMessageDispatcherHook(std::string args
         return {};
 
     const auto result = m_layoutMessageOriginal(std::move(args));
-    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
-        return result;
+    refreshNiriScrollingOverviewAfterFocusDispatcher("layoutmsg");
+    return result;
+}
 
-    const auto focused = Desktop::focusState()->window();
-    if (focused && hasManagedWindow(focused)) {
-        selectWindowInState(m_state, focused);
-        (void)syncScrollingWorkspaceSpotOnWindow(focused);
-    }
+SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
+    if (!m_moveFocusOriginal)
+        return {};
 
-    refreshNiriScrollingOverviewAfterLayoutScroll("layoutmsg");
+    const auto result = m_moveFocusOriginal(std::move(args));
+    refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus");
     return result;
 }
 
@@ -3840,6 +3840,19 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
     updateHoveredFromPointer(false, false, false, false, source ? source : "niri-scroll");
     damageOwnedMonitors();
+}
+
+void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source) {
+    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+        return;
+
+    const auto focused = Desktop::focusState()->window();
+    if (focused && hasManagedWindow(focused)) {
+        selectWindowInState(m_state, focused);
+        (void)syncScrollingWorkspaceSpotOnWindow(focused);
+    }
+
+    refreshNiriScrollingOverviewAfterLayoutScroll(source);
 }
 
 void OverviewController::refreshAfterOfficialScrollMove(const char* source) {
@@ -5875,6 +5888,8 @@ bool OverviewController::installHooks() {
         [this](std::string args) { return focusWorkspaceOnCurrentMonitorDispatcherHook(std::move(args)); });
     m_layoutMessageDispatcherWrapped =
         wrapDispatcher("layoutmsg", m_layoutMessageOriginal, [this](std::string args) { return layoutMessageDispatcherHook(std::move(args)); });
+    m_moveFocusDispatcherWrapped =
+        wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
     (void)hookFunction("begin", "CWorkspaceSwipeGesture::begin(", m_workspaceSwipeBeginFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeBegin));
     (void)hookFunction("update", "CWorkspaceSwipeGesture::update(", m_workspaceSwipeUpdateFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeUpdate));
     (void)hookFunction("end", "CWorkspaceSwipeGesture::end(", m_workspaceSwipeEndFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeEnd));
@@ -5906,6 +5921,8 @@ bool OverviewController::installHooks() {
         m_focusWorkspaceOnCurrentMonitorOriginal = nullptr;
     if (!m_layoutMessageDispatcherWrapped)
         m_layoutMessageOriginal = nullptr;
+    if (!m_moveFocusDispatcherWrapped)
+        m_moveFocusOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -6083,6 +6100,7 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("workspace", m_changeWorkspaceDispatcherWrapped, m_changeWorkspaceOriginal);
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
     restore("layoutmsg", m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
+    restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
 }
 
 void* OverviewController::findFunction(const std::string& symbolName, const std::string& demangledNeedle) const {
@@ -7626,8 +7644,9 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     if (!column)
         return false;
 
-    const auto controller = scrolling->m_scrollingData->controller.get();
-    const auto columnIndex = scrolling->m_scrollingData->idx(column);
+    auto& data = scrolling->m_scrollingData;
+    auto* const controller = data->controller.get();
+    const auto columnIndex = data->idx(column);
     const auto offsetBefore = controller->getOffset();
 
     if (debugLogsEnabled()) {
@@ -7639,20 +7658,43 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " col=" << columnIndex
             << " offsetBefore=" << offsetBefore;
         debugLog(out.str());
-        logScrollingWorkspaceSpotState("before centerOrFitCol", window->m_workspace, window);
+        logScrollingWorkspaceSpotState("before explicit focus offset", window->m_workspace, window);
     }
 
+    const CBox usable = scrolling->usableArea();
+    const bool horizontal = controller->isPrimaryHorizontal();
+    const double viewportStart = horizontal ? static_cast<double>(usable.x) : static_cast<double>(usable.y);
+    const double viewportLength = std::max(1.0, horizontal ? static_cast<double>(usable.w) : static_cast<double>(usable.h));
+    const double viewportEnd = viewportStart + viewportLength;
+    const double targetStart = horizontal ? static_cast<double>(targetData->layoutBox.x) : static_cast<double>(targetData->layoutBox.y);
+    const double targetLength = std::max(1.0, horizontal ? static_cast<double>(targetData->layoutBox.width) : static_cast<double>(targetData->layoutBox.height));
+    const double targetEnd = targetStart + targetLength;
+    const bool fullscreenOnOne = getConfigInt(m_handle, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxOffset = std::max(0.0, maxExtent - viewportLength);
+    double requestedOffset = offsetBefore;
+
+    if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1) {
+        if (targetStart < viewportStart)
+            requestedOffset += targetStart - viewportStart;
+        else if (targetEnd > viewportEnd)
+            requestedOffset += targetEnd - viewportEnd;
+    } else {
+        requestedOffset += (targetStart + targetEnd) * 0.5 - (viewportStart + viewportEnd) * 0.5;
+    }
+
+    const double offsetAfter = std::clamp(requestedOffset, 0.0, maxOffset);
+
     column->lastFocusedTarget = targetData;
-    scrolling->m_scrollingData->centerOrFitCol(column);
-    scrolling->m_scrollingData->recalculate(true);
+    if (std::abs(offsetAfter - offsetBefore) >= 0.001)
+        controller->setOffset(offsetAfter);
+    data->recalculate(true);
 
     if (const auto monitor = window->m_workspace->m_monitor.lock())
         g_layoutManager->recalculateMonitor(monitor);
 
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
-
-    const auto offsetAfter = controller->getOffset();
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -7661,9 +7703,11 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " live=" << rectToString(liveGlobalRectForWindow(window))
             << " goal=" << rectToString(goalGlobalRectForWindow(window))
             << " col=" << columnIndex
-            << " offsetAfter=" << offsetAfter;
+            << " requested=" << requestedOffset
+            << " offsetAfter=" << controller->getOffset()
+            << " maxOffset=" << maxOffset;
         debugLog(out.str());
-        logScrollingWorkspaceSpotState("after centerOrFitCol", window->m_workspace, window);
+        logScrollingWorkspaceSpotState("after explicit focus offset", window->m_workspace, window);
     }
 
     return true;
