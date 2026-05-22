@@ -2613,8 +2613,10 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         m_state.focusDuringOverview = m_state.windows[*effectiveHoveredIndex].window;
         m_queuedOverviewSelectionTarget.reset();
         m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
         m_queuedOverviewLiveFocusTarget.reset();
         m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
         m_pressedWindowIndex = effectiveHoveredIndex;
         m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
         latchHoverSelectionAnchor(m_pressedWindowPointer);
@@ -7810,7 +7812,7 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     }
 }
 
-void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrollingSpot, const char* source) {
+void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrollingSpot, const char* source, bool centerCursor) {
     const auto selected = selectedWindow();
     if (!selected)
         return;
@@ -7835,24 +7837,30 @@ void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrolling
     latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     m_queuedOverviewSelectionTarget.reset();
     m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
     syncRealFocusDuringOverview(selected, syncScrollingSpot);
+    if (centerCursor)
+        centerCursorOnOverviewWindow(selected, source);
     updateSelectedWindowLayout(previousSelected);
 }
 
-void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source) {
+void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
 
     m_queuedOverviewSelectionTarget = window;
     m_queuedOverviewSelectionSyncScrollingSpot = syncScrollingSpot;
+    m_queuedOverviewSelectionCenterCursor = centerCursor;
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] queue selection retarget during overview target=" << debugWindowLabel(window)
             << " source=" << (source ? source : "?")
-            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0);
+            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " centerCursor=" << (centerCursor ? 1 : 0);
         debugLog(out.str());
     }
 }
@@ -7867,7 +7875,9 @@ void OverviewController::flushQueuedSelectionRetargetDuringOverview() {
 
     m_queuedOverviewSelectionTarget.reset();
     const bool syncScrollingSpot = m_queuedOverviewSelectionSyncScrollingSpot;
+    const bool centerCursor = m_queuedOverviewSelectionCenterCursor;
     m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
 
     if (!queuedTarget->m_isMapped || !hasManagedWindow(queuedTarget))
         return;
@@ -7885,26 +7895,29 @@ void OverviewController::flushQueuedSelectionRetargetDuringOverview() {
         std::ostringstream out;
         out << "[hymission] flush queued selection retarget during overview target=" << debugWindowLabel(queuedTarget)
             << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " centerCursor=" << (centerCursor ? 1 : 0)
             << " previousLayoutSelected=" << debugWindowLabel(previousSelectedWindow);
         debugLog(out.str());
     }
 
     updateSelectedWindowLayout(previousSelectedWindow);
-    queueRealFocusDuringOverview(queuedTarget, syncScrollingSpot, "frame-coalesced");
+    queueRealFocusDuringOverview(queuedTarget, syncScrollingSpot, "frame-coalesced", centerCursor);
 }
 
-void OverviewController::queueRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source) {
+void OverviewController::queueRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
 
     m_queuedOverviewLiveFocusTarget = window;
     m_queuedOverviewLiveFocusSyncScrollingSpot = syncScrollingSpot;
+    m_queuedOverviewLiveFocusCenterCursor = centerCursor;
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] queue real focus during overview target=" << debugWindowLabel(window)
             << " source=" << (source ? source : "?")
-            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0);
+            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " centerCursor=" << (centerCursor ? 1 : 0);
         debugLog(out.str());
     }
 }
@@ -7918,8 +7931,10 @@ void OverviewController::flushQueuedRealFocusDuringOverview() {
         return;
 
     const bool syncScrollingSpot = m_queuedOverviewLiveFocusSyncScrollingSpot;
+    const bool centerCursor = m_queuedOverviewLiveFocusCenterCursor;
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
 
     if (!queuedTarget->m_isMapped || !hasManagedWindow(queuedTarget))
         return;
@@ -7927,11 +7942,42 @@ void OverviewController::flushQueuedRealFocusDuringOverview() {
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] flush queued real focus during overview target=" << debugWindowLabel(queuedTarget)
-            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0);
+            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " centerCursor=" << (centerCursor ? 1 : 0);
         debugLog(out.str());
     }
 
     syncRealFocusDuringOverview(queuedTarget, syncScrollingSpot);
+    if (centerCursor)
+        centerCursorOnOverviewWindow(queuedTarget, "frame-coalesced");
+}
+
+void OverviewController::centerCursorOnOverviewWindow(const PHLWINDOW& window, const char* source) {
+    if (!window || !g_pCompositor || getConfigInt(m_handle, "plugin:hymission:overview_center_cursor_on_hover_focus", 1) == 0)
+        return;
+
+    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+        return;
+
+    const auto* managed = managedWindowFor(window);
+    if (!managed)
+        return;
+
+    const Rect    preview = currentPreviewRect(*managed);
+    const Vector2D center{preview.centerX(), preview.centerY()};
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] center cursor on hover focus target=" << debugWindowLabel(window)
+            << " source=" << (source ? source : "?")
+            << " point=" << vectorToString(center)
+            << " preview=" << rectToString(preview);
+        debugLog(out.str());
+    }
+
+    g_pCompositor->warpCursorTo(center);
+    latchHoverSelectionAnchor(center);
+    updateHoveredFromPointer(false, false, false, false, "center-cursor-hover-focus");
 }
 
 void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSelectedWindow) {
@@ -8639,8 +8685,10 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_lastLayoutSelectedWindow.reset();
     m_queuedOverviewSelectionTarget.reset();
     m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
     m_pendingLiveFocusWorkspaceChangeTarget.reset();
     m_pendingWorkspaceChange.reset();
     m_pendingWorkspaceChangeAction.reset();
@@ -8739,8 +8787,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 
     m_queuedOverviewSelectionTarget.reset();
     m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
         for (auto& managed : m_state.windows) {
@@ -9004,8 +9054,10 @@ void OverviewController::deactivate() {
     m_lastLayoutSelectedWindow.reset();
     m_queuedOverviewSelectionTarget.reset();
     m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
     m_pendingLiveFocusWorkspaceChangeTarget.reset();
     m_pendingWorkspaceChange.reset();
     m_pendingWorkspaceChangeAction.reset();
@@ -9392,7 +9444,7 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
         const auto nextSelectedWindow = selectedWindow();
         if (nextSelectedWindow) {
             m_state.focusDuringOverview = nextSelectedWindow;
-            queueSelectionRetargetDuringOverview(nextSelectedWindow, syncScrollingSpot, source);
+            queueSelectionRetargetDuringOverview(nextSelectedWindow, syncScrollingSpot, source, true);
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] hover retarget immediate queued pointer=" << pointer.x << ',' << pointer.y;
@@ -9432,7 +9484,7 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
             m_hoverSelectionRetargetCandidateSince = {};
             m_hoverSelectionRetargetCandidatePrimed = false;
             if (syncRealFocus)
-                syncFocusDuringOverviewFromSelection(syncScrollingSpot, source);
+                syncFocusDuringOverviewFromSelection(syncScrollingSpot, source, true);
             else
                 m_state.focusDuringOverview = m_state.windows[*m_state.hoveredIndex].window;
             if (selectionChanged && !syncRealFocus)
