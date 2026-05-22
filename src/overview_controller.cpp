@@ -3625,6 +3625,10 @@ double OverviewController::niriWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_workspace_scale", 1.0), 0.05, 1.0);
 }
 
+bool OverviewController::niriOverviewAnimationsEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:niri_overview_animations", 1) != 0 && getConfigInt(m_handle, "animations:enabled", 1) != 0;
+}
+
 bool OverviewController::debugLogsEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:debug_logs", 0) != 0;
 }
@@ -3809,11 +3813,13 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     if (!isVisible() || m_state.phase != Phase::Active || !niriModeEnabled() || !m_state.ownerMonitor || !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
 
+    const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
     State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
     if (next.windows.empty())
         return;
 
     std::size_t updated = 0;
+    bool        targetChanged = false;
     m_state.slots.clear();
     for (auto& managed : m_state.windows) {
         auto it = std::find_if(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& candidate) { return candidate.window == managed.window; });
@@ -3822,25 +3828,29 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             continue;
         }
 
+        const Rect currentRect = currentPreviewRect(managed);
         managed.naturalGlobal = it->naturalGlobal;
         managed.slot = it->slot;
         managed.targetGlobal = it->targetGlobal;
-        managed.relayoutFromGlobal = managed.targetGlobal;
+        managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
         m_state.slots.push_back(managed.slot);
+        if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
+            targetChanged = true;
         ++updated;
     }
 
     if (updated == 0)
         return;
 
-    m_state.relayoutActive = false;
-    m_state.relayoutProgress = 1.0;
+    m_state.relayoutActive = animateRefresh && targetChanged;
+    m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated;
+        out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
+            << " animate=" << (m_state.relayoutActive ? 1 : 0);
         debugLog(out.str());
     }
 
@@ -7776,7 +7786,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
             logScrollingWorkspaceSpotState("before live focus", window->m_workspace, window);
     }
 
-    const bool temporarilyDisabledAnimations = !m_animationsEnabledOverridden;
+    const bool keepNativeAnimations = syncScrollingSpot && usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
+    const bool temporarilyDisabledAnimations = !keepNativeAnimations && !m_animationsEnabledOverridden;
     if (temporarilyDisabledAnimations)
         setAnimationsEnabledOverride(true);
 
@@ -7963,7 +7974,7 @@ void OverviewController::centerCursorOnOverviewWindow(const PHLWINDOW& window, c
     if (!managed)
         return;
 
-    const Rect    preview = currentPreviewRect(*managed);
+    const Rect    preview = m_state.relayoutActive ? managed->targetGlobal : currentPreviewRect(*managed);
     const Vector2D center{preview.centerX(), preview.centerY()};
 
     if (debugLogsEnabled()) {
