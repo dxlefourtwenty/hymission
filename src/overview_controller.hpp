@@ -450,6 +450,7 @@ class OverviewController {
     void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source);
     void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source);
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
+    [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
     [[nodiscard]] bool         allowsWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldBlockWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldOverrideWorkspaceNames(const State& state) const;

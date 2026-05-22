@@ -6178,6 +6178,10 @@ bool OverviewController::shouldSyncRealFocusDuringOverview() const {
     return shouldSyncOverviewLiveFocus(shouldHandleInput(), focusFollowsMouseEnabled(), m_inputFollowMouseBackup);
 }
 
+bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
+    return m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
+}
+
 bool OverviewController::insideRenderLifecycle() const {
     return m_surfaceRenderDataTransformDepth > 0 || m_stripSnapshotRenderDepth > 0 || (g_pHyprOpenGL && g_pHyprRenderer->m_renderData.pMonitor);
 }
@@ -7786,7 +7790,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
             logScrollingWorkspaceSpotState("before live focus", window->m_workspace, window);
     }
 
-    const bool keepNativeAnimations = syncScrollingSpot && usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
+    const bool syncOverviewScrollingSpot = syncScrollingSpot && shouldSyncScrollingLayoutDuringOverviewFocus();
+    const bool keepNativeAnimations = syncOverviewScrollingSpot && niriOverviewAnimationsEnabled();
     const bool temporarilyDisabledAnimations = !keepNativeAnimations && !m_animationsEnabledOverridden;
     if (temporarilyDisabledAnimations)
         setAnimationsEnabledOverride(true);
@@ -7795,11 +7800,11 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     focusWindowCompat(window, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
     if (debugLogsEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace))
         logScrollingWorkspaceSpotState("after focus before explicit spot sync", window->m_workspace, window);
-    if (syncScrollingSpot)
+    if (syncOverviewScrollingSpot)
         (void)syncScrollingWorkspaceSpotOnWindow(window);
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
-    if (syncScrollingSpot)
+    if (syncOverviewScrollingSpot)
         refreshNiriScrollingOverviewAfterLayoutScroll("focus-sync");
     if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
         m_pendingLiveFocusWorkspaceChangeTarget.reset();
@@ -7999,6 +8004,9 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
         return;
 
     if (usesDirectNiriScrollingOverview(m_state))
+        return;
+
+    if (!m_state.collectionPolicy.onlyActiveWorkspace)
         return;
 
     const auto currentSelection = selectedWindow();
