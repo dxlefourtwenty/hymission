@@ -808,6 +808,7 @@ class OverviewController {
     bool                     m_lastStripThemeColorValid = false;
     uint32_t                 m_lastStripThemeColor = 0;
     bool                     m_primaryButtonPressed = false;
+    bool                     m_clickedWindowWasAlreadySelected = false;
     std::optional<std::size_t> m_pressedStripIndex;
     std::optional<std::size_t> m_pressedWindowIndex;
     std::optional<std::size_t> m_draggedWindowIndex;
