@@ -3054,6 +3054,24 @@ SDispatchResult OverviewController::focusWorkspaceOnCurrentMonitorDispatcherHook
     return m_focusWorkspaceOnCurrentMonitorOriginal(std::move(args));
 }
 
+SDispatchResult OverviewController::layoutMessageDispatcherHook(std::string args) {
+    if (!m_layoutMessageOriginal)
+        return {};
+
+    const auto result = m_layoutMessageOriginal(std::move(args));
+    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+        return result;
+
+    const auto focused = Desktop::focusState()->window();
+    if (focused && hasManagedWindow(focused)) {
+        selectWindowInState(m_state, focused);
+        (void)syncScrollingWorkspaceSpotOnWindow(focused);
+    }
+
+    refreshNiriScrollingOverviewAfterLayoutScroll("layoutmsg");
+    return result;
+}
+
 void OverviewController::workspaceSwipeBeginHook(void* gestureThisptr, const ITrackpadGesture::STrackpadGestureBegin& e) {
     if (!m_workspaceSwipeBeginOriginal)
         return;
@@ -5855,6 +5873,8 @@ bool OverviewController::installHooks() {
         "focusworkspaceoncurrentmonitor",
         m_focusWorkspaceOnCurrentMonitorOriginal,
         [this](std::string args) { return focusWorkspaceOnCurrentMonitorDispatcherHook(std::move(args)); });
+    m_layoutMessageDispatcherWrapped =
+        wrapDispatcher("layoutmsg", m_layoutMessageOriginal, [this](std::string args) { return layoutMessageDispatcherHook(std::move(args)); });
     (void)hookFunction("begin", "CWorkspaceSwipeGesture::begin(", m_workspaceSwipeBeginFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeBegin));
     (void)hookFunction("update", "CWorkspaceSwipeGesture::update(", m_workspaceSwipeUpdateFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeUpdate));
     (void)hookFunction("end", "CWorkspaceSwipeGesture::end(", m_workspaceSwipeEndFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeEnd));
@@ -5884,6 +5904,8 @@ bool OverviewController::installHooks() {
         m_changeWorkspaceOriginal = nullptr;
     if (!m_focusWorkspaceOnCurrentMonitorDispatcherWrapped)
         m_focusWorkspaceOnCurrentMonitorOriginal = nullptr;
+    if (!m_layoutMessageDispatcherWrapped)
+        m_layoutMessageOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -6060,6 +6082,7 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("fullscreenstate", m_fullscreenStateDispatcherWrapped, m_fullscreenStateActiveOriginal);
     restore("workspace", m_changeWorkspaceDispatcherWrapped, m_changeWorkspaceOriginal);
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
+    restore("layoutmsg", m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
 }
 
 void* OverviewController::findFunction(const std::string& symbolName, const std::string& demangledNeedle) const {

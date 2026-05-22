@@ -94,6 +94,7 @@ class OverviewController {
     [[nodiscard]] SDispatchResult fullscreenStateDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult changeWorkspaceDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult focusWorkspaceOnCurrentMonitorDispatcherHook(std::string args);
+    [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
     bool                surfaceNeedsLiveBlurHook(void* surfacePassThisptr);
     bool                surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr);
     std::vector<UP<IPassElement>> surfaceDrawHook(void* surfacePassThisptr);
@@ -704,10 +705,12 @@ class OverviewController {
     DispatcherHandler         m_fullscreenStateActiveOriginal;
     DispatcherHandler         m_changeWorkspaceOriginal;
     DispatcherHandler         m_focusWorkspaceOnCurrentMonitorOriginal;
+    DispatcherHandler         m_layoutMessageOriginal;
     bool                      m_fullscreenActiveDispatcherWrapped = false;
     bool                      m_fullscreenStateDispatcherWrapped = false;
     bool                      m_changeWorkspaceDispatcherWrapped = false;
     bool                      m_focusWorkspaceOnCurrentMonitorDispatcherWrapped = false;
+    bool                      m_layoutMessageDispatcherWrapped = false;
     WorkspaceSwipeBeginFn     m_workspaceSwipeBeginOriginal = nullptr;
     WorkspaceSwipeUpdateFn    m_workspaceSwipeUpdateOriginal = nullptr;
     WorkspaceSwipeEndFn       m_workspaceSwipeEndOriginal = nullptr;
