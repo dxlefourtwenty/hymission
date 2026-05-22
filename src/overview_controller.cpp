@@ -8092,29 +8092,6 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
     const double preferredScale = m_state.windows.size() <= 1 ? 1.0 : SELECTED_WINDOW_LAYOUT_EMPHASIS;
     const double scaleCap = std::max(1.0, std::min({preferredScale, scaleCapByGrowth, scaleCapByBounds}));
 
-    if (multiWorkspaceOverview) {
-        currentManaged->targetGlobal = scaleRectAroundCenter(selectedBase, scaleCap);
-        if (!rectApproxEqual(currentManaged->relayoutFromGlobal, currentManaged->targetGlobal, 0.5))
-            shouldAnimateRelayout = true;
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] expand-selected multi-workspace selected=" << debugWindowLabel(currentSelectedWindow)
-                << " scale=" << scaleCap
-                << " selectedTarget=" << rectToString(currentManaged->targetGlobal);
-            debugLog(out.str());
-        }
-
-        if (!shouldAnimateRelayout)
-            return;
-
-        m_state.relayoutActive = true;
-        m_state.relayoutProgress = 0.0;
-        m_state.relayoutStart = {};
-        damageOwnedMonitors();
-        return;
-    }
-
     struct RipplePeer {
         std::size_t index = 0;
         Rect        base;

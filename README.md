@@ -347,7 +347,7 @@ hl.config({
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `expand_selected_window` | bool | `1` | Enlarge the selected preview and push nearby previews away without reshuffling the whole overview grid. Uses the overview-selected target, which usually follows hover when `overview_focus_follows_mouse = 1`. |
-| `multi_workspace_expand_selected_window` | bool | `1` | Multi-workspace overview only. Enlarge the selected preview in place without pushing neighboring previews or changing the window order. |
+| `multi_workspace_expand_selected_window` | bool | `1` | Multi-workspace overview only. Use the same selected-window magnification and neighbor push behavior as the non-niri single-workspace overview. |
 | `overview_focus_follows_mouse` | bool | `1` | Keep the overview selection aligned with hover, and sync real focus when allowed. Hover retargeting is frame-coalesced for smoother animation, and multi-workspace overview stays visually anchored when real focus crosses workspaces. |
 | `overview_center_cursor_on_hover_focus` | bool | `1` | Move the cursor to the newly focused preview center after hover focus recenters a niri scrolling overview. This prevents a stationary edge hover from chaining through adjacent windows. |
 | `multi_workspace_sort_recent_first` | bool | `1` | Multi-workspace overview only. When enabled, `forceall` and any default overview scope that spans multiple workspaces place more recently used windows earlier in the grid, filling left-to-right then top-to-bottom. |
