@@ -1957,7 +1957,11 @@ bool OverviewController::initialize() {
         pruneWindowActivationHistory(window);
         handleWindowSetChange(window, WindowSetChangeKind::General, true);
     });
-    m_windowActiveListener = events.window.active.listen([this](PHLWINDOW window, Desktop::eFocusReason) { recordWindowActivation(window); });
+    m_windowActiveListener = events.window.active.listen([this](PHLWINDOW window, Desktop::eFocusReason) {
+        recordWindowActivation(window);
+        if (window && hasManagedWindow(window))
+            refreshNiriScrollingOverviewAfterFocusDispatcher("window-active");
+    });
     m_windowMoveWorkspaceListener =
         events.window.moveToWorkspace.listen([this](PHLWINDOW window, PHLWORKSPACE) { handleWindowSetChange(window, WindowSetChangeKind::MoveToWorkspace); });
     m_workspaceActiveListener = events.workspace.active.listen([this](PHLWORKSPACE workspace) { handleWorkspaceChange(workspace); });
@@ -3850,6 +3854,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
     if (focused && hasManagedWindow(focused)) {
         selectWindowInState(m_state, focused);
         (void)syncScrollingWorkspaceSpotOnWindow(focused);
+        latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
     refreshNiriScrollingOverviewAfterLayoutScroll(source);
@@ -7662,32 +7667,18 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     }
 
     const CBox usable = scrolling->usableArea();
-    const bool horizontal = controller->isPrimaryHorizontal();
-    const double viewportStart = horizontal ? static_cast<double>(usable.x) : static_cast<double>(usable.y);
-    const double viewportLength = std::max(1.0, horizontal ? static_cast<double>(usable.w) : static_cast<double>(usable.h));
-    const double viewportEnd = viewportStart + viewportLength;
-    const double targetStart = horizontal ? static_cast<double>(targetData->layoutBox.x) : static_cast<double>(targetData->layoutBox.y);
-    const double targetLength = std::max(1.0, horizontal ? static_cast<double>(targetData->layoutBox.width) : static_cast<double>(targetData->layoutBox.height));
-    const double targetEnd = targetStart + targetLength;
     const bool fullscreenOnOne = getConfigInt(m_handle, "scrolling:fullscreen_on_one_column", 1) != 0;
     const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
-    const double maxOffset = std::max(0.0, maxExtent - viewportLength);
     double requestedOffset = offsetBefore;
 
     if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1) {
-        if (targetStart < viewportStart)
-            requestedOffset += targetStart - viewportStart;
-        else if (targetEnd > viewportEnd)
-            requestedOffset += targetEnd - viewportEnd;
+        data->fitCol(column);
     } else {
-        requestedOffset += (targetStart + targetEnd) * 0.5 - (viewportStart + viewportEnd) * 0.5;
+        data->centerCol(column);
     }
-
-    const double offsetAfter = std::clamp(requestedOffset, 0.0, maxOffset);
+    requestedOffset = controller->getOffset();
 
     column->lastFocusedTarget = targetData;
-    if (std::abs(offsetAfter - offsetBefore) >= 0.001)
-        controller->setOffset(offsetAfter);
     data->recalculate(true);
 
     if (const auto monitor = window->m_workspace->m_monitor.lock())
@@ -7705,7 +7696,7 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " col=" << columnIndex
             << " requested=" << requestedOffset
             << " offsetAfter=" << controller->getOffset()
-            << " maxOffset=" << maxOffset;
+            << " maxExtent=" << maxExtent;
         debugLog(out.str());
         logScrollingWorkspaceSpotState("after explicit focus offset", window->m_workspace, window);
     }
@@ -9375,15 +9366,16 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
     const bool wantsSelectionRetarget =
         !draggingWindow && syncSelection && m_state.hoveredIndex && focusFollowsMouseEnabled() && allowSelectionRetarget &&
         (!m_state.selectedIndex || *m_state.hoveredIndex != *m_state.selectedIndex);
-    const bool immediateRetarget = wantsSelectionRetarget && syncRealFocus;
-    const bool retargetBlockedByRelayout = expandSelectedWindowEnabled() && m_state.relayoutActive && !immediateRetarget;
-    const bool retargetBlockedByCooldown = expandSelectedWindowEnabled() && now < m_hoverSelectionRetargetBlockedUntil && !immediateRetarget;
+    const bool wantsImmediateRetarget = wantsSelectionRetarget && syncRealFocus;
+    const bool retargetBlockedByRelayout = expandSelectedWindowEnabled() && m_state.relayoutActive && !wantsImmediateRetarget;
+    const bool retargetBlockedByCooldown = expandSelectedWindowEnabled() && now < m_hoverSelectionRetargetBlockedUntil && !wantsImmediateRetarget;
     bool retargetLocked = false;
-    if (wantsSelectionRetarget && !immediateRetarget && !retargetBlockedByRelayout && !retargetBlockedByCooldown)
+    if (wantsSelectionRetarget && !retargetBlockedByRelayout && !retargetBlockedByCooldown)
         retargetLocked = hoverSelectionRetargetLocked(pointer, m_state.hoveredIndex);
 
     const bool retargetBlocked = retargetBlockedByRelayout || retargetBlockedByCooldown || retargetLocked;
     const bool canRetargetSelection = wantsSelectionRetarget && !retargetBlocked;
+    const bool immediateRetarget = canRetargetSelection && wantsImmediateRetarget;
 
     if (!wantsSelectionRetarget || immediateRetarget) {
         m_hoverSelectionRetargetCandidateIndex.reset();
