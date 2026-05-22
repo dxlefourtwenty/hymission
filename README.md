@@ -262,6 +262,7 @@ plugin {
         multi_workspace_sort_recent_first = 1
         niri_mode = 0
         niri_scroll_pixels_per_delta = 1.0
+        niri_overview_scale = 0.65
         niri_workspace_scale = 1.0
         toggle_switch_mode = 1
         switch_toggle_auto_next = 1
@@ -306,6 +307,7 @@ hl.config({
             outer_padding_top = 92,
             layout_engine = "grid",
             niri_mode = 0,
+            niri_overview_scale = 0.65,
             switch_release_key = "Super_L",
             workspace_strip_anchor = "left",
         },
@@ -345,6 +347,7 @@ hl.config({
 | `multi_workspace_sort_recent_first` | bool | `1` | Multi-workspace overview only. When enabled, `forceall` and any default overview scope that spans multiple workspaces place more recently used windows earlier in the grid, filling left-to-right then top-to-bottom. |
 | `niri_mode` | bool | `0` | Enable niri-like overflow behavior for the edge workspace strip. This is opt-in and does not turn the strip into the main overview content. |
 | `niri_scroll_pixels_per_delta` | float | `1.0` | Multiplier for `hymission:scroll,layout` movement outside overview. A value of `1.0` maps roughly one `gestures:workspace_swipe_distance` of finger travel to one viewport of scrolling-layout movement. Native `scrollMove` ignores this option. |
+| `niri_overview_scale` | float | `0.65` | Extra zoom factor for scrolling-layout windows in niri overview. Lower values reveal more neighboring windows in the scroll order; values are clamped to `0.05` - `1.0`. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
@@ -385,7 +388,7 @@ Behavior notes:
 
 The workspace strip is shown when the current overview scope displays only the active workspace.
 By default it only shows real workspaces plus the trailing new-workspace card. In `continuous` mode, synthetic empty workspaces progressively expose numbered gaps one slot at a time and render the monitor background/wallpaper when available; the trailing new-workspace card keeps its dedicated `+` styling.
-With `niri_mode = 1`, the strip stays in the configured edge band and the main overview remains the scaled window overview. The strip uses monitor-aspect workspace thumbnails, centers the active workspace on open, and allows the thumbnail list to overflow instead of shrinking every workspace into view. Tiled `scrolling` layout previews use `workspace_overview_max_preview_scale` on the non-scrolling axis and may overflow along the scrolling axis, so gesture panning moves the centered row/column instead of shrinking the whole tape into view. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the `scrolling` layout inside the niri overview; workspace switching continues to use Hyprland's standard `gesture = ..., workspace`.
+With `niri_mode = 1`, the strip stays in the configured edge band and the main overview remains the scaled window overview. The strip uses monitor-aspect workspace thumbnails, centers the active workspace on open, and allows the thumbnail list to overflow instead of shrinking every workspace into view. Tiled `scrolling` layout previews keep Hyprland's real scrolling layout alignment, apply `niri_overview_scale` after fitting the non-scrolling axis, and may overflow along the scrolling axis. Gesture panning moves the zoomed layout, and focusing a window while overview is open recenters the underlying scrolling layout and refreshes the preview. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the `scrolling` layout inside the niri overview; workspace switching continues to use Hyprland's standard `gesture = ..., workspace`.
 
 ### Optional Waybar Single-Entry Setup
 

@@ -431,6 +431,7 @@ class OverviewController {
     [[nodiscard]] bool         showFocusIndicatorEnabled() const;
     [[nodiscard]] bool         niriModeEnabled() const;
     [[nodiscard]] double       niriScrollPixelsPerDelta() const;
+    [[nodiscard]] double       niriOverviewScale() const;
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         debugLogsEnabled() const;
     [[nodiscard]] bool         debugSurfaceLogsEnabled() const;
@@ -495,6 +496,7 @@ class OverviewController {
     [[nodiscard]] bool         ownsMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         ownsWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         hasManagedWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] bool         usesDirectNiriScrollingOverview(const State& state) const;
     [[nodiscard]] bool         windowHasUsableStateGeometry(const PHLWINDOW& window) const;
     [[nodiscard]] bool         windowMatchesOverviewScope(const PHLWINDOW& window, const State& state, bool requireUsableGeometry) const;
     [[nodiscard]] bool         shouldAutoCloseFor(const PHLWINDOW& window) const;

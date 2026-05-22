@@ -1317,8 +1317,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
     std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
-    const double       rowStartPrimary = columns.front().primary;
-    double             cursorPrimary = rowStartPrimary;
     std::optional<Rect> targetSource;
     for (const auto& columnEntry : columns) {
         const auto& column = columnEntry.column;
@@ -1326,28 +1324,15 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox& layoutBox = candidate->layoutBox;
-            const double columnPrimaryLength = std::max(1.0, horizontal ? layoutBox.width : layoutBox.height);
-            const double fallbackPrimaryLength = std::max(1.0, horizontal ? fallbackGlobal.width : fallbackGlobal.height);
-            const double stepPrimary = std::max(columnPrimaryLength, fallbackPrimaryLength);
-
-            if (candidate != targetData) {
-                cursorPrimary += stepPrimary;
+            if (candidate != targetData)
                 continue;
-            }
 
-            Rect source = centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
-            if (horizontal) {
-                source.x = cursorPrimary + (stepPrimary - source.width) * 0.5;
-                source.y = baseGlobal.y + (baseGlobal.height - source.height) * 0.5;
-            } else {
-                source.x = baseGlobal.x + (baseGlobal.width - source.width) * 0.5;
-                source.y = cursorPrimary + (stepPrimary - source.height) * 0.5;
-            }
-
-            targetSource = source;
-            cursorPrimary += stepPrimary;
+            targetSource = centeredSurfaceRectInLayoutBox(candidate->layoutBox, fallbackGlobal);
+            break;
         }
+
+        if (targetSource)
+            break;
     }
 
     if (!targetSource)
@@ -3606,6 +3591,10 @@ bool OverviewController::niriModeEnabled() const {
 
 double OverviewController::niriScrollPixelsPerDelta() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_scroll_pixels_per_delta", 1.0), 0.0, 20.0);
+}
+
+double OverviewController::niriOverviewScale() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_scale", 0.65), 0.05, 1.0);
 }
 
 double OverviewController::niriWorkspaceScale() const {
@@ -6158,6 +6147,19 @@ bool OverviewController::hasManagedWindow(const PHLWINDOW& window) const {
     return managedWindowFor(window) != nullptr;
 }
 
+bool OverviewController::usesDirectNiriScrollingOverview(const State& state) const {
+    if (!niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
+        return false;
+
+    return std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
+        if (!managed.window || managed.isNiriFloatingOverlay || !managed.window->m_workspace || !isScrollingWorkspace(managed.window->m_workspace))
+            return false;
+
+        const auto target = managed.window->layoutTarget();
+        return target && !target->floating();
+    });
+}
+
 bool OverviewController::windowHasUsableStateGeometry(const PHLWINDOW& window) const {
     if (!window)
         return false;
@@ -7726,6 +7728,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
         (void)syncScrollingWorkspaceSpotOnWindow(window);
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
+    if (syncScrollingSpot)
+        refreshNiriScrollingOverviewAfterLayoutScroll("focus-sync");
     if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
         m_pendingLiveFocusWorkspaceChangeTarget.reset();
 
@@ -7874,6 +7878,9 @@ void OverviewController::flushQueuedRealFocusDuringOverview() {
 
 void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSelectedWindow) {
     if (!expandSelectedWindowEnabled() || !isVisible() || m_state.phase != Phase::Active || m_gestureSession.active || m_workspaceTransition.active)
+        return;
+
+    if (usesDirectNiriScrollingOverview(m_state))
         return;
 
     const auto currentSelection = selectedWindow();
@@ -11148,7 +11155,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (baseGlobal.width <= 1.0 || baseGlobal.height <= 1.0)
             return std::nullopt;
 
-        const double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+        double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+        if (overflowAxis)
+            scale = std::max(config.minSlotScale, scale * niriOverviewScale());
         if (scale <= 0.0)
             return std::nullopt;
 
