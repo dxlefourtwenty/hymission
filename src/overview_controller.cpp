@@ -3521,6 +3521,10 @@ bool OverviewController::expandSelectedWindowEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:expand_selected_window", 1) != 0;
 }
 
+bool OverviewController::multiWorkspaceExpandSelectedWindowEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:multi_workspace_expand_selected_window", 1) != 0;
+}
+
 bool OverviewController::focusFollowsMouseEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:overview_focus_follows_mouse", 1) != 0;
 }
@@ -8006,7 +8010,8 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
     if (usesDirectNiriScrollingOverview(m_state))
         return;
 
-    if (!m_state.collectionPolicy.onlyActiveWorkspace)
+    const bool multiWorkspaceOverview = !m_state.collectionPolicy.onlyActiveWorkspace;
+    if (multiWorkspaceOverview && !multiWorkspaceExpandSelectedWindowEnabled())
         return;
 
     const auto currentSelection = selectedWindow();
@@ -8076,12 +8081,6 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
         return;
     }
 
-    struct RipplePeer {
-        std::size_t index = 0;
-        Rect        base;
-        double      distance = 0.0;
-    };
-
     const Rect selectedBase = baseTargets[currentManagedIndex];
     const LayoutConfig layoutConfig = loadLayoutConfig();
     const double minGapX = std::max(0.0, layoutConfig.columnSpacing * 0.25);
@@ -8092,6 +8091,36 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
     const double scaleCapByBounds = maxCenteredScaleForBounds(selectedBase, boundsGlobal);
     const double preferredScale = m_state.windows.size() <= 1 ? 1.0 : SELECTED_WINDOW_LAYOUT_EMPHASIS;
     const double scaleCap = std::max(1.0, std::min({preferredScale, scaleCapByGrowth, scaleCapByBounds}));
+
+    if (multiWorkspaceOverview) {
+        currentManaged->targetGlobal = scaleRectAroundCenter(selectedBase, scaleCap);
+        if (!rectApproxEqual(currentManaged->relayoutFromGlobal, currentManaged->targetGlobal, 0.5))
+            shouldAnimateRelayout = true;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] expand-selected multi-workspace selected=" << debugWindowLabel(currentSelectedWindow)
+                << " scale=" << scaleCap
+                << " selectedTarget=" << rectToString(currentManaged->targetGlobal);
+            debugLog(out.str());
+        }
+
+        if (!shouldAnimateRelayout)
+            return;
+
+        m_state.relayoutActive = true;
+        m_state.relayoutProgress = 0.0;
+        m_state.relayoutStart = {};
+        damageOwnedMonitors();
+        return;
+    }
+
+    struct RipplePeer {
+        std::size_t index = 0;
+        Rect        base;
+        double      distance = 0.0;
+    };
+
     const double rippleRadius =
         std::max(std::hypot(selectedBase.width, selectedBase.height) * 2.5, std::hypot(boundsGlobal.width, boundsGlobal.height) * 0.55);
     const double pressureCenterX = selectedBase.centerX();

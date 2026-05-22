@@ -409,6 +409,7 @@ class OverviewController {
     [[nodiscard]] CollectionPolicy loadCollectionPolicy(ScopeOverride requestedScope) const;
     [[nodiscard]] std::optional<ScopeOverride> parseScopeOverride(const std::string& args, std::string& error) const;
     [[nodiscard]] bool         expandSelectedWindowEnabled() const;
+    [[nodiscard]] bool         multiWorkspaceExpandSelectedWindowEnabled() const;
     [[nodiscard]] bool         focusFollowsMouseEnabled() const;
     [[nodiscard]] bool         multiWorkspaceSortRecentFirstEnabled() const;
     [[nodiscard]] bool         toggleSwitchModeEnabled() const;
