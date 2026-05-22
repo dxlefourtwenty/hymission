@@ -147,6 +147,7 @@ constexpr auto   HOVER_SELECTION_RETARGET_COOLDOWN = std::chrono::milliseconds(s
 constexpr auto   HOVER_SELECTION_RETARGET_DWELL = std::chrono::milliseconds(48);
 constexpr auto   TOGGLE_SWITCH_RELEASE_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr std::size_t WAYBAR_CURSOR_SHAPE_RESET_FRAMES = 12;
+constexpr std::size_t STRIP_THEME_SURFACE_FEEDBACK_FRAMES = 8;
 constexpr auto   POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL = std::chrono::milliseconds(16);
 constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
 constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
@@ -2403,11 +2404,26 @@ void OverviewController::renderStage(eRenderStage stage) {
         }
 
         g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewOverlayPassElement>(this, monitor));
-        if (shouldContinuouslyRefreshWorkspaceStripSnapshots()) {
+        if (workspaceStripEnabled(m_state)) {
+            const uint32_t currentStripThemeColor = activeBorderColorWithAlpha(1.0).getAsHex();
+            if (!m_lastStripThemeColorValid) {
+                m_lastStripThemeColorValid = true;
+                m_lastStripThemeColor = currentStripThemeColor;
+            } else if (currentStripThemeColor != m_lastStripThemeColor) {
+                m_lastStripThemeColor = currentStripThemeColor;
+                m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, STRIP_THEME_SURFACE_FEEDBACK_FRAMES);
+                m_stripSnapshotsDirty = true;
+            }
+        } else {
+            m_lastStripThemeColorValid = false;
+        }
+        if (shouldContinuouslyRefreshWorkspaceStripSnapshots() || m_stripSnapshotSurfaceFeedbackFrames > 0) {
             m_stripSnapshotsDirty = true;
             scheduleWorkspaceStripSnapshotRefresh();
         }
-        if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0) && !m_deactivatePending) {
+        if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
+             m_stripSnapshotSurfaceFeedbackFrames > 0) &&
+            !m_deactivatePending) {
             damageOwnedMonitors();
             if (m_postOpenRefreshFrames > 0)
                 --m_postOpenRefreshFrames;
@@ -2422,6 +2438,7 @@ void OverviewController::handleConfigReloaded() {
         return;
 
     m_stripSnapshotsDirty = true;
+    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, STRIP_THEME_SURFACE_FEEDBACK_FRAMES);
     scheduleWorkspaceStripSnapshotRefresh();
     damageOwnedMonitors();
 }
@@ -9182,6 +9199,8 @@ void OverviewController::deactivate() {
     m_workspaceSwipeGesture = {};
     m_stripSnapshotsDirty = false;
     m_stripSnapshotRefreshScheduled = false;
+    m_stripSnapshotSurfaceFeedbackFrames = 0;
+    m_lastStripThemeColorValid = false;
     m_state = {};
     for (const auto& ownedMonitor : ownedMonitors) {
         g_pHyprRenderer->damageMonitor(ownedMonitor);
@@ -10579,7 +10598,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
 
     ++m_stripSnapshotRenderDepth;
     g_pHyprOpenGL->makeEGLCurrent();
-    g_pHyprRenderer->m_bBlockSurfaceFeedback = true;
+    g_pHyprRenderer->m_bBlockSurfaceFeedback = m_stripSnapshotSurfaceFeedbackFrames == 0;
     if (renderWorkspaceContents) {
         m_stripPreviewContext.active = true;
         m_stripPreviewContext.monitor = monitor;
@@ -10691,6 +10710,8 @@ void OverviewController::refreshWorkspaceStripSnapshots() {
         for (auto& entry : m_state.stripEntries)
             entry.snapshot.reset();
         m_stripSnapshotsDirty = false;
+        m_stripSnapshotSurfaceFeedbackFrames = 0;
+        m_lastStripThemeColorValid = false;
         return;
     }
 
@@ -10703,6 +10724,9 @@ void OverviewController::refreshWorkspaceStripSnapshots() {
     m_stripSnapshotsDirty = false;
     for (auto& entry : m_state.stripEntries)
         renderWorkspaceStripSnapshot(entry);
+
+    if (m_stripSnapshotSurfaceFeedbackFrames > 0)
+        --m_stripSnapshotSurfaceFeedbackFrames;
 }
 
 void OverviewController::scheduleWorkspaceStripSnapshotRefresh() {
