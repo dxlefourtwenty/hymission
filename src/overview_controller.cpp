@@ -151,6 +151,7 @@ constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
 constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
+constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardbnc,dashboard";
 OverviewController* g_controller = nullptr;
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2918,7 +2919,23 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (!layerMonitor || layerMonitor != monitor || !layerResource || !layer->m_mapped || layer->m_readyToDelete)
         return false;
 
-    return layerResource->m_current.exclusive > 0;
+    return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer);
+}
+
+bool OverviewController::shouldHideLayerSurfaceNamespace(const PHLLS& layer) const {
+    if (!layer)
+        return false;
+
+    const std::string layerNamespace = trimCopy(layer->m_namespace);
+    if (layerNamespace.empty())
+        return false;
+
+    for (const auto& configuredNamespace : splitCommaTokens(hideBarNamespaces())) {
+        if (!configuredNamespace.empty() && configuredNamespace == layerNamespace)
+            return true;
+    }
+
+    return false;
 }
 
 void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHLMONITOR monitor, const Time::steady_tp& now, bool popups, bool lockscreen) {
@@ -2930,6 +2947,7 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
             return;
         if (shouldRenderHiddenStripLayerProxy(layer, monitor))
             return;
+        return;
     }
 
     m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
@@ -3530,6 +3548,10 @@ std::chrono::milliseconds OverviewController::postCloseCrossScopeDebounce() cons
 
 bool OverviewController::hideBarsWhenStripShownEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:hide_bar_when_strip", 1) != 0;
+}
+
+std::string OverviewController::hideBarNamespaces() const {
+    return getConfigString(m_handle, "plugin:hymission:hide_bar_namespaces", DEFAULT_HIDE_BAR_NAMESPACES);
 }
 
 bool OverviewController::hideBarAnimationEffectsEnabled() const {

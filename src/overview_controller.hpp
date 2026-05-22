@@ -418,6 +418,7 @@ class OverviewController {
     [[nodiscard]] bool         damageTrackingOverrideEnabled() const;
     [[nodiscard]] std::chrono::milliseconds postCloseCrossScopeDebounce() const;
     [[nodiscard]] bool         hideBarsWhenStripShownEnabled() const;
+    [[nodiscard]] std::string  hideBarNamespaces() const;
     [[nodiscard]] bool         hideBarAnimationEffectsEnabled() const;
     [[nodiscard]] bool         hideBarAnimationBlurEnabled() const;
     [[nodiscard]] double       hideBarAnimationMoveMultiplier() const;
@@ -640,6 +641,7 @@ class OverviewController {
     void scheduleWorkspaceStripSnapshotRefresh();
     void renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry);
     [[nodiscard]] bool shouldHideLayerSurface(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] bool shouldHideLayerSurfaceNamespace(const PHLLS& layer) const;
     void renderBackdrop() const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
