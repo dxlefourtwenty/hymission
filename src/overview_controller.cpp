@@ -152,6 +152,7 @@ constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard";
+constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard";
 OverviewController* g_controller = nullptr;
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2911,7 +2912,7 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
 }
 
 bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMONITOR& monitor) const {
-    if (!layer || !monitor || !isVisible() || !workspaceStripEnabled(m_state) || !hideBarsWhenStripShownEnabled() || !ownsMonitor(monitor))
+    if (!layer || !monitor || !isVisible() || !ownsMonitor(monitor))
         return false;
 
     const auto layerMonitor = layer->m_monitor.lock();
@@ -2919,10 +2920,14 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (!layerMonitor || layerMonitor != monitor || !layerResource || !layer->m_mapped || layer->m_readyToDelete)
         return false;
 
-    return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer);
+    if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
+        return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
+
+    return hideOverviewLayersEnabled() && m_state.collectionPolicy.requestedScope == ScopeOverride::ForceAll &&
+        shouldHideLayerSurfaceNamespace(layer, hideOverviewLayerNamespaces());
 }
 
-bool OverviewController::shouldHideLayerSurfaceNamespace(const PHLLS& layer) const {
+bool OverviewController::shouldHideLayerSurfaceNamespace(const PHLLS& layer, const std::string& namespaces) const {
     if (!layer)
         return false;
 
@@ -2930,7 +2935,7 @@ bool OverviewController::shouldHideLayerSurfaceNamespace(const PHLLS& layer) con
     if (layerNamespace.empty())
         return false;
 
-    for (const auto& configuredNamespace : splitCommaTokens(hideBarNamespaces())) {
+    for (const auto& configuredNamespace : splitCommaTokens(namespaces)) {
         if (!configuredNamespace.empty() && configuredNamespace == layerNamespace)
             return true;
     }
@@ -3552,6 +3557,14 @@ bool OverviewController::hideBarsWhenStripShownEnabled() const {
 
 std::string OverviewController::hideBarNamespaces() const {
     return getConfigString(m_handle, "plugin:hymission:hide_bar_namespaces", DEFAULT_HIDE_BAR_NAMESPACES);
+}
+
+bool OverviewController::hideOverviewLayersEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:hide_layers_when_overview", 1) != 0;
+}
+
+std::string OverviewController::hideOverviewLayerNamespaces() const {
+    return getConfigString(m_handle, "plugin:hymission:hide_overview_layer_namespaces", DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES);
 }
 
 bool OverviewController::hideBarAnimationEffectsEnabled() const {
@@ -6938,7 +6951,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
 }
 
 void OverviewController::syncHiddenStripLayerProxies() {
-    if (!isVisible() || !workspaceStripEnabled(m_state) || !hideBarsWhenStripShownEnabled() || !hideBarAnimationEffectsEnabled()) {
+    if (!isVisible() || !hideBarAnimationEffectsEnabled()) {
         clearHiddenStripLayerProxies();
         return;
     }
@@ -6973,6 +6986,9 @@ void OverviewController::syncHiddenStripLayerProxies() {
 
 Rect OverviewController::hiddenStripLayerProxyRect(const HiddenStripLayerProxy& proxy) const {
     const double hiddenness = hiddenStripLayerProgress(proxy.layer, proxy.monitor);
+    if (!workspaceStripEnabled(m_state))
+        return proxy.proxyRectGlobal;
+
     const auto   anchor = parseWorkspaceStripAnchor(workspaceStripAnchor());
     const double scaleTarget = 1.0 / hideBarAnimationScaleDivisor();
     const double scale = 1.0 - (1.0 - scaleTarget) * hiddenness;

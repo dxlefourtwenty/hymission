@@ -326,6 +326,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     INT_CONF("workspace_strip_label_font_size", 22);
     FLOAT_CONF("workspace_strip_label_opacity", 0.50F);
     INT_CONF("hide_bar_when_strip", 1);
+    INT_CONF("hide_layers_when_overview", 1);
     INT_CONF("hide_bar_animation", 1);
     INT_CONF("hide_bar_animation_blur", 1);
     FLOAT_CONF("hide_bar_animation_move_multiplier", 0.8F);
@@ -339,6 +340,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     STRING_CONF("workspace_strip_anchor", "left");
     STRING_CONF("workspace_strip_empty_mode", "existing");
     STRING_CONF("hide_bar_namespaces", "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard");
+    STRING_CONF("hide_overview_layer_namespaces", "chromack,wardnc,wardbnc,dashboard");
     STRING_CONF("switch_release_key", "Super_L");
 #undef STRING_CONF
 #undef FLOAT_CONF

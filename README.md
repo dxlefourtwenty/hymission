@@ -280,6 +280,8 @@ plugin {
         workspace_strip_gap = 24
         hide_bar_when_strip = 1
         hide_bar_namespaces = hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard
+        hide_layers_when_overview = 1
+        hide_overview_layer_namespaces = chromack,wardnc,wardbnc,dashboard
         hide_bar_animation = 1
         hide_bar_animation_blur = 1
         hide_bar_animation_move_multiplier = 0.8
@@ -370,6 +372,8 @@ Behavior notes:
 | `workspace_strip_gap` | int | `24` | Gap between the strip and the main overview content. |
 | `hide_bar_when_strip` | bool | `1` | Replace matching exclusive bars with a short self-blur / slide / scale proxy handoff while the strip is shown. |
 | `hide_bar_namespaces` | string | `hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard` | Comma-separated layer-surface namespaces to hide with the same strip handoff, including non-exclusive surfaces. Exclusive bars are still hidden regardless of namespace. |
+| `hide_layers_when_overview` | bool | `1` | Hide matching non-window layer surfaces while multi-workspace Mission Control is shown. |
+| `hide_overview_layer_namespaces` | string | `chromack,wardnc,wardbnc,dashboard` | Comma-separated layer-surface namespaces to fade out during multi-workspace Mission Control. |
 | `hide_bar_animation` | bool | `1` | Enable the bar handoff animation. When disabled, matching bars hide/show instantly with the strip. |
 | `hide_bar_animation_blur` | bool | `1` | Enable blur during the bar handoff. When disabled, the handoff keeps alpha / move / scale only. |
 | `hide_bar_animation_move_multiplier` | float | `0.8` | Multiplier for how much the bar follows strip movement. Clamped to `0.0` - `2.0`. `1.0` matches full strip travel and `2.0` doubles it. |
