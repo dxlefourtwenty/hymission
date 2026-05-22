@@ -7970,6 +7970,9 @@ void OverviewController::centerCursorOnOverviewWindow(const PHLWINDOW& window, c
     if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
         return;
 
+    if (niriOverviewAnimationsEnabled())
+        return;
+
     const auto* managed = managedWindowFor(window);
     if (!managed)
         return;
