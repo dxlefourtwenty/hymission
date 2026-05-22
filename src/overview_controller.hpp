@@ -416,6 +416,7 @@ class OverviewController {
     [[nodiscard]] bool         workspaceSwipeInvertEnabled() const;
     [[nodiscard]] bool         workspaceChangeKeepsOverviewEnabled() const;
     [[nodiscard]] bool         damageTrackingOverrideEnabled() const;
+    [[nodiscard]] bool         closeSpecialWorkspacesOnOpenEnabled() const;
     [[nodiscard]] std::chrono::milliseconds postCloseCrossScopeDebounce() const;
     [[nodiscard]] bool         hideBarsWhenStripShownEnabled() const;
     [[nodiscard]] std::string  hideBarNamespaces() const;
@@ -470,6 +471,7 @@ class OverviewController {
     void                       setScrollingFollowFocusOverride(bool disable);
     void                       setAnimationsEnabledOverride(bool disable, std::optional<std::chrono::milliseconds> restoreDelay = std::nullopt);
     void                       setDamageTrackingOverride(bool disable);
+    void                       closeActiveSpecialWorkspaces();
     void                       applyWorkspaceNameOverrides(const State& state);
     void                       restoreWorkspaceNameOverrides();
     void                       clearRegisteredTrackpadGestures();

@@ -273,6 +273,7 @@ plugin {
         show_special = 0
         workspace_change_keeps_overview = 1
         damage_tracking_override = 1
+        close_special_workspaces_on_open = 1
 
         workspace_strip_anchor = left
         workspace_strip_empty_mode = existing
@@ -354,6 +355,7 @@ hl.config({
 | `show_special` | bool | `0` | Include currently visible special workspaces in the default scope. |
 | `workspace_change_keeps_overview` | bool | `1` | Keep overview open when switching workspaces in active-workspace scope. |
 | `damage_tracking_override` | bool | `1` | Temporarily set Hyprland `debug:damage_tracking` to `0` while overview is visible and restore the previous value on close. This can reduce flicker on NVIDIA/multi-monitor setups. |
+| `close_special_workspaces_on_open` | bool | `1` | Close any currently visible special workspaces before opening overview. Applies to both multi-workspace and active-workspace overview. |
 | `show_focus_indicator` | bool | `0` | Render selected and hovered preview focus chrome. |
 
 Behavior notes:

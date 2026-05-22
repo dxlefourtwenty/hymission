@@ -29,6 +29,7 @@
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
@@ -3547,6 +3548,10 @@ bool OverviewController::damageTrackingOverrideEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:damage_tracking_override", 1) != 0;
 }
 
+bool OverviewController::closeSpecialWorkspacesOnOpenEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:close_special_workspaces_on_open", 1) != 0;
+}
+
 std::chrono::milliseconds OverviewController::postCloseCrossScopeDebounce() const {
     return std::chrono::milliseconds(std::clamp<long>(getConfigInt(m_handle, "plugin:hymission:post_close_cross_scope_debounce_ms", 0), 0, 2000));
 }
@@ -5716,6 +5721,31 @@ void OverviewController::setDamageTrackingOverride(bool disable) {
         std::ostringstream out;
         out << "[hymission] restored debug:damage_tracking=" << m_damageTrackingBackup;
         debugLog(out.str());
+    }
+}
+
+void OverviewController::closeActiveSpecialWorkspaces() {
+    if (!closeSpecialWorkspacesOnOpenEnabled())
+        return;
+
+    std::vector<PHLWORKSPACE> specialWorkspaces;
+    for (const auto& monitor : g_pCompositor->m_monitors) {
+        if (!monitor || !monitor->m_activeSpecialWorkspace || containsHandle(specialWorkspaces, monitor->m_activeSpecialWorkspace))
+            continue;
+
+        specialWorkspaces.push_back(monitor->m_activeSpecialWorkspace);
+    }
+
+    for (const auto& workspace : specialWorkspaces) {
+        if (!workspace)
+            continue;
+
+        const auto result = Config::Actions::toggleSpecial(workspace);
+        if (!result && debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] failed to close special workspace " << debugWorkspaceLabel(workspace) << ": " << result.error().message;
+            debugLog(out.str());
+        }
     }
 }
 
@@ -8521,6 +8551,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
     recordWindowActivation(Desktop::focusState()->window());
+    closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
     State next = buildState(monitor, requestedScope, {}, false, false, preferredSelectedWindow);
     if (next.windows.empty() && next.stripEntries.empty()) {
