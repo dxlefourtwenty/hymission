@@ -3686,13 +3686,13 @@ double OverviewController::niriOverviewScale() const {
 }
 
 double OverviewController::niriMultiWorkspaceScale() const {
-    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.40), 0.05, 1.0);
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.24), 0.05, 1.0);
 }
 
 double OverviewController::niriMultiWorkspaceGap() const {
     const double fallback = static_cast<double>(getConfigInt(m_handle, "general:gaps_out", 0));
-    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", -1.0);
-    return configured < 0.0 ? std::max(0.0, fallback) : std::max(0.0, configured);
+    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", 4.0);
+    return configured < 0.0 ? std::max(0.0, std::min(fallback, 4.0)) : std::max(0.0, configured);
 }
 
 double OverviewController::niriWorkspaceScale() const {
@@ -3712,6 +3712,17 @@ bool OverviewController::debugSurfaceLogsEnabled() const {
 }
 
 PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
+    if (isVisible() && niriModeEnabled()) {
+        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace)
+            return m_state.focusDuringOverview->m_workspace;
+
+        if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
+            const auto selected = m_state.windows[*m_state.selectedIndex].window;
+            if (selected && selected->m_workspace)
+                return selected->m_workspace;
+        }
+    }
+
     PHLMONITOR monitor = Desktop::focusState()->monitor();
     if (!monitor)
         monitor = g_pCompositor->getMonitorFromCursor();
@@ -3979,11 +3990,11 @@ double OverviewController::gestureSwipeDirectionLockThreshold() const {
 }
 
 bool OverviewController::allowsWorkspaceSwitchInOverview() const {
-    return isVisible() && (m_state.collectionPolicy.onlyActiveWorkspace || niriModeEnabled()) && workspaceChangeKeepsOverviewEnabled();
+    return isVisible() && m_state.collectionPolicy.onlyActiveWorkspace && workspaceChangeKeepsOverviewEnabled();
 }
 
 bool OverviewController::shouldBlockWorkspaceSwitchInOverview() const {
-    return isVisible() && !m_state.collectionPolicy.onlyActiveWorkspace && !niriModeEnabled();
+    return isVisible() && !m_state.collectionPolicy.onlyActiveWorkspace;
 }
 
 bool OverviewController::shouldOverrideWorkspaceNames(const State& state) const {
@@ -5078,7 +5089,8 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     target.relayoutStart = {};
 
     const auto transitionWorkspace = monitor->m_activeWorkspace ? monitor->m_activeWorkspace : source.ownerWorkspace;
-    const auto transitionAxis = workspaceSwipeUsesVerticalAxis(transitionWorkspace) ? WorkspaceTransitionAxis::Vertical : WorkspaceTransitionAxis::Horizontal;
+    const auto transitionAxis = niriModeEnabled() ? WorkspaceTransitionAxis::Vertical :
+        (workspaceSwipeUsesVerticalAxis(transitionWorkspace) ? WorkspaceTransitionAxis::Vertical : WorkspaceTransitionAxis::Horizontal);
 
     m_workspaceTransition = {
         .active = true,
@@ -11158,11 +11170,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
-    if (niriModeEnabled()) {
-        state.collectionPolicy.onlyActiveWorkspace = false;
+    const bool niriSingleWorkspaceOverview = niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
+    if (niriSingleWorkspaceOverview)
         state.collectionPolicy.onlyActiveMonitor = true;
-    }
-    state.suppressWorkspaceStrip = suppressWorkspaceStrip || niriModeEnabled();
+    state.suppressWorkspaceStrip = suppressWorkspaceStrip;
     const auto addMonitor = [&](const PHLMONITOR& candidate) {
         if (!candidate || containsHandle(state.participatingMonitors, candidate))
             return;
@@ -11188,7 +11199,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         return it == workspaceOverrides.end() ? nullptr : &*it;
     };
 
-    if (state.collectionPolicy.onlyActiveWorkspace) {
+    if (state.collectionPolicy.onlyActiveWorkspace && !niriSingleWorkspaceOverview) {
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
                 continue;
@@ -11375,7 +11386,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     config.preserveInputOrder = preserveExistingOrder || orderByRecentUse;
     config.forceRowGroups = useWorkspaceRows;
     config.rankScaleByInputOrder = orderByRecentUse;
-    const bool allowDirectNiriOverviewLayout = niriModeEnabled();
+    const bool allowDirectNiriOverviewLayout = niriSingleWorkspaceOverview;
 
     if (allowDirectNiriOverviewLayout) {
         for (const auto& candidateMonitor : state.participatingMonitors) {
@@ -11418,9 +11429,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
 
             const Rect content = overviewContentRectForMonitor(candidateMonitor, state);
-            const double gap = niriMultiWorkspaceGap();
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
+            const double gap = std::min(niriMultiWorkspaceGap(), laneHeight * 0.03);
             const double centerY = content.centerY();
             for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
                 const auto& workspace = monitorWorkspaces[index];
