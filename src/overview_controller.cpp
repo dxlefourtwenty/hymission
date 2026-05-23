@@ -3691,8 +3691,8 @@ double OverviewController::niriMultiWorkspaceScale() const {
 
 double OverviewController::niriMultiWorkspaceGap() const {
     const double fallback = static_cast<double>(getConfigInt(m_handle, "general:gaps_out", 0));
-    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", 0.0);
-    return configured < 0.0 ? std::max(0.0, std::min(fallback, 2.0)) : std::max(0.0, std::min(configured, 2.0));
+    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", -1.0);
+    return configured < 0.0 ? std::max(0.0, fallback) : std::max(0.0, configured);
 }
 
 double OverviewController::niriWorkspaceScale() const {
@@ -11432,7 +11432,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
             const double gap = niriMultiWorkspaceGap();
-            const double laneStep = std::max(1.0, std::min(laneHeight + gap, content.height * 0.18));
+            const double laneStep = std::max(1.0, laneHeight + gap);
             const double centerY = content.centerY();
             for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
                 const auto& workspace = monitorWorkspaces[index];
