@@ -13,6 +13,7 @@
 #include <ranges>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -159,14 +160,11 @@ OverviewController* g_controller = nullptr;
 
 bool g_niriStripSnapshotSingleWorkspaceOnly = false;
 
-std::function<SDispatchResult(std::string)> g_moveWindowDispatcherOriginal;
-std::function<SDispatchResult(std::string)> g_swapWindowDispatcherOriginal;
-std::function<SDispatchResult(std::string)> g_moveToWorkspaceDispatcherOriginal;
-std::function<SDispatchResult(std::string)> g_moveToWorkspaceSilentDispatcherOriginal;
-bool g_moveWindowDispatcherWrapped = false;
-bool g_swapWindowDispatcherWrapped = false;
-bool g_moveToWorkspaceDispatcherWrapped = false;
-bool g_moveToWorkspaceSilentDispatcherWrapped = false;
+bool isOverviewEditingDispatcherCandidate(std::string_view name) {
+    return name == "movewindow" || name == "swapwindow" || name == "movetoworkspace" || name == "movetoworkspacesilent" || name == "moveactive" ||
+        name == "resizeactive" || name == "swapactive" || name.starts_with("movewindow") || name.starts_with("swapwindow") ||
+        name.starts_with("movetoworkspace") || name.starts_with("resizewindow");
+}
 
 enum class GestureDispatcherKind : uint8_t {
     Toggle,
@@ -1272,6 +1270,7 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
 
 struct ScrollingOverviewGeometry {
     Rect        sourceGlobal;
+    Rect        anchorGlobal;
     Rect        baseGlobal;
     GestureAxis primaryAxis = GestureAxis::Horizontal;
 };
@@ -1330,8 +1329,29 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
     std::optional<Rect> targetSource;
+    std::optional<Rect> targetAnchor;
     for (const auto& columnEntry : columns) {
         const auto& column = columnEntry.column;
+        Rect        columnBounds{};
+        bool        hasColumnBounds = false;
+
+        for (const auto& candidate : column->targetDatas) {
+            if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
+                continue;
+
+            const Rect candidateBounds = makeRect(candidate->layoutBox.x, candidate->layoutBox.y, candidate->layoutBox.width, candidate->layoutBox.height);
+            if (!hasColumnBounds) {
+                columnBounds = candidateBounds;
+                hasColumnBounds = true;
+            } else {
+                const double minX = std::min(columnBounds.x, candidateBounds.x);
+                const double minY = std::min(columnBounds.y, candidateBounds.y);
+                const double maxX = std::max(columnBounds.x + columnBounds.width, candidateBounds.x + candidateBounds.width);
+                const double maxY = std::max(columnBounds.y + columnBounds.height, candidateBounds.y + candidateBounds.height);
+                columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+            }
+        }
+
         for (const auto& candidate : column->targetDatas) {
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
@@ -1340,6 +1360,11 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
                 continue;
 
             targetSource = centeredSurfaceRectInLayoutBox(candidate->layoutBox, fallbackGlobal);
+            if (hasColumnBounds) {
+                const double anchorX = horizontal ? (columnBounds.x + columnBounds.width * 0.5) : baseGlobal.centerX();
+                const double anchorY = horizontal ? baseGlobal.centerY() : (columnBounds.y + columnBounds.height * 0.5);
+                targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
+            }
             break;
         }
 
@@ -1352,6 +1377,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
     return ScrollingOverviewGeometry{
         .sourceGlobal = *targetSource,
+        .anchorGlobal = targetAnchor.value_or(*targetSource),
         .baseGlobal = baseGlobal,
         .primaryAxis = horizontal ? GestureAxis::Horizontal : GestureAxis::Vertical,
     };
@@ -3139,25 +3165,7 @@ SDispatchResult OverviewController::focusWorkspaceOnCurrentMonitorDispatcherHook
 }
 
 SDispatchResult OverviewController::layoutMessageDispatcherHook(std::string args) {
-    if (!m_layoutMessageOriginal)
-        return {};
-
-    const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
-    const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
-    if (overviewActive && selectedBefore) {
-        m_state.focusDuringOverview = selectedBefore;
-        syncRealFocusDuringOverview(selectedBefore, true);
-    }
-
-    const auto result = m_layoutMessageOriginal(std::move(args));
-
-    if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
-        const auto selectedAfter = selectedWindow() ? selectedWindow() : selectedBefore;
-        rebuildVisibleState(selectedAfter, true);
-        refreshNiriScrollingOverviewAfterFocusDispatcher("layoutmsg");
-    }
-
-    return result;
+    return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args));
 }
 
 SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
@@ -4009,14 +4017,19 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     damageOwnedMonitors();
 }
 
-void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source) {
+void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow) {
     if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
         return;
 
-    const auto focused = Desktop::focusState()->window();
-    if (focused && hasManagedWindow(focused)) {
-        selectWindowInState(m_state, focused);
-        (void)syncScrollingWorkspaceSpotOnWindow(focused);
+    PHLWINDOW focusTarget;
+    if (preferredWindow && hasManagedWindow(preferredWindow))
+        focusTarget = preferredWindow;
+    else if (const auto focused = Desktop::focusState()->window(); focused && hasManagedWindow(focused))
+        focusTarget = focused;
+
+    if (focusTarget) {
+        selectWindowInState(m_state, focusTarget);
+        (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
@@ -6103,35 +6116,40 @@ bool OverviewController::installHooks() {
     m_moveFocusDispatcherWrapped =
         wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
 
-    const auto wrapOverviewEditingDispatcher = [this](const char* name, std::function<SDispatchResult(std::string)>& original, bool& wrapped) {
-        auto* originalPtr = &original;
-        wrapped = wrapDispatcher(name, original, [this, originalPtr, name](std::string args) -> SDispatchResult {
-            if (!originalPtr || !*originalPtr)
+    m_overviewEditingDispatchersOriginal.clear();
+    std::vector<std::string> overviewEditingDispatchers = {
+        "movewindow",
+        "swapwindow",
+        "movetoworkspace",
+        "movetoworkspacesilent",
+        "moveactive",
+        "resizeactive",
+        "movewindowpixel",
+        "resizewindowpixel",
+    };
+    if (g_pKeybindManager) {
+        for (const auto& [name, _] : g_pKeybindManager->m_dispatchers) {
+            if (!isOverviewEditingDispatcherCandidate(name))
+                continue;
+            if (std::ranges::find(overviewEditingDispatchers, name) == overviewEditingDispatchers.end())
+                overviewEditingDispatchers.push_back(name);
+        }
+    }
+
+    const auto wrapOverviewEditingDispatcher = [this](const std::string& name) {
+        DispatcherHandler original;
+        const bool wrapped = wrapDispatcher(name, original, [this, name](std::string args) -> SDispatchResult {
+            const auto it = m_overviewEditingDispatchersOriginal.find(name);
+            if (it == m_overviewEditingDispatchersOriginal.end())
                 return {};
-
-            const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
-            const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
-            if (overviewActive && selectedBefore) {
-                m_state.focusDuringOverview = selectedBefore;
-                syncRealFocusDuringOverview(selectedBefore, true);
-            }
-
-            const auto result = (*originalPtr)(std::move(args));
-
-            if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
-                const auto selectedAfter = selectedWindow() ? selectedWindow() : selectedBefore;
-                rebuildVisibleState(selectedAfter, true);
-                refreshNiriScrollingOverviewAfterFocusDispatcher(name);
-            }
-
-            return result;
+            return runOverviewEditingDispatcher(name.c_str(), &it->second, std::move(args));
         });
+        if (wrapped)
+            m_overviewEditingDispatchersOriginal[name] = std::move(original);
     };
 
-    wrapOverviewEditingDispatcher("movewindow", g_moveWindowDispatcherOriginal, g_moveWindowDispatcherWrapped);
-    wrapOverviewEditingDispatcher("swapwindow", g_swapWindowDispatcherOriginal, g_swapWindowDispatcherWrapped);
-    wrapOverviewEditingDispatcher("movetoworkspace", g_moveToWorkspaceDispatcherOriginal, g_moveToWorkspaceDispatcherWrapped);
-    wrapOverviewEditingDispatcher("movetoworkspacesilent", g_moveToWorkspaceSilentDispatcherOriginal, g_moveToWorkspaceSilentDispatcherWrapped);
+    for (const auto& dispatcher : overviewEditingDispatchers)
+        wrapOverviewEditingDispatcher(dispatcher);
     (void)hookFunction("begin", "CWorkspaceSwipeGesture::begin(", m_workspaceSwipeBeginFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeBegin));
     (void)hookFunction("update", "CWorkspaceSwipeGesture::update(", m_workspaceSwipeUpdateFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeUpdate));
     (void)hookFunction("end", "CWorkspaceSwipeGesture::end(", m_workspaceSwipeEndFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeEnd));
@@ -6165,14 +6183,6 @@ bool OverviewController::installHooks() {
         m_layoutMessageOriginal = nullptr;
     if (!m_moveFocusDispatcherWrapped)
         m_moveFocusOriginal = nullptr;
-    if (!g_moveWindowDispatcherWrapped)
-        g_moveWindowDispatcherOriginal = nullptr;
-    if (!g_swapWindowDispatcherWrapped)
-        g_swapWindowDispatcherOriginal = nullptr;
-    if (!g_moveToWorkspaceDispatcherWrapped)
-        g_moveToWorkspaceDispatcherOriginal = nullptr;
-    if (!g_moveToWorkspaceSilentDispatcherWrapped)
-        g_moveToWorkspaceSilentDispatcherOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -6330,6 +6340,54 @@ bool OverviewController::wrapDispatcher(const std::string& name, DispatcherHandl
     return true;
 }
 
+SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args) {
+    if (!original || !*original)
+        return {};
+
+    const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
+    const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
+    if (overviewActive && selectedBefore) {
+        m_state.focusDuringOverview = selectedBefore;
+        syncRealFocusDuringOverview(selectedBefore, true);
+        if (Desktop::focusState()->window() != selectedBefore) {
+            m_pendingLiveFocusWorkspaceChangeTarget = selectedBefore;
+            focusWindowCompat(selectedBefore, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == selectedBefore)
+                m_pendingLiveFocusWorkspaceChangeTarget.reset();
+        }
+        (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
+    }
+
+    const auto result = (*original)(std::move(args));
+
+    if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
+        std::vector<PHLWORKSPACE> affectedWorkspaces;
+        affectedWorkspaces.reserve(3);
+        const auto addWorkspace = [&](const PHLWORKSPACE& workspace) {
+            if (workspace && !containsHandle(affectedWorkspaces, workspace))
+                affectedWorkspaces.push_back(workspace);
+        };
+
+        addWorkspace(selectedBefore ? selectedBefore->m_workspace : PHLWORKSPACE{});
+        if (const auto focusedAfter = Desktop::focusState()->window(); focusedAfter)
+            addWorkspace(focusedAfter->m_workspace);
+        if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace)
+            addWorkspace(activeWorkspace);
+        for (const auto& workspace : affectedWorkspaces)
+            refreshWorkspaceLayoutSnapshot(workspace);
+
+        const auto focusAfter = Desktop::focusState()->window();
+        PHLWINDOW preferredSelected = selectedBefore;
+        if ((!preferredSelected || !preferredSelected->m_isMapped || !hasManagedWindow(preferredSelected)) && focusAfter && hasManagedWindow(focusAfter))
+            preferredSelected = focusAfter;
+
+        rebuildVisibleState(preferredSelected, true);
+        refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
+    }
+
+    return result;
+}
+
 void OverviewController::restoreWrappedDispatchers() {
     if (!g_pKeybindManager)
         return;
@@ -6351,10 +6409,11 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
     restore("layoutmsg", m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
     restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
-    restore("movewindow", g_moveWindowDispatcherWrapped, g_moveWindowDispatcherOriginal);
-    restore("swapwindow", g_swapWindowDispatcherWrapped, g_swapWindowDispatcherOriginal);
-    restore("movetoworkspace", g_moveToWorkspaceDispatcherWrapped, g_moveToWorkspaceDispatcherOriginal);
-    restore("movetoworkspacesilent", g_moveToWorkspaceSilentDispatcherWrapped, g_moveToWorkspaceSilentDispatcherOriginal);
+    for (auto& [name, original] : m_overviewEditingDispatchersOriginal) {
+        if (original)
+            g_pKeybindManager->m_dispatchers[name] = std::move(original);
+    }
+    m_overviewEditingDispatchersOriginal.clear();
 }
 
 void* OverviewController::findFunction(const std::string& symbolName, const std::string& demangledNeedle) const {
@@ -11395,7 +11454,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
-    const bool niriDirectSingleWorkspaceOverview = niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
+    PHLWORKSPACE stripPreviewWorkspace;
+    if (g_niriStripSnapshotSingleWorkspaceOnly) {
+        const auto stripOverride = std::find_if(workspaceOverrides.begin(), workspaceOverrides.end(),
+                                                [&](const WorkspaceOverride& override) { return override.monitorId == monitor->m_id && override.workspace; });
+        if (stripOverride != workspaceOverrides.end())
+            stripPreviewWorkspace = stripOverride->workspace;
+    }
+    const auto niriDirectWorkspace = stripPreviewWorkspace ? stripPreviewWorkspace : state.ownerWorkspace;
+    const bool niriDirectSingleWorkspaceOverview =
+        niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(niriDirectWorkspace);
     const bool niriExpandsSingleWorkspaceOverview = niriDirectSingleWorkspaceOverview && !g_niriStripSnapshotSingleWorkspaceOnly;
     if (niriDirectSingleWorkspaceOverview)
         state.collectionPolicy.onlyActiveMonitor = true;
@@ -11690,7 +11758,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     };
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
                                                std::size_t windowIndex, bool allowPinned,
-                                               std::optional<GestureAxis> overflowAxis) -> std::optional<WindowSlot> {
+                                               std::optional<GestureAxis> overflowAxis,
+                                               std::optional<Rect> anchorOverride) -> std::optional<WindowSlot> {
         if (!allowDirectNiriOverviewLayout)
             return std::nullopt;
 
@@ -11725,8 +11794,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (scale <= 0.0)
             return std::nullopt;
 
-        Rect anchorSourceGlobal = sourceGlobal;
-        if (window->m_workspace) {
+        Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
+        if (!anchorOverride && window->m_workspace) {
             PHLWINDOW anchorWindow;
             if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
                 anchorWindow = state.focusDuringOverview;
@@ -11768,7 +11837,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (!isFloatingOverviewWindow(window))
             return std::nullopt;
 
-        return niriOverviewSlotForSource(window, targetMonitor, sourceGlobal, niriFloatingOverviewBaseGlobalRect(targetMonitor), windowIndex, true, std::nullopt);
+        return niriOverviewSlotForSource(window, targetMonitor, sourceGlobal, niriFloatingOverviewBaseGlobalRect(targetMonitor), windowIndex, true, std::nullopt,
+                                         std::nullopt);
     };
     const auto niriScrollingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
                                                         std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
@@ -11779,16 +11849,18 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
         std::optional<GestureAxis> overflowAxis;
+        std::optional<Rect>        anchorForOverview;
         if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             overflowAxis = rowGeometry->primaryAxis;
+            anchorForOverview = rowGeometry->anchorGlobal;
         } else {
             const CBox workAreaBox = window && window->m_workspace && window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
             baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         }
 
-        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis);
+        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorForOverview);
         if (slot)
             resolvedSourceGlobal = sourceForOverview;
         return slot;

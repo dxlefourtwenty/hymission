@@ -454,7 +454,7 @@ class OverviewController {
     [[nodiscard]] double       scrollLayoutPrimaryDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale) const;
     [[nodiscard]] bool         scrollActiveLayoutByGestureDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale);
     void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source);
-    void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source);
+    void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {});
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
     [[nodiscard]] bool         allowsWorkspaceSwitchInOverview() const;
@@ -497,6 +497,7 @@ class OverviewController {
     [[nodiscard]] void*        findFunction(const std::string& symbolName, const std::string& demangledNeedle) const;
     [[nodiscard]] void*        findFunction(const std::string& symbolName, const std::vector<std::string>& demangledNeedles) const;
     [[nodiscard]] bool         wrapDispatcher(const std::string& name, DispatcherHandler& original, DispatcherHandler replacement);
+    [[nodiscard]] SDispatchResult runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args);
     void                       restoreWrappedDispatchers();
 
     [[nodiscard]] bool         isAnimating() const;
@@ -718,6 +719,7 @@ class OverviewController {
     DispatcherHandler         m_focusWorkspaceOnCurrentMonitorOriginal;
     DispatcherHandler         m_layoutMessageOriginal;
     DispatcherHandler         m_moveFocusOriginal;
+    std::unordered_map<std::string, DispatcherHandler> m_overviewEditingDispatchersOriginal;
     bool                      m_fullscreenActiveDispatcherWrapped = false;
     bool                      m_fullscreenStateDispatcherWrapped = false;
     bool                      m_changeWorkspaceDispatcherWrapped = false;
