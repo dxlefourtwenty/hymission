@@ -3127,6 +3127,64 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};
 
+    const auto requestedDirection = [&]() -> std::optional<Direction> {
+        std::string lowered = asciiLowerCopy(args);
+        lowered.erase(std::remove_if(lowered.begin(), lowered.end(), [](unsigned char ch) { return std::isspace(ch) != 0; }), lowered.end());
+
+        if (lowered == "l" || lowered == "left")
+            return Direction::Left;
+        if (lowered == "r" || lowered == "right")
+            return Direction::Right;
+        if (lowered == "u" || lowered == "up")
+            return Direction::Up;
+        if (lowered == "d" || lowered == "down")
+            return Direction::Down;
+
+        return std::nullopt;
+    }();
+
+    if (isVisible() && m_state.phase == Phase::Active && niriModeEnabled() && requestedDirection &&
+        (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right) && m_state.selectedIndex &&
+        *m_state.selectedIndex < m_state.windows.size()) {
+        const auto selectedWindow = m_state.windows[*m_state.selectedIndex].window;
+        const auto selectedWorkspace = selectedWindow ? selectedWindow->m_workspace : PHLWORKSPACE{};
+
+        if (selectedWorkspace) {
+            const auto rects = targetRects();
+            bool hasSameWorkspaceNeighborOnRequestedSide = false;
+
+            if (*m_state.selectedIndex < rects.size()) {
+                const Rect& current = rects[*m_state.selectedIndex];
+
+                for (std::size_t index = 0; index < m_state.windows.size() && index < rects.size(); ++index) {
+                    if (index == *m_state.selectedIndex)
+                        continue;
+
+                    const auto candidateWindow = m_state.windows[index].window;
+                    if (!candidateWindow || candidateWindow->m_workspace != selectedWorkspace)
+                        continue;
+
+                    const double dx = rects[index].centerX() - current.centerX();
+                    const double primary = *requestedDirection == Direction::Left ? -dx : dx;
+                    if (primary > 0.0) {
+                        hasSameWorkspaceNeighborOnRequestedSide = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasSameWorkspaceNeighborOnRequestedSide) {
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] niri movefocus blocked at workspace edge direction="
+                        << (*requestedDirection == Direction::Left ? "left" : "right") << " workspace=" << selectedWorkspace->m_name;
+                    debugLog(out.str());
+                }
+                return {};
+            }
+        }
+    }
+
     const auto result = m_moveFocusOriginal(std::move(args));
     refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus");
     return result;
@@ -9981,7 +10039,59 @@ void OverviewController::moveSelection(Direction direction) {
         return;
     }
 
-    if (const auto next = chooseDirectionalNeighbor(targetRects(), *m_state.selectedIndex, direction)) {
+    const auto rects = targetRects();
+
+    if (niriModeEnabled() && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
+        *m_state.selectedIndex < rects.size()) {
+        const auto selectedWindow = m_state.windows[*m_state.selectedIndex].window;
+        const auto selectedWorkspace = selectedWindow ? selectedWindow->m_workspace : PHLWORKSPACE{};
+        if (selectedWorkspace) {
+            const Rect& current = rects[*m_state.selectedIndex];
+            std::optional<std::size_t> bestIndex;
+            double bestScore = std::numeric_limits<double>::infinity();
+            double bestDistance = std::numeric_limits<double>::infinity();
+
+            for (std::size_t index = 0; index < m_state.windows.size() && index < rects.size(); ++index) {
+                if (index == *m_state.selectedIndex)
+                    continue;
+
+                const auto candidateWindow = m_state.windows[index].window;
+                if (!candidateWindow || candidateWindow->m_workspace != selectedWorkspace)
+                    continue;
+
+                const Rect& candidate = rects[index];
+                const double dx = candidate.centerX() - current.centerX();
+                const double dy = candidate.centerY() - current.centerY();
+                const double primary = direction == Direction::Left ? -dx : dx;
+                if (primary <= 0.0)
+                    continue;
+
+                const double secondary = std::abs(dy);
+                const double score = primary * primary + std::pow(secondary * 1.5, 2.0);
+                const double distance = dx * dx + dy * dy;
+
+                if (!bestIndex || score < bestScore || (score == bestScore && distance < bestDistance) ||
+                    (score == bestScore && distance == bestDistance && index < *bestIndex)) {
+                    bestIndex = index;
+                    bestScore = score;
+                    bestDistance = distance;
+                }
+            }
+
+            if (!bestIndex)
+                return;
+
+            if (*bestIndex == *m_state.selectedIndex)
+                return;
+
+            m_state.selectedIndex = *bestIndex;
+            syncFocusDuringOverviewFromSelection(true, "keyboard-nav");
+            damageOwnedMonitors();
+            return;
+        }
+    }
+
+    if (const auto next = chooseDirectionalNeighbor(rects, *m_state.selectedIndex, direction)) {
         if (*next == *m_state.selectedIndex)
             return;
         m_state.selectedIndex = *next;
