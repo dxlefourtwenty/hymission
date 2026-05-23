@@ -157,6 +157,8 @@ constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 OverviewController* g_controller = nullptr;
 
+bool g_niriStripSnapshotSingleWorkspaceOnly = false;
+
 enum class GestureDispatcherKind : uint8_t {
     Toggle,
     Open,
@@ -10513,6 +10515,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             .workspaceName = entry.workspaceName,
             .syntheticEmpty = false,
         }};
+        ScopedFlag niriStripSingleWorkspace(g_niriStripSnapshotSingleWorkspaceOnly, niriModeEnabled());
         previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false);
         previewState.phase = Phase::Active;
         previewState.animationProgress = 1.0;
@@ -11170,8 +11173,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
-    const bool niriSingleWorkspaceOverview = niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
-    if (niriSingleWorkspaceOverview)
+    const bool niriDirectSingleWorkspaceOverview = niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
+    const bool niriExpandsSingleWorkspaceOverview = niriDirectSingleWorkspaceOverview && !g_niriStripSnapshotSingleWorkspaceOnly;
+    if (niriDirectSingleWorkspaceOverview)
         state.collectionPolicy.onlyActiveMonitor = true;
     state.suppressWorkspaceStrip = suppressWorkspaceStrip;
     const auto addMonitor = [&](const PHLMONITOR& candidate) {
@@ -11199,7 +11203,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         return it == workspaceOverrides.end() ? nullptr : &*it;
     };
 
-    if (state.collectionPolicy.onlyActiveWorkspace && !niriSingleWorkspaceOverview) {
+    if (state.collectionPolicy.onlyActiveWorkspace && !niriExpandsSingleWorkspaceOverview) {
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
                 continue;
@@ -11386,7 +11390,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     config.preserveInputOrder = preserveExistingOrder || orderByRecentUse;
     config.forceRowGroups = useWorkspaceRows;
     config.rankScaleByInputOrder = orderByRecentUse;
-    const bool allowDirectNiriOverviewLayout = niriSingleWorkspaceOverview;
+    const bool allowDirectNiriOverviewLayout = niriDirectSingleWorkspaceOverview;
 
     if (allowDirectNiriOverviewLayout) {
         for (const auto& candidateMonitor : state.participatingMonitors) {
@@ -11486,11 +11490,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return std::nullopt;
 
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+        const double maxNiriScale = g_niriStripSnapshotSingleWorkspaceOnly ?
+            std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_scale", 0.38), 0.05, 1.0) :
+            niriMultiWorkspaceScale();
         if (overflowAxis) {
-            const double fourViewportScale = previewArea.width / std::max(1.0, baseGlobal.width * 4.0);
-            scale = std::max(config.minSlotScale, std::min({scale, niriMultiWorkspaceScale(), fourViewportScale}));
+            const double visibleViewportCount = g_niriStripSnapshotSingleWorkspaceOnly ? 2.75 : 4.0;
+            const double viewportScale = previewArea.width / std::max(1.0, baseGlobal.width * visibleViewportCount);
+            scale = std::max(config.minSlotScale, std::min({scale, maxNiriScale, viewportScale}));
         } else {
-            scale = std::max(config.minSlotScale, std::min(scale, niriMultiWorkspaceScale()));
+            scale = std::max(config.minSlotScale, std::min(scale, maxNiriScale));
         }
         if (scale <= 0.0)
             return std::nullopt;
