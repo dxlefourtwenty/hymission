@@ -438,6 +438,8 @@ class OverviewController {
     [[nodiscard]] bool         niriModeEnabled() const;
     [[nodiscard]] double       niriScrollPixelsPerDelta() const;
     [[nodiscard]] double       niriOverviewScale() const;
+    [[nodiscard]] double       niriMultiWorkspaceScale() const;
+    [[nodiscard]] double       niriMultiWorkspaceGap() const;
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         niriOverviewAnimationsEnabled() const;
     [[nodiscard]] bool         debugLogsEnabled() const;

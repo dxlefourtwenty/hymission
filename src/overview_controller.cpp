@@ -2636,9 +2636,33 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
     }
 
     if (effectiveHoveredIndex) {
+        const auto clickedIndex = *effectiveHoveredIndex;
+        const auto clickedWindow = clickedIndex < m_state.windows.size() ? m_state.windows[clickedIndex].window : PHLWINDOW{};
+
+        if (niriModeEnabled() && m_state.selectedIndex && clickedIndex != *m_state.selectedIndex) {
+            const auto previousSelectedWindow = selectedWindow();
+            m_state.selectedIndex = clickedIndex;
+            m_state.focusDuringOverview = clickedWindow;
+            m_queuedOverviewSelectionTarget.reset();
+            m_queuedOverviewSelectionSyncScrollingSpot = false;
+            m_queuedOverviewSelectionCenterCursor = false;
+            m_queuedOverviewLiveFocusTarget.reset();
+            m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+            m_queuedOverviewLiveFocusCenterCursor = false;
+            m_pressedWindowIndex.reset();
+            m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
+            latchHoverSelectionAnchor(m_pressedWindowPointer);
+            if (clickedWindow)
+                (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
+            updateSelectedWindowLayout(previousSelectedWindow);
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center");
+            damageOwnedMonitors();
+            return true;
+        }
+
         const auto previousSelectedWindow = selectedWindow();
         m_state.selectedIndex = effectiveHoveredIndex;
-        m_state.focusDuringOverview = m_state.windows[*effectiveHoveredIndex].window;
+        m_state.focusDuringOverview = clickedWindow;
         m_queuedOverviewSelectionTarget.reset();
         m_queuedOverviewSelectionSyncScrollingSpot = false;
         m_queuedOverviewSelectionCenterCursor = false;
@@ -3661,6 +3685,16 @@ double OverviewController::niriOverviewScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_scale", 0.65), 0.05, 1.0);
 }
 
+double OverviewController::niriMultiWorkspaceScale() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.40), 0.05, 1.0);
+}
+
+double OverviewController::niriMultiWorkspaceGap() const {
+    const double fallback = static_cast<double>(getConfigInt(m_handle, "general:gaps_out", 0));
+    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", -1.0);
+    return configured < 0.0 ? std::max(0.0, fallback) : std::max(0.0, configured);
+}
+
 double OverviewController::niriWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_workspace_scale", 1.0), 0.05, 1.0);
 }
@@ -3945,11 +3979,11 @@ double OverviewController::gestureSwipeDirectionLockThreshold() const {
 }
 
 bool OverviewController::allowsWorkspaceSwitchInOverview() const {
-    return isVisible() && m_state.collectionPolicy.onlyActiveWorkspace && workspaceChangeKeepsOverviewEnabled();
+    return isVisible() && (m_state.collectionPolicy.onlyActiveWorkspace || niriModeEnabled()) && workspaceChangeKeepsOverviewEnabled();
 }
 
 bool OverviewController::shouldBlockWorkspaceSwitchInOverview() const {
-    return isVisible() && !m_state.collectionPolicy.onlyActiveWorkspace;
+    return isVisible() && !m_state.collectionPolicy.onlyActiveWorkspace && !niriModeEnabled();
 }
 
 bool OverviewController::shouldOverrideWorkspaceNames(const State& state) const {
@@ -4068,6 +4102,49 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
 
     if (!monitor || step == 0 || !monitor->m_activeWorkspace || monitor->m_activeWorkspace->m_isSpecialWorkspace)
         return false;
+
+    if (niriModeEnabled() && !m_state.managedWorkspaces.empty()) {
+        PHLWORKSPACE currentWorkspace = monitor->m_activeWorkspace;
+        if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
+            const auto selected = m_state.windows[*m_state.selectedIndex].window;
+            if (selected && selected->m_workspace && selected->m_workspace->m_monitor.lock() == monitor)
+                currentWorkspace = selected->m_workspace;
+        } else if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
+                   m_state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor) {
+            currentWorkspace = m_state.focusDuringOverview->m_workspace;
+        }
+
+        std::vector<PHLWORKSPACE> monitorWorkspaces;
+        for (const auto& candidate : m_state.managedWorkspaces) {
+            if (!candidate || candidate->m_isSpecialWorkspace || candidate->m_id < 0 || candidate->m_monitor.lock() != monitor)
+                continue;
+            monitorWorkspaces.push_back(candidate);
+        }
+
+        std::stable_sort(monitorWorkspaces.begin(), monitorWorkspaces.end(), [](const PHLWORKSPACE& lhs, const PHLWORKSPACE& rhs) {
+            if (!lhs || !rhs)
+                return static_cast<bool>(lhs);
+            return lhs->m_id < rhs->m_id;
+        });
+
+        const auto it = std::find(monitorWorkspaces.begin(), monitorWorkspaces.end(), currentWorkspace);
+        if (it == monitorWorkspaces.end())
+            return false;
+
+        const long long currentIndex = static_cast<long long>(std::distance(monitorWorkspaces.begin(), it));
+        const long long targetIndex = currentIndex + (step < 0 ? -1 : 1);
+        if (targetIndex < 0 || targetIndex >= static_cast<long long>(monitorWorkspaces.size()))
+            return false;
+
+        workspace = monitorWorkspaces[static_cast<std::size_t>(targetIndex)];
+        if (!workspace)
+            return false;
+
+        workspaceId = workspace->m_id;
+        workspaceName = workspace->m_name;
+        syntheticEmpty = false;
+        return true;
+    }
 
     const bool        useRelative = gestureSwipeUseRelativeEnabled();
     const std::string selector = step < 0 ? (useRelative ? "r-1" : "m-1") : (useRelative ? "r+1" : "m+1");
@@ -6250,7 +6327,7 @@ bool OverviewController::hasManagedWindow(const PHLWINDOW& window) const {
 }
 
 bool OverviewController::usesDirectNiriScrollingOverview(const State& state) const {
-    if (!niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
+    if (!niriModeEnabled())
         return false;
 
     return std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
@@ -9481,8 +9558,9 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
     m_state.hoveredStripIndex = hitTestStripTarget(pointer.x, pointer.y);
     m_state.hoveredIndex = (draggingWindow || m_state.hoveredStripIndex) ? std::optional<std::size_t>{} : hitTestTarget(pointer.x, pointer.y);
 
+    const bool disableHoverSelection = niriModeEnabled();
     const bool wantsSelectionRetarget =
-        !draggingWindow && syncSelection && m_state.hoveredIndex && focusFollowsMouseEnabled() && allowSelectionRetarget &&
+        !disableHoverSelection && !draggingWindow && syncSelection && m_state.hoveredIndex && focusFollowsMouseEnabled() && allowSelectionRetarget &&
         (!m_state.selectedIndex || *m_state.hoveredIndex != *m_state.selectedIndex);
     const bool wantsImmediateRetarget = wantsSelectionRetarget && syncRealFocus;
     const bool retargetBlockedByRelayout = expandSelectedWindowEnabled() && m_state.relayoutActive && !wantsImmediateRetarget;
@@ -11080,7 +11158,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
-    state.suppressWorkspaceStrip = suppressWorkspaceStrip;
+    if (niriModeEnabled()) {
+        state.collectionPolicy.onlyActiveWorkspace = false;
+        state.collectionPolicy.onlyActiveMonitor = true;
+    }
+    state.suppressWorkspaceStrip = suppressWorkspaceStrip || niriModeEnabled();
     const auto addMonitor = [&](const PHLMONITOR& candidate) {
         if (!candidate || containsHandle(state.participatingMonitors, candidate))
             return;
@@ -11287,12 +11369,70 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
     std::unordered_map<MONITORID, std::vector<WindowInput>> inputsByMonitor;
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
+    std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
     config.preserveInputOrder = preserveExistingOrder || orderByRecentUse;
     config.forceRowGroups = useWorkspaceRows;
     config.rankScaleByInputOrder = orderByRecentUse;
-    const bool allowDirectNiriOverviewLayout = state.collectionPolicy.onlyActiveWorkspace;
+    const bool allowDirectNiriOverviewLayout = niriModeEnabled();
+
+    if (allowDirectNiriOverviewLayout) {
+        for (const auto& candidateMonitor : state.participatingMonitors) {
+            if (!candidateMonitor)
+                continue;
+
+            std::vector<PHLWORKSPACE> monitorWorkspaces;
+            for (const auto& workspace : state.managedWorkspaces) {
+                if (!workspace || workspace->m_isSpecialWorkspace)
+                    continue;
+
+                const auto workspaceMonitor = workspace->m_monitor.lock();
+                if (workspaceMonitor == candidateMonitor)
+                    monitorWorkspaces.push_back(workspace);
+            }
+
+            std::stable_sort(monitorWorkspaces.begin(), monitorWorkspaces.end(), [](const PHLWORKSPACE& lhs, const PHLWORKSPACE& rhs) {
+                if (!lhs || !rhs)
+                    return static_cast<bool>(lhs);
+                return lhs->m_id < rhs->m_id;
+            });
+
+            if (monitorWorkspaces.empty())
+                continue;
+
+            PHLWORKSPACE centerWorkspace = candidateMonitor->m_activeWorkspace;
+            if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
+                state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
+                centerWorkspace = state.focusDuringOverview->m_workspace;
+            } else if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
+                const auto selectedWindow = state.windows[*state.selectedIndex].window;
+                if (selectedWindow && selectedWindow->m_workspace && selectedWindow->m_workspace->m_monitor.lock() == candidateMonitor)
+                    centerWorkspace = selectedWindow->m_workspace;
+            }
+
+            std::size_t activeIndex = 0;
+            if (centerWorkspace) {
+                if (const auto it = std::find(monitorWorkspaces.begin(), monitorWorkspaces.end(), centerWorkspace); it != monitorWorkspaces.end())
+                    activeIndex = static_cast<std::size_t>(std::distance(monitorWorkspaces.begin(), it));
+            }
+
+            const Rect content = overviewContentRectForMonitor(candidateMonitor, state);
+            const double gap = niriMultiWorkspaceGap();
+            const double visibleScale = niriMultiWorkspaceScale();
+            const double laneHeight = std::max(1.0, content.height * visibleScale);
+            const double centerY = content.centerY();
+            for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
+                const auto& workspace = monitorWorkspaces[index];
+                if (!workspace)
+                    continue;
+
+                const double rowOffset = static_cast<double>(index) - static_cast<double>(activeIndex);
+                niriWorkspaceLaneById[workspace->m_id] = makeRect(content.x, centerY + rowOffset * (laneHeight + gap) - laneHeight * 0.5, content.width, laneHeight);
+            }
+        }
+    }
+
     const auto rowGroupForWindow = [&](const PHLWINDOW& window) -> std::size_t {
         if (!useWorkspaceRows)
             return 0;
@@ -11316,21 +11456,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (!allowDirectNiriOverviewLayout)
             return std::nullopt;
 
-        if (state.collectionPolicy.requestedScope == ScopeOverride::ForceAll)
-            return std::nullopt;
-
         if (!niriModeEnabled() || !window || !targetMonitor || (window->m_pinned && !allowPinned) || !window->m_workspace || !window->m_workspace->m_space ||
             !isScrollingWorkspace(window->m_workspace))
-            return std::nullopt;
-
-        if (!state.collectionPolicy.onlyActiveWorkspace && window->m_workspace != state.ownerWorkspace)
             return std::nullopt;
 
         auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
         if (!scrolling || !scrolling->m_scrollingData)
             return std::nullopt;
 
-        const Rect previewArea = overviewContentRectForMonitor(targetMonitor, state);
+        Rect previewArea = overviewContentRectForMonitor(targetMonitor, state);
+        if (const auto laneIt = niriWorkspaceLaneById.find(window->m_workspace->m_id); laneIt != niriWorkspaceLaneById.end())
+            previewArea = laneIt->second;
         if (previewArea.width <= 1.0 || previewArea.height <= 1.0)
             return std::nullopt;
 
@@ -11338,15 +11474,34 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return std::nullopt;
 
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
-        if (overflowAxis)
-            scale = std::max(config.minSlotScale, scale * niriOverviewScale());
+        if (overflowAxis) {
+            const double fourViewportScale = previewArea.width / std::max(1.0, baseGlobal.width * 4.0);
+            scale = std::max(config.minSlotScale, std::min({scale, niriMultiWorkspaceScale(), fourViewportScale}));
+        } else {
+            scale = std::max(config.minSlotScale, std::min(scale, niriMultiWorkspaceScale()));
+        }
         if (scale <= 0.0)
             return std::nullopt;
 
-        const double scaledViewportWidth = baseGlobal.width * scale;
-        const double scaledViewportHeight = baseGlobal.height * scale;
-        const double viewportX = previewArea.x + (previewArea.width - scaledViewportWidth) * 0.5;
-        const double viewportY = previewArea.y + (previewArea.height - scaledViewportHeight) * 0.5;
+        Rect anchorSourceGlobal = sourceGlobal;
+        if (window->m_workspace) {
+            PHLWINDOW anchorWindow;
+            if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
+                anchorWindow = state.focusDuringOverview;
+            else
+                anchorWindow = focusCandidateForWorkspace(window->m_workspace);
+
+            if (anchorWindow && anchorWindow->m_workspace == window->m_workspace) {
+                const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
+                const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
+                anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
+                if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
+                    anchorSourceGlobal = anchorRowGeometry->sourceGlobal;
+            }
+        }
+
+        const double viewportX = previewArea.centerX() - (anchorSourceGlobal.centerX() - baseGlobal.x) * scale;
+        const double viewportY = previewArea.centerY() - (anchorSourceGlobal.centerY() - baseGlobal.y) * scale;
         const double targetWidth = sourceGlobal.width * scale;
         const double targetHeight = sourceGlobal.height * scale;
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
