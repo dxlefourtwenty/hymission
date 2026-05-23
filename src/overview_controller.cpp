@@ -11807,7 +11807,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
                 anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
                 if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
-                    anchorSourceGlobal = anchorRowGeometry->sourceGlobal;
+                    anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
             }
         }
 
@@ -11849,18 +11849,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
         std::optional<GestureAxis> overflowAxis;
-        std::optional<Rect>        anchorForOverview;
         if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             overflowAxis = rowGeometry->primaryAxis;
-            anchorForOverview = rowGeometry->anchorGlobal;
         } else {
             const CBox workAreaBox = window && window->m_workspace && window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
             baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         }
 
-        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorForOverview);
+        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, std::nullopt);
         if (slot)
             resolvedSourceGlobal = sourceForOverview;
         return slot;
