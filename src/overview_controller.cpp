@@ -10515,7 +10515,8 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             .workspaceName = entry.workspaceName,
             .syntheticEmpty = false,
         }};
-        ScopedFlag niriStripSingleWorkspace(g_niriStripSnapshotSingleWorkspaceOnly, niriModeEnabled());
+        const bool niriStripPreview = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace && targetWorkspace && isScrollingWorkspace(targetWorkspace);
+        ScopedFlag niriStripSingleWorkspace(g_niriStripSnapshotSingleWorkspaceOnly, niriStripPreview);
         previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false);
         previewState.phase = Phase::Active;
         previewState.animationProgress = 1.0;
@@ -11491,10 +11492,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
         const double maxNiriScale = g_niriStripSnapshotSingleWorkspaceOnly ?
-            std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_scale", 0.38), 0.05, 1.0) :
+            std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_scale", 0.65), 0.05, 1.0) :
             niriMultiWorkspaceScale();
         if (overflowAxis) {
-            const double visibleViewportCount = g_niriStripSnapshotSingleWorkspaceOnly ? 2.75 : 4.0;
+            const double visibleViewportCount = g_niriStripSnapshotSingleWorkspaceOnly ? 1.85 : 4.0;
             const double viewportScale = previewArea.width / std::max(1.0, baseGlobal.width * visibleViewportCount);
             scale = std::max(config.minSlotScale, std::min({scale, maxNiriScale, viewportScale}));
         } else {
