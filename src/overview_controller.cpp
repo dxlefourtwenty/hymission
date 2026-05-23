@@ -159,6 +159,15 @@ OverviewController* g_controller = nullptr;
 
 bool g_niriStripSnapshotSingleWorkspaceOnly = false;
 
+std::function<SDispatchResult(std::string)> g_moveWindowDispatcherOriginal;
+std::function<SDispatchResult(std::string)> g_swapWindowDispatcherOriginal;
+std::function<SDispatchResult(std::string)> g_moveToWorkspaceDispatcherOriginal;
+std::function<SDispatchResult(std::string)> g_moveToWorkspaceSilentDispatcherOriginal;
+bool g_moveWindowDispatcherWrapped = false;
+bool g_swapWindowDispatcherWrapped = false;
+bool g_moveToWorkspaceDispatcherWrapped = false;
+bool g_moveToWorkspaceSilentDispatcherWrapped = false;
+
 enum class GestureDispatcherKind : uint8_t {
     Toggle,
     Open,
@@ -3133,8 +3142,21 @@ SDispatchResult OverviewController::layoutMessageDispatcherHook(std::string args
     if (!m_layoutMessageOriginal)
         return {};
 
+    const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
+    const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
+    if (overviewActive && selectedBefore) {
+        m_state.focusDuringOverview = selectedBefore;
+        syncRealFocusDuringOverview(selectedBefore, true);
+    }
+
     const auto result = m_layoutMessageOriginal(std::move(args));
-    refreshNiriScrollingOverviewAfterFocusDispatcher("layoutmsg");
+
+    if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
+        const auto selectedAfter = selectedWindow() ? selectedWindow() : selectedBefore;
+        rebuildVisibleState(selectedAfter, true);
+        refreshNiriScrollingOverviewAfterFocusDispatcher("layoutmsg");
+    }
+
     return result;
 }
 
@@ -6080,6 +6102,36 @@ bool OverviewController::installHooks() {
         wrapDispatcher("layoutmsg", m_layoutMessageOriginal, [this](std::string args) { return layoutMessageDispatcherHook(std::move(args)); });
     m_moveFocusDispatcherWrapped =
         wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
+
+    const auto wrapOverviewEditingDispatcher = [this](const char* name, std::function<SDispatchResult(std::string)>& original, bool& wrapped) {
+        auto* originalPtr = &original;
+        wrapped = wrapDispatcher(name, original, [this, originalPtr, name](std::string args) -> SDispatchResult {
+            if (!originalPtr || !*originalPtr)
+                return {};
+
+            const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
+            const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
+            if (overviewActive && selectedBefore) {
+                m_state.focusDuringOverview = selectedBefore;
+                syncRealFocusDuringOverview(selectedBefore, true);
+            }
+
+            const auto result = (*originalPtr)(std::move(args));
+
+            if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
+                const auto selectedAfter = selectedWindow() ? selectedWindow() : selectedBefore;
+                rebuildVisibleState(selectedAfter, true);
+                refreshNiriScrollingOverviewAfterFocusDispatcher(name);
+            }
+
+            return result;
+        });
+    };
+
+    wrapOverviewEditingDispatcher("movewindow", g_moveWindowDispatcherOriginal, g_moveWindowDispatcherWrapped);
+    wrapOverviewEditingDispatcher("swapwindow", g_swapWindowDispatcherOriginal, g_swapWindowDispatcherWrapped);
+    wrapOverviewEditingDispatcher("movetoworkspace", g_moveToWorkspaceDispatcherOriginal, g_moveToWorkspaceDispatcherWrapped);
+    wrapOverviewEditingDispatcher("movetoworkspacesilent", g_moveToWorkspaceSilentDispatcherOriginal, g_moveToWorkspaceSilentDispatcherWrapped);
     (void)hookFunction("begin", "CWorkspaceSwipeGesture::begin(", m_workspaceSwipeBeginFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeBegin));
     (void)hookFunction("update", "CWorkspaceSwipeGesture::update(", m_workspaceSwipeUpdateFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeUpdate));
     (void)hookFunction("end", "CWorkspaceSwipeGesture::end(", m_workspaceSwipeEndFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeEnd));
@@ -6113,6 +6165,14 @@ bool OverviewController::installHooks() {
         m_layoutMessageOriginal = nullptr;
     if (!m_moveFocusDispatcherWrapped)
         m_moveFocusOriginal = nullptr;
+    if (!g_moveWindowDispatcherWrapped)
+        g_moveWindowDispatcherOriginal = nullptr;
+    if (!g_swapWindowDispatcherWrapped)
+        g_swapWindowDispatcherOriginal = nullptr;
+    if (!g_moveToWorkspaceDispatcherWrapped)
+        g_moveToWorkspaceDispatcherOriginal = nullptr;
+    if (!g_moveToWorkspaceSilentDispatcherWrapped)
+        g_moveToWorkspaceSilentDispatcherOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -6291,6 +6351,10 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
     restore("layoutmsg", m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
     restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
+    restore("movewindow", g_moveWindowDispatcherWrapped, g_moveWindowDispatcherOriginal);
+    restore("swapwindow", g_swapWindowDispatcherWrapped, g_swapWindowDispatcherOriginal);
+    restore("movetoworkspace", g_moveToWorkspaceDispatcherWrapped, g_moveToWorkspaceDispatcherOriginal);
+    restore("movetoworkspacesilent", g_moveToWorkspaceSilentDispatcherWrapped, g_moveToWorkspaceSilentDispatcherOriginal);
 }
 
 void* OverviewController::findFunction(const std::string& symbolName, const std::string& demangledNeedle) const {
@@ -10024,6 +10088,51 @@ void OverviewController::moveSelection(Direction direction) {
     }
 
     const auto rects = targetRects();
+
+    if (niriModeEnabled() && (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
+        const auto selected = selectedWindow();
+        const auto selectedWorkspace = selected ? selected->m_workspace : m_state.ownerWorkspace;
+        PHLMONITOR monitor = selectedWorkspace ? selectedWorkspace->m_monitor.lock() : m_state.ownerMonitor;
+        if (!monitor)
+            monitor = m_state.ownerMonitor;
+
+        if (selectedWorkspace && monitor) {
+            std::optional<std::size_t> currentStripIndex;
+            for (std::size_t index = 0; index < m_state.stripEntries.size(); ++index) {
+                const auto& entry = m_state.stripEntries[index];
+                const bool sameWorkspace = (entry.workspace && entry.workspace == selectedWorkspace) ||
+                    (entry.workspaceId != WORKSPACE_INVALID && selectedWorkspace->m_id == entry.workspaceId);
+                if (sameWorkspace && (!entry.monitor || entry.monitor == monitor)) {
+                    currentStripIndex = index;
+                    break;
+                }
+            }
+
+            if (currentStripIndex) {
+                const int stripStep = direction == Direction::Up ? -1 : 1;
+                const auto targetIndexSigned = static_cast<long long>(*currentStripIndex) + stripStep;
+                if (targetIndexSigned < 0 || targetIndexSigned >= static_cast<long long>(m_state.stripEntries.size()))
+                    return;
+
+                const auto& targetEntry = m_state.stripEntries[static_cast<std::size_t>(targetIndexSigned)];
+                if (!targetEntry.monitor || targetEntry.monitor != monitor || targetEntry.workspaceId == WORKSPACE_INVALID)
+                    return;
+
+                auto targetWorkspace = targetEntry.workspace ? targetEntry.workspace : g_pCompositor->getWorkspaceByID(targetEntry.workspaceId);
+                if (targetWorkspace && targetWorkspace->m_isSpecialWorkspace)
+                    return;
+
+                const std::string targetName = targetEntry.workspaceName.empty() ? std::to_string(targetEntry.workspaceId) : targetEntry.workspaceName;
+                const bool syntheticTarget = !targetWorkspace && (targetEntry.syntheticEmpty || targetEntry.newWorkspaceSlot);
+                if (beginOverviewWorkspaceTransition(monitor, targetEntry.workspaceId, targetName, targetWorkspace, syntheticTarget, WorkspaceTransitionMode::TimedCommit)) {
+                    m_workspaceTransition.step = stripStep;
+                    m_workspaceTransition.animationToDelta = static_cast<double>(stripStep) * m_workspaceTransition.distance;
+                    damageOwnedMonitors();
+                }
+                return;
+            }
+        }
+    }
 
     if (niriModeEnabled() && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
         *m_state.selectedIndex < rects.size()) {
