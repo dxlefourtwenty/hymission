@@ -2589,9 +2589,24 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
 
                 if (targetWorkspace && window->m_workspace != targetWorkspace) {
                     g_pCompositor->moveWindowToWorkspaceSafe(window, targetWorkspace);
+
+                    // Keep the dragged window as the overview target and force a full rebuild.
+                    // Without the forced rebuild, niri-mode can keep the old lane targets when
+                    // the window set is unchanged but the window's workspace/lane changed.
+                    m_state.focusDuringOverview = window;
+                    m_queuedOverviewSelectionTarget.reset();
+                    m_queuedOverviewSelectionSyncScrollingSpot = false;
+                    m_queuedOverviewSelectionCenterCursor = false;
+                    m_queuedOverviewLiveFocusTarget.reset();
+                    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+                    m_queuedOverviewLiveFocusCenterCursor = false;
+
                     if (g_pAnimationManager)
                         g_pAnimationManager->frameTick();
-                    rebuildVisibleState();
+
+                    rebuildVisibleState(window, true);
+                    m_stripSnapshotsDirty = true;
+                    scheduleWorkspaceStripSnapshotRefresh();
                 }
             }
 
@@ -3144,45 +3159,14 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     }();
 
     if (isVisible() && m_state.phase == Phase::Active && niriModeEnabled() && requestedDirection &&
-        (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right) && m_state.selectedIndex &&
-        *m_state.selectedIndex < m_state.windows.size()) {
-        const auto selectedWindow = m_state.windows[*m_state.selectedIndex].window;
-        const auto selectedWorkspace = selectedWindow ? selectedWindow->m_workspace : PHLWORKSPACE{};
-
-        if (selectedWorkspace) {
-            const auto rects = targetRects();
-            bool hasSameWorkspaceNeighborOnRequestedSide = false;
-
-            if (*m_state.selectedIndex < rects.size()) {
-                const Rect& current = rects[*m_state.selectedIndex];
-
-                for (std::size_t index = 0; index < m_state.windows.size() && index < rects.size(); ++index) {
-                    if (index == *m_state.selectedIndex)
-                        continue;
-
-                    const auto candidateWindow = m_state.windows[index].window;
-                    if (!candidateWindow || candidateWindow->m_workspace != selectedWorkspace)
-                        continue;
-
-                    const double dx = rects[index].centerX() - current.centerX();
-                    const double primary = *requestedDirection == Direction::Left ? -dx : dx;
-                    if (primary > 0.0) {
-                        hasSameWorkspaceNeighborOnRequestedSide = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!hasSameWorkspaceNeighborOnRequestedSide) {
-                if (debugLogsEnabled()) {
-                    std::ostringstream out;
-                    out << "[hymission] niri movefocus blocked at workspace edge direction="
-                        << (*requestedDirection == Direction::Left ? "left" : "right") << " workspace=" << selectedWorkspace->m_name;
-                    debugLog(out.str());
-                }
-                return {};
-            }
-        }
+        (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right)) {
+        // In niri mode, horizontal movefocus should be owned by the overview
+        // selection model. Calling Hyprland's original movefocus here can race
+        // with rapid repeated input and briefly leave the real focus on the
+        // previous window, which makes exiting the overview activate the wrong
+        // client. moveSelection already clamps at workspace edges.
+        moveSelection(*requestedDirection);
+        return {};
     }
 
     const auto result = m_moveFocusOriginal(std::move(args));
@@ -10120,6 +10104,24 @@ bool OverviewController::moveSelectionCircular(int step, const char* source) {
 void OverviewController::activateSelection() {
     if (!m_state.selectedIndex || *m_state.selectedIndex >= m_state.windows.size())
         return;
+
+    // Make the selected/centered preview authoritative before closing. Rapid
+    // niri focus changes can leave Hyprland's real focused window one step
+    // behind, so closing must not fall back to the previous real focus.
+    if (const auto selected = selectedWindow(); selected) {
+        m_state.focusDuringOverview = selected;
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+
+        if (niriModeEnabled()) {
+            syncRealFocusDuringOverview(selected, true);
+            refreshNiriScrollingOverviewAfterLayoutScroll("activate-selection-sync");
+        }
+    }
 
     beginClose(CloseMode::ActivateSelection);
 }
