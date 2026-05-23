@@ -718,6 +718,7 @@ class OverviewController {
     DispatcherHandler         m_changeWorkspaceOriginal;
     DispatcherHandler         m_focusWorkspaceOnCurrentMonitorOriginal;
     DispatcherHandler         m_layoutMessageOriginal;
+    std::string               m_layoutMessageDispatcherName = "layoutmsg";
     DispatcherHandler         m_moveFocusOriginal;
     std::unordered_map<std::string, DispatcherHandler> m_overviewEditingDispatchersOriginal;
     bool                      m_fullscreenActiveDispatcherWrapped = false;

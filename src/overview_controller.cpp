@@ -161,9 +161,13 @@ OverviewController* g_controller = nullptr;
 bool g_niriStripSnapshotSingleWorkspaceOnly = false;
 
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
-    return name == "movewindow" || name == "swapwindow" || name == "movetoworkspace" || name == "movetoworkspacesilent" || name == "moveactive" ||
-        name == "resizeactive" || name == "swapactive" || name.starts_with("movewindow") || name.starts_with("swapwindow") ||
-        name.starts_with("movetoworkspace") || name.starts_with("resizewindow");
+    std::string lowered{name};
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
+        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
+        lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+        lowered.starts_with("resizewindow") || lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
+        lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos;
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -6111,14 +6115,22 @@ bool OverviewController::installHooks() {
         "focusworkspaceoncurrentmonitor",
         m_focusWorkspaceOnCurrentMonitorOriginal,
         [this](std::string args) { return focusWorkspaceOnCurrentMonitorDispatcherHook(std::move(args)); });
+    m_layoutMessageDispatcherName = "layoutmsg";
     m_layoutMessageDispatcherWrapped =
         wrapDispatcher("layoutmsg", m_layoutMessageOriginal, [this](std::string args) { return layoutMessageDispatcherHook(std::move(args)); });
+    if (!m_layoutMessageDispatcherWrapped) {
+        m_layoutMessageDispatcherWrapped =
+            wrapDispatcher("layout", m_layoutMessageOriginal, [this](std::string args) { return runOverviewEditingDispatcher("layout", &m_layoutMessageOriginal, std::move(args)); });
+        if (m_layoutMessageDispatcherWrapped)
+            m_layoutMessageDispatcherName = "layout";
+    }
     m_moveFocusDispatcherWrapped =
         wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
 
     m_overviewEditingDispatchersOriginal.clear();
     std::vector<std::string> overviewEditingDispatchers = {
         "movewindow",
+        "movewindoworgroup",
         "swapwindow",
         "movetoworkspace",
         "movetoworkspacesilent",
@@ -6126,6 +6138,10 @@ bool OverviewController::installHooks() {
         "resizeactive",
         "movewindowpixel",
         "resizewindowpixel",
+        "window.move",
+        "window.swap",
+        "window.resize",
+        "window.workspace",
     };
     if (g_pKeybindManager) {
         for (const auto& [name, _] : g_pKeybindManager->m_dispatchers) {
@@ -6407,7 +6423,7 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("fullscreenstate", m_fullscreenStateDispatcherWrapped, m_fullscreenStateActiveOriginal);
     restore("workspace", m_changeWorkspaceDispatcherWrapped, m_changeWorkspaceOriginal);
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
-    restore("layoutmsg", m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
+    restore(m_layoutMessageDispatcherName.c_str(), m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
     restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
     for (auto& [name, original] : m_overviewEditingDispatchersOriginal) {
         if (original)
