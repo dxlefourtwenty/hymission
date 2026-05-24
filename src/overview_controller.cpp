@@ -3791,6 +3791,11 @@ double OverviewController::niriOverviewScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_scale", 0.65), 0.05, 1.0);
 }
 
+double OverviewController::niriSingleWorkspaceGapMultiplier() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_single_ws_gap_multiplier", 2.0),
+                      1.0, 8.0);
+}
+
 double OverviewController::niriMultiWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.18), 0.05, 0.24);
 }
@@ -12126,6 +12131,21 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+        if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
+            const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
+            const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
+                                                                      getConfigInt(m_handle, "general:gaps_out", 0)));
+            const double previewGap = configuredGap * scale * (gapMultiplier - 1.0);
+            if (previewGap > 0.0) {
+                if (*overflowAxis == GestureAxis::Horizontal) {
+                    const double width = std::max(1.0, targetLocal.width - previewGap);
+                    targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
+                } else {
+                    const double height = std::max(1.0, targetLocal.height - previewGap);
+                    targetLocal = makeRect(targetLocal.x, targetLocal.centerY() - height * 0.5, targetLocal.width, height);
+                }
+            }
+        }
         if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double configuredGap = std::min(config.columnSpacing, config.rowSpacing);
             const double previewGap = std::max(2.0, std::min(18.0, configuredGap * 0.35));
