@@ -494,6 +494,9 @@ class OverviewController {
     void                       setScrollingFollowFocusOverride(bool disable);
     void                       setAnimationsEnabledOverride(bool disable, std::optional<std::chrono::milliseconds> restoreDelay = std::nullopt);
     void                       setDamageTrackingOverride(bool disable);
+    void                       armThemeSurfaceFeedback(std::size_t frames);
+    void                       pumpThemeSurfaceFeedbackFrames();
+    void                       clearThemeSurfaceFeedbackTimer();
     void                       closeActiveSpecialWorkspaces();
     void                       applyWorkspaceNameOverrides(const State& state);
     void                       restoreWorkspaceNameOverrides();
@@ -764,6 +767,8 @@ class OverviewController {
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
+    SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
+    std::size_t               m_themeSurfaceFeedbackFrames = 0;
     bool                      m_damageTrackingOverridden = false;
     long                      m_damageTrackingBackup = 2;
     SP<CEventLoopTimer>       m_toggleSwitchReleasePollTimer;

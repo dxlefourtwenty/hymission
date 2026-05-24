@@ -152,6 +152,7 @@ constexpr std::size_t STRIP_THEME_SURFACE_FEEDBACK_FRAMES = 8;
 constexpr auto   POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL = std::chrono::milliseconds(16);
 constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
 constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
+constexpr auto   THEME_SURFACE_FEEDBACK_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard,rofi";
@@ -1932,6 +1933,7 @@ OverviewController::~OverviewController() {
     clearToggleSwitchReleasePollTimer();
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
+    clearThemeSurfaceFeedbackTimer();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
     clearPostCloseDispatcher();
@@ -2329,6 +2331,82 @@ void OverviewController::clearPendingDeferredOpen() {
     m_deferredOpenTimer.reset();
 }
 
+void OverviewController::armThemeSurfaceFeedback(std::size_t frames) {
+    if (frames == 0)
+        return;
+
+    m_themeSurfaceFeedbackFrames = std::max(m_themeSurfaceFeedbackFrames, frames);
+    pumpThemeSurfaceFeedbackFrames();
+
+    if (m_themeSurfaceFeedbackFrames == 0 || !g_pEventLoopManager)
+        return;
+
+    if (!m_themeSurfaceFeedbackTimer) {
+        m_themeSurfaceFeedbackTimer = makeShared<CEventLoopTimer>(
+            THEME_SURFACE_FEEDBACK_INTERVAL,
+            [this](SP<CEventLoopTimer> self, void*) {
+                if (g_controller != this || m_themeSurfaceFeedbackFrames == 0) {
+                    self->updateTimeout(std::nullopt);
+                    return;
+                }
+
+                pumpThemeSurfaceFeedbackFrames();
+                self->updateTimeout(m_themeSurfaceFeedbackFrames > 0 ? std::optional{THEME_SURFACE_FEEDBACK_INTERVAL} : std::nullopt);
+            },
+            nullptr);
+        g_pEventLoopManager->addTimer(m_themeSurfaceFeedbackTimer);
+        return;
+    }
+
+    m_themeSurfaceFeedbackTimer->updateTimeout(THEME_SURFACE_FEEDBACK_INTERVAL);
+}
+
+void OverviewController::pumpThemeSurfaceFeedbackFrames() {
+    if (m_themeSurfaceFeedbackFrames == 0 || !g_pHyprRenderer || !g_pCompositor)
+        return;
+
+    using SendFrameEventsToWorkspaceFn = void (*)(Render::IHyprRenderer*, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&);
+    static SendFrameEventsToWorkspaceFn sendFrameEventsToWorkspaceFn = nullptr;
+    static bool                         sendFrameEventsToWorkspaceResolved = false;
+    if (!sendFrameEventsToWorkspaceResolved) {
+        sendFrameEventsToWorkspaceResolved = true;
+        sendFrameEventsToWorkspaceFn =
+            reinterpret_cast<SendFrameEventsToWorkspaceFn>(findFunction("sendFrameEventsToWorkspace", "IHyprRenderer::sendFrameEventsToWorkspace"));
+        if (!sendFrameEventsToWorkspaceFn)
+            debugLog("[hymission] failed to resolve IHyprRenderer::sendFrameEventsToWorkspace for theme refresh");
+    }
+
+    if (!sendFrameEventsToWorkspaceFn) {
+        m_themeSurfaceFeedbackFrames = 0;
+        return;
+    }
+
+    const auto now = Time::steadyNow();
+    for (const auto& workspace : g_pCompositor->getWorkspacesCopy()) {
+        if (!workspace || workspace->m_isSpecialWorkspace)
+            continue;
+
+        const auto monitor = workspace->m_monitor.lock();
+        if (!monitor)
+            continue;
+
+        sendFrameEventsToWorkspaceFn(g_pHyprRenderer.get(), monitor, workspace, now);
+    }
+
+    --m_themeSurfaceFeedbackFrames;
+}
+
+void OverviewController::clearThemeSurfaceFeedbackTimer() {
+    m_themeSurfaceFeedbackFrames = 0;
+    if (!m_themeSurfaceFeedbackTimer)
+        return;
+
+    m_themeSurfaceFeedbackTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_themeSurfaceFeedbackTimer);
+    m_themeSurfaceFeedbackTimer.reset();
+}
+
 void OverviewController::armPostCloseOpenDebounce(ScopeOverride closedScope) {
     const auto debounce = postCloseCrossScopeDebounce();
     if (debounce.count() <= 0) {
@@ -2546,6 +2624,7 @@ void OverviewController::handleConfigReloaded() {
         return;
 
     const auto refreshFrames = static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames());
+    armThemeSurfaceFeedback(refreshFrames);
     if (!isVisible()) {
         m_pendingOverviewSurfaceFeedbackFrames = std::max(m_pendingOverviewSurfaceFeedbackFrames, refreshFrames);
         return;
