@@ -2478,8 +2478,10 @@ void OverviewController::handleConfigReloaded() {
     if (!isVisible() || !refreshPreviewsOnConfigReloadEnabled())
         return;
 
+    const auto refreshFrames = static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames());
+    m_postOpenRefreshFrames = std::max(m_postOpenRefreshFrames, refreshFrames);
     m_stripSnapshotsDirty = true;
-    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames()));
+    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, refreshFrames);
     scheduleWorkspaceStripSnapshotRefresh();
     damageOwnedMonitors();
 }
