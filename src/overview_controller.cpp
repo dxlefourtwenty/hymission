@@ -12069,6 +12069,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return std::nullopt;
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
+        Rect focusedAnchorSourceGlobal = anchorSourceGlobal;
         if (!anchorOverride && window->m_workspace) {
             PHLWINDOW anchorWindow;
             if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
@@ -12080,10 +12081,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
                 const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
                 anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
+                focusedAnchorSourceGlobal = anchorSourceGlobal;
                 if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
                     anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
             }
         }
+        if (g_niriStripSnapshotSingleWorkspaceOnly)
+            anchorSourceGlobal =
+                centerAnchorOnWorkspaceStripAxis(anchorSourceGlobal, focusedAnchorSourceGlobal, parseWorkspaceStripAnchor(workspaceStripAnchor()));
 
         const double viewportX = previewArea.centerX() - (anchorSourceGlobal.centerX() - baseGlobal.x) * scale;
         const double viewportY = previewArea.centerY() - (anchorSourceGlobal.centerY() - baseGlobal.y) * scale;

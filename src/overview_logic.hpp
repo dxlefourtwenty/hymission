@@ -83,6 +83,7 @@ struct WorkspaceStripReservation {
 [[nodiscard]] double                   scrollingLayoutMoveAmount(ScrollingLayoutDirection direction, double primaryDelta, double sensitivity);
 [[nodiscard]] double                   niriOverviewPreviewScale(const Rect& previewArea, const Rect& baseArea, double maxPreviewScale, double minSlotScale,
                                                                 std::optional<GestureAxis> overflowAxis = std::nullopt);
+[[nodiscard]] Rect                      centerAnchorOnWorkspaceStripAxis(const Rect& anchorRect, const Rect& focusRect, WorkspaceStripAnchor anchor);
 [[nodiscard]] bool                 isWorkspaceStripHorizontal(WorkspaceStripAnchor anchor);
 [[nodiscard]] std::vector<int64_t> expandWorkspaceStripWorkspaceIds(const std::vector<int64_t>& workspaceIds, WorkspaceStripEmptyMode mode);
 [[nodiscard]] WorkspaceStripReservation reserveWorkspaceStripBand(const Rect& monitorArea, WorkspaceStripAnchor anchor, double thickness, double gap);

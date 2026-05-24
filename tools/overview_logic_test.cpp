@@ -162,6 +162,10 @@ int main() {
                  "vertical niri overview should ignore scrolling-tape height when fitting scale");
     ok &= expect(closeEnough(niriOverviewPreviewScale({0, 0, 900, 360}, {0, 0, 900, 500}, 0.95, 0.10, GestureAxis::Horizontal), 0.72),
                  "niri overview should still shrink when the cross axis cannot fit the configured max scale");
+    ok &= expectRect(centerAnchorOnWorkspaceStripAxis({100, 100, 80, 40}, {300, 240, 120, 60}, WorkspaceStripAnchor::Left), {100, 250, 80, 40},
+                     "side strip anchors should center on the focused preview y-axis");
+    ok &= expectRect(centerAnchorOnWorkspaceStripAxis({100, 100, 80, 40}, {300, 240, 120, 60}, WorkspaceStripAnchor::Top), {320, 100, 80, 40},
+                     "top strip anchors should center on the focused preview x-axis");
 
     ok &= expect(isWorkspaceStripHorizontal(WorkspaceStripAnchor::Top), "top strip should be horizontal");
     ok &= expect(!isWorkspaceStripHorizontal(WorkspaceStripAnchor::Left), "left strip should be vertical");

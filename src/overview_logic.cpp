@@ -294,6 +294,16 @@ double niriOverviewPreviewScale(const Rect& previewArea, const Rect& baseArea, d
     return std::max(minSlotScale, std::min(fitScale, maxScale));
 }
 
+Rect centerAnchorOnWorkspaceStripAxis(const Rect& anchorRect, const Rect& focusRect, WorkspaceStripAnchor anchor) {
+    Rect centered = anchorRect;
+    if (isWorkspaceStripHorizontal(anchor))
+        centered.x = focusRect.centerX() - centered.width * 0.5;
+    else
+        centered.y = focusRect.centerY() - centered.height * 0.5;
+
+    return centered;
+}
+
 bool isWorkspaceStripHorizontal(WorkspaceStripAnchor anchor) {
     return anchor == WorkspaceStripAnchor::Top;
 }
