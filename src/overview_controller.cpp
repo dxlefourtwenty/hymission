@@ -3253,7 +3253,7 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
         return std::nullopt;
     }();
 
-    if (isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && requestedDirection &&
+    if (isVisible() && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) && niriModeAppliesToState(m_state) && requestedDirection &&
         (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right)) {
         // In niri mode, horizontal movefocus should be owned by the overview
         // selection model. Calling Hyprland's original movefocus here can race
@@ -4069,7 +4069,8 @@ bool OverviewController::scrollActiveLayoutByGestureDelta(const IPointer::SSwipe
 }
 
 void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const char* source) {
-    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor || !isScrollingWorkspace(activeLayoutWorkspace()))
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor ||
+        !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
@@ -4118,7 +4119,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 }
 
 void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow) {
-    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
 
     PHLWINDOW focusTarget;
@@ -7067,7 +7068,7 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
 }
 
 void OverviewController::reconcileNiriCenteredSelectionForExit() {
-    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
 
     PHLWINDOW centeredTarget;
@@ -10070,6 +10071,7 @@ void OverviewController::updateAnimation() {
         m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
         if (debugLogsEnabled())
             debugLog("[hymission] anim opening complete");
+        refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");
         updateSelectedWindowLayout({});
         updateHoveredFromPointer(false, false, false, false, "begin-open");
         damageOwnedMonitors();
