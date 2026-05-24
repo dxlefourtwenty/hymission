@@ -8400,6 +8400,33 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
     const double preferredScale = m_state.windows.size() <= 1 ? 1.0 : SELECTED_WINDOW_LAYOUT_EMPHASIS;
     const double scaleCap = std::max(1.0, std::min({preferredScale, scaleCapByGrowth, scaleCapByBounds}));
 
+    if (multiWorkspaceOverview) {
+        currentManaged->targetGlobal = scaleRectAroundCenter(selectedBase, scaleCap);
+        shouldAnimateRelayout = !rectApproxEqual(currentManaged->relayoutFromGlobal, currentManaged->targetGlobal, 0.5);
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] expand-selected in-place selected=" << debugWindowLabel(currentSelectedWindow)
+                << " scale=" << scaleCap
+                << " growthCap=" << scaleCapByGrowth
+                << " boundsCap=" << scaleCapByBounds
+                << " selectedTarget=" << rectToString(currentManaged->targetGlobal);
+            debugLog(out.str());
+        }
+
+        if (!shouldAnimateRelayout) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] expand-selected relayout skipped (in-place target unchanged)");
+            return;
+        }
+
+        m_state.relayoutActive = true;
+        m_state.relayoutProgress = 0.0;
+        m_state.relayoutStart = {};
+        damageOwnedMonitors();
+        return;
+    }
+
     struct RipplePeer {
         std::size_t index = 0;
         Rect        base;
