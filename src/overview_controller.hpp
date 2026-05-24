@@ -541,6 +541,7 @@ class OverviewController {
     [[nodiscard]] const FullscreenWorkspaceBackup* fullscreenBackupForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWINDOW    hoveredWindow() const;
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
+    void                       reconcileNiriCenteredSelectionForExit();
     [[nodiscard]] Rect         liveGlobalRectForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] Rect         goalGlobalRectForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& window) const;

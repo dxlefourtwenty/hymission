@@ -7066,6 +7066,47 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
     return {};
 }
 
+void OverviewController::reconcileNiriCenteredSelectionForExit() {
+    if (!isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+        return;
+
+    PHLWINDOW centeredTarget;
+    if (const auto queuedSelection = m_queuedOverviewSelectionTarget.lock(); queuedSelection && queuedSelection->m_isMapped && hasManagedWindow(queuedSelection))
+        centeredTarget = queuedSelection;
+    else if (const auto queuedFocus = m_queuedOverviewLiveFocusTarget.lock(); queuedFocus && queuedFocus->m_isMapped && hasManagedWindow(queuedFocus))
+        centeredTarget = queuedFocus;
+    else if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && hasManagedWindow(m_state.focusDuringOverview))
+        centeredTarget = m_state.focusDuringOverview;
+
+    if (!centeredTarget)
+        return;
+
+    const auto centeredIt =
+        std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == centeredTarget; });
+    if (centeredIt == m_state.windows.end())
+        return;
+
+    const auto centeredIndex = static_cast<std::size_t>(std::distance(m_state.windows.begin(), centeredIt));
+    const auto previousSelected = selectedWindow();
+    m_state.selectedIndex = centeredIndex;
+    m_state.focusDuringOverview = centeredTarget;
+
+    m_queuedOverviewSelectionTarget.reset();
+    m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
+    m_queuedOverviewLiveFocusTarget.reset();
+    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
+
+    if (debugLogsEnabled() && previousSelected != centeredTarget) {
+        std::ostringstream out;
+        out << "[hymission] niri exit reconcile centered target=" << debugWindowLabel(centeredTarget)
+            << " selected=" << centeredIndex
+            << " previousSelected=" << debugWindowLabel(previousSelected);
+        debugLog(out.str());
+    }
+}
+
 const OverviewController::FullscreenWorkspaceBackup* OverviewController::fullscreenBackupForWorkspace(const PHLWORKSPACE& workspace) const {
     const auto it = std::find_if(m_state.fullscreenBackups.begin(), m_state.fullscreenBackups.end(),
                                  [&](const FullscreenWorkspaceBackup& backup) { return backup.workspace == workspace; });
@@ -9404,6 +9445,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     clearToggleSwitchSession();
+    if (mode != CloseMode::Abort)
+        reconcileNiriCenteredSelectionForExit();
 
     clearPendingWindowGeometryRetry();
     m_visibleStateRebuildScheduled = false;
@@ -10557,6 +10600,8 @@ bool OverviewController::moveSelectionCircular(int step, const char* source) {
 }
 
 void OverviewController::activateSelection() {
+    reconcileNiriCenteredSelectionForExit();
+
     if (!m_state.selectedIndex || *m_state.selectedIndex >= m_state.windows.size())
         return;
 
