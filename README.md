@@ -268,6 +268,7 @@ plugin {
         niri_layout_scale = 1.0
         niri_overview_scale = 0.65
         niri_single_ws_gap_multiplier = 2.0
+        niri_single_ws_gap_pixels = 24.0
         niri_workspace_scale = 1.0
         niri_strip_workspace_zoom = 2.0
         niri_preview_disabled = 0
@@ -366,6 +367,7 @@ hl.config({
 | `niri_layout_scale` | float | `1.0` | Extra scale applied to niri-mode active-workspace overview window targets, including direct scrolling-layout previews. Values are clamped to `0.50` - `2.0`. |
 | `niri_overview_scale` | float | `0.65` | Extra zoom factor for scrolling-layout windows in niri overview. Lower values reveal more neighboring windows in the scroll order; values are clamped to `0.05` - `1.0`. |
 | `niri_single_ws_gap_multiplier` | float | `2.0` | Multiplier for the visible gap between direct niri scrolling-layout previews in single-workspace overview. Values are clamped to `1.0` - `8.0`. |
+| `niri_single_ws_gap_pixels` | float | `24.0` | Minimum overview-space gap added between direct niri scrolling-layout previews in single-workspace overview. Values are clamped to `0.0` - `160.0`. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `niri_strip_workspace_zoom` | float | `2.0` | Extra zoom for scrolling-layout windows inside niri mode's active-workspace strip thumbnails only. Values are clamped to `0.05` - `4.0`; this does not affect the main overview, multi-workspace overview, non-niri strip thumbnails, or non-scrolling layouts. |
 | `niri_preview_disabled` | bool | `0` | Disable the workspace strip when niri mode is showing a single scrolling-layout workspace. |
