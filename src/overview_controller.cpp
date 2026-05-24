@@ -10440,7 +10440,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         debugLog(out.str());
     }
     State next = buildState(monitor, requestedScope, {}, false, false, layoutSelectedWindow);
-    if (next.windows.empty() && next.stripEntries.empty()) {
+    if (next.windows.empty() && next.stripEntries.empty() && next.participatingMonitors.empty()) {
         beginClose(CloseMode::Abort);
         return;
     }
@@ -12558,8 +12558,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const auto directIt = directNiriOverviewWindowsByMonitor.find(candidateMonitor->m_id);
         const bool hasDirectNiriOverviewWindows = directIt != directNiriOverviewWindowsByMonitor.end() && directIt->second > 0;
         const bool hasStripWorkspace = workspaceStripEnabled(state) && static_cast<bool>(candidateMonitor->m_activeWorkspace);
+        const bool keepOwnerMonitorForEmptyOverview = candidateMonitor == state.ownerMonitor;
         const bool keepMonitor = keepEmptyParticipatingMonitors && overrideForMonitor(candidateMonitor);
-        if ((inputsIt == inputsByMonitor.end() || inputsIt->second.empty()) && !hasDirectNiriOverviewWindows && !keepMonitor && !hasStripWorkspace)
+        if ((inputsIt == inputsByMonitor.end() || inputsIt->second.empty()) && !hasDirectNiriOverviewWindows && !keepMonitor && !hasStripWorkspace &&
+            !keepOwnerMonitorForEmptyOverview)
             continue;
 
         activeParticipatingMonitors.push_back(candidateMonitor);
