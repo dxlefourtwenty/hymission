@@ -539,6 +539,7 @@ class OverviewController {
     void                       refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] std::optional<Vector2D> predictedScrollingExitTranslation(const PHLWINDOW& window) const;
     [[nodiscard]] bool         applyNiriScrollingCameraExitGeometry(const PHLWINDOW& window);
+    [[nodiscard]] bool         applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& window);
     void                       prepareGestureCloseExitGeometry();
     [[nodiscard]] bool         workspaceSwipeUsesVerticalAxis(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] double       workspaceSwipeViewportDistance(const PHLMONITOR& monitor, WorkspaceTransitionAxis axis) const;
