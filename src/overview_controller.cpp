@@ -12078,6 +12078,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
         if (scale <= 0.0)
             return std::nullopt;
+        if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001)
+            scale *= niriActiveWorkspaceLayoutScale;
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
         Rect focusedAnchorSourceGlobal = anchorSourceGlobal;
@@ -12108,10 +12110,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-        if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001) {
-            targetLocal = scaleRectAroundCenter(targetLocal, niriActiveWorkspaceLayoutScale);
-            scale *= niriActiveWorkspaceLayoutScale;
-        }
         if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double configuredGap = std::min(config.columnSpacing, config.rowSpacing);
             const double previewGap = std::max(2.0, std::min(18.0, configuredGap * 0.35));
@@ -12273,12 +12271,19 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             engine.compute(inputsIt->second,
                            previewArea,
                            config);
+        const auto scaleSlotTargetAroundPreviewCenter = [&](const Rect& target) {
+            const double width = target.width * niriActiveWorkspaceLayoutScale;
+            const double height = target.height * niriActiveWorkspaceLayoutScale;
+            const double centerX = previewArea.centerX() + (target.centerX() - previewArea.centerX()) * niriActiveWorkspaceLayoutScale;
+            const double centerY = previewArea.centerY() + (target.centerY() - previewArea.centerY()) * niriActiveWorkspaceLayoutScale;
+            return makeRect(centerX - width * 0.5, centerY - height * 0.5, width, height);
+        };
         for (auto slot : slots) {
             if (slot.index >= state.windows.size())
                 continue;
 
             if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001) {
-                slot.target = scaleRectAroundCenter(slot.target, niriActiveWorkspaceLayoutScale);
+                slot.target = scaleSlotTargetAroundPreviewCenter(slot.target);
                 slot.scale *= niriActiveWorkspaceLayoutScale;
             }
 
