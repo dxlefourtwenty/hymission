@@ -3758,6 +3758,10 @@ bool OverviewController::showFocusIndicatorEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:show_focus_indicator", 0) != 0;
 }
 
+double OverviewController::activeBorderWidth() const {
+    return std::max(0L, getConfigInt(m_handle, "general:border_size", 2));
+}
+
 bool OverviewController::niriModeEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode", 0) != 0;
 }
@@ -10983,6 +10987,8 @@ void OverviewController::renderSelectionChrome() const {
         }
     }
 
+    renderFocusedWindowBorder(m_state, progress, false);
+
     if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
         const auto& window = m_state.windows[*m_draggedWindowIndex];
         const Rect  preview = currentPreviewRect(window);
@@ -10992,6 +10998,32 @@ void OverviewController::renderSelectionChrome() const {
         g_pHyprOpenGL->renderRect(toBox(ghost), CHyprColor(0.16, 0.20, 0.24, 0.28 * progress), {});
         renderOutline(ghostGlobal, CHyprColor(0.95, 0.97, 1.0, 0.82 * progress), 2.0);
     }
+}
+
+void OverviewController::renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const {
+    if (progress <= 0.0)
+        return;
+
+    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!renderMonitor)
+        return;
+
+    const double thickness = activeBorderWidth();
+    if (thickness <= 0.0)
+        return;
+
+    auto focusedWindow = state.focusDuringOverview;
+    auto focusedManaged = managedWindowFor(state, focusedWindow, true);
+    if (!focusedManaged) {
+        focusedWindow = Desktop::focusState()->window();
+        focusedManaged = managedWindowFor(state, focusedWindow, true);
+    }
+
+    if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)
+        return;
+
+    const Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
+    renderOutline(rect, activeBorderColorWithAlpha(0.95 * progress), thickness);
 }
 
 void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const {
@@ -11319,6 +11351,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             };
             renderPreviewWindows(false);
             renderPreviewWindows(true);
+            renderFocusedWindowBorder(m_stripPreviewContext.state, 1.0, true);
             g_pHyprRenderer->m_bRenderingSnapshot = previousRenderingSnapshot;
         }
         g_pHyprRenderer->m_renderData.blockScreenShader = true;

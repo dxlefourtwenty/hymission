@@ -438,6 +438,7 @@ class OverviewController {
     [[nodiscard]] double       hideBarAnimationAlphaEnd() const;
     [[nodiscard]] bool         barSingleMissionControlEnabled() const;
     [[nodiscard]] bool         showFocusIndicatorEnabled() const;
+    [[nodiscard]] double       activeBorderWidth() const;
     [[nodiscard]] bool         niriModeEnabled() const;
     [[nodiscard]] bool         niriModeAppliesToState(const State& state) const;
     [[nodiscard]] double       niriScrollPixelsPerDelta() const;
@@ -578,6 +579,7 @@ class OverviewController {
     [[nodiscard]] Rect                          hiddenStripLayerProxyRect(const HiddenStripLayerProxy& proxy) const;
     [[nodiscard]] bool                          shouldRenderHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) const;
     void                                        renderHiddenStripLayerProxies() const;
+    void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
     [[nodiscard]] bool                          shouldSuppressSurfaceBlur(void* surfacePassThisptr) const;
     [[nodiscard]] bool                          prepareSurfaceRenderData(void* surfacePassThisptr, const char* context, CSurfacePassElement::SRenderData*& renderData,
                                                                          PHLMONITOR& monitor, SurfaceRenderDataSnapshot& snapshot) const;
