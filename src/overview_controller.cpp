@@ -6504,7 +6504,7 @@ bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
 }
 
 bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) {
-    if (!isVisible() || m_state.phase != Phase::Active || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !isScrollingWorkspace(activeLayoutWorkspace()))
         return false;
 
     std::string direction;
