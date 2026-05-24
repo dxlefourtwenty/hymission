@@ -7047,6 +7047,53 @@ std::optional<Vector2D> OverviewController::predictedScrollingExitTranslation(co
     return vertical ? Vector2D{0.0, deltaPrimary} : Vector2D{deltaPrimary, 0.0};
 }
 
+bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& window) {
+    if (!window || !window->m_workspace || !isScrollingWorkspace(window->m_workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+        !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    const auto* selectedManaged = managedWindowFor(window);
+    if (!selectedManaged)
+        return false;
+
+    const Rect selectedPreview = currentPreviewRect(*selectedManaged);
+    const Rect selectedExit = goalGlobalRectForWindow(window);
+    if (selectedPreview.width <= 1.0 || selectedPreview.height <= 1.0 || selectedExit.width <= 1.0 || selectedExit.height <= 1.0)
+        return false;
+
+    const double scaleX = selectedExit.width / selectedPreview.width;
+    const double scaleY = selectedExit.height / selectedPreview.height;
+    if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
+        return false;
+
+    for (auto& managed : m_state.windows) {
+        if (!managed.window || !managed.window->m_isMapped || managed.window->m_workspace != window->m_workspace)
+            continue;
+
+        const auto layoutTarget = managed.window->layoutTarget();
+        if (!layoutTarget || layoutTarget->floating()) {
+            managed.exitGlobal = goalGlobalRectForWindow(managed.window);
+            continue;
+        }
+
+        const Rect preview = currentPreviewRect(managed);
+        managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                                      selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                                      preview.width * scaleX, preview.height * scaleY);
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] niri scrolling camera exit target=" << debugWindowLabel(window)
+            << " selectedPreview=" << rectToString(selectedPreview)
+            << " selectedExit=" << rectToString(selectedExit)
+            << " scale=(" << scaleX << "," << scaleY << ")";
+        debugLog(out.str());
+    }
+
+    return true;
+}
+
 void OverviewController::prepareGestureCloseExitGeometry() {
     const auto predictedExitFocus = resolveExitFocus(CloseMode::Normal);
     const auto predictedExitWorkspace = predictedExitFocus ? predictedExitFocus->m_workspace : PHLWORKSPACE{};
@@ -9362,11 +9409,14 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             commitOverviewExitFocus(m_state.pendingExitFocus);
         if (preferGoalGeometry)
             refreshExitLayoutForFocus(m_state.pendingExitFocus);
-        for (auto& managed : m_state.windows) {
-            if (!managed.window || !managed.window->m_isMapped)
-                continue;
+        const bool appliedNiriCameraExit = preferGoalGeometry && applyNiriScrollingCameraExitGeometry(m_state.pendingExitFocus);
+        if (!appliedNiriCameraExit) {
+            for (auto& managed : m_state.windows) {
+                if (!managed.window || !managed.window->m_isMapped)
+                    continue;
 
-            managed.exitGlobal = preferGoalGeometry ? goalGlobalRectForWindow(managed.window) : liveGlobalRectForWindow(managed.window);
+                managed.exitGlobal = preferGoalGeometry ? goalGlobalRectForWindow(managed.window) : liveGlobalRectForWindow(managed.window);
+            }
         }
         if (debugLogsEnabled() && m_state.pendingExitFocus) {
             if (const auto* pendingManaged = managedWindowFor(m_state.pendingExitFocus)) {
