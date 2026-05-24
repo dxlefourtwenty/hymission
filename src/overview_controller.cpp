@@ -2695,7 +2695,7 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         const auto clickedIndex = *effectiveHoveredIndex;
         const auto clickedWindow = clickedIndex < m_state.windows.size() ? m_state.windows[clickedIndex].window : PHLWINDOW{};
 
-        if (niriModeEnabled() && m_state.selectedIndex && clickedIndex != *m_state.selectedIndex) {
+        if (niriModeAppliesToState(m_state) && m_state.selectedIndex && clickedIndex != *m_state.selectedIndex) {
             const auto previousSelectedWindow = selectedWindow();
             m_state.selectedIndex = clickedIndex;
             m_state.focusDuringOverview = clickedWindow;
@@ -2998,7 +2998,7 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
         return true;
     }
 
-    if (isVisible() && niriModeEnabled() && window && monitor && ownsMonitor(monitor) && !hasManagedWindow(window) && window->onSpecialWorkspace() &&
+    if (isVisible() && niriModeAppliesToState(m_state) && window && monitor && ownsMonitor(monitor) && !hasManagedWindow(window) && window->onSpecialWorkspace() &&
         isFloatingOverviewWindow(window)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
@@ -3192,7 +3192,7 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
         return std::nullopt;
     }();
 
-    if (isVisible() && m_state.phase == Phase::Active && niriModeEnabled() && requestedDirection &&
+    if (isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && requestedDirection &&
         (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right)) {
         // In niri mode, horizontal movefocus should be owned by the overview
         // selection model. Calling Hyprland's original movefocus here can race
@@ -3755,6 +3755,10 @@ bool OverviewController::niriModeEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode", 0) != 0;
 }
 
+bool OverviewController::niriModeAppliesToState(const State& state) const {
+    return niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
+}
+
 double OverviewController::niriScrollPixelsPerDelta() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_scroll_pixels_per_delta", 1.0), 0.0, 20.0);
 }
@@ -3790,7 +3794,7 @@ bool OverviewController::debugSurfaceLogsEnabled() const {
 }
 
 PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
-    if (isVisible() && niriModeEnabled()) {
+    if (isVisible() && niriModeAppliesToState(m_state)) {
         if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace)
             return m_state.focusDuringOverview->m_workspace;
 
@@ -3973,7 +3977,7 @@ bool OverviewController::scrollActiveLayoutByGestureDelta(const IPointer::SSwipe
 }
 
 void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const char* source) {
-    if (!isVisible() || m_state.phase != Phase::Active || !niriModeEnabled() || !m_state.ownerMonitor || !isScrollingWorkspace(activeLayoutWorkspace()))
+    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor || !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
@@ -4197,7 +4201,7 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
     if (!monitor || step == 0 || !monitor->m_activeWorkspace || monitor->m_activeWorkspace->m_isSpecialWorkspace)
         return false;
 
-    if (niriModeEnabled() && !m_state.managedWorkspaces.empty()) {
+    if (niriModeAppliesToState(m_state) && !m_state.managedWorkspaces.empty()) {
         PHLWORKSPACE currentWorkspace = monitor->m_activeWorkspace;
         if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
             const auto selected = m_state.windows[*m_state.selectedIndex].window;
@@ -5009,7 +5013,7 @@ bool OverviewController::beginScrollGesture(HymissionScrollMode mode, eTrackpadG
         return reject("overview-closing");
 
     const bool overviewVisible = isVisible();
-    if (overviewVisible && (!niriModeEnabled() || m_state.phase != Phase::Active))
+    if (overviewVisible && (!niriModeAppliesToState(m_state) || m_state.phase != Phase::Active))
         return reject("overview-visible");
 
     if (!canScrollActiveLayoutWithGesture(direction))
@@ -5172,7 +5176,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     target.relayoutStart = {};
 
     const auto transitionWorkspace = monitor->m_activeWorkspace ? monitor->m_activeWorkspace : source.ownerWorkspace;
-    const auto transitionAxis = niriModeEnabled() ? WorkspaceTransitionAxis::Vertical :
+    const auto transitionAxis = niriModeAppliesToState(m_state) ? WorkspaceTransitionAxis::Vertical :
         (workspaceSwipeUsesVerticalAxis(transitionWorkspace) ? WorkspaceTransitionAxis::Vertical : WorkspaceTransitionAxis::Horizontal);
 
     m_workspaceTransition = {
@@ -6522,7 +6526,7 @@ bool OverviewController::hasManagedWindow(const PHLWINDOW& window) const {
 }
 
 bool OverviewController::usesDirectNiriScrollingOverview(const State& state) const {
-    if (!niriModeEnabled())
+    if (!niriModeAppliesToState(state))
         return false;
 
     return std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
@@ -9780,7 +9784,7 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
     m_state.hoveredStripIndex = hitTestStripTarget(pointer.x, pointer.y);
     m_state.hoveredIndex = (draggingWindow || m_state.hoveredStripIndex) ? std::optional<std::size_t>{} : hitTestTarget(pointer.x, pointer.y);
 
-    const bool disableHoverSelection = niriModeEnabled();
+    const bool disableHoverSelection = niriModeAppliesToState(m_state);
     const bool wantsSelectionRetarget =
         !disableHoverSelection && !draggingWindow && syncSelection && m_state.hoveredIndex && focusFollowsMouseEnabled() && allowSelectionRetarget &&
         (!m_state.selectedIndex || *m_state.hoveredIndex != *m_state.selectedIndex);
@@ -10191,7 +10195,7 @@ void OverviewController::moveSelection(Direction direction) {
 
     const auto rects = targetRects();
 
-    if (niriModeEnabled() && (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
+    if (niriModeAppliesToState(m_state) && (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
         const auto selected = selectedWindow();
         const auto selectedWorkspace = selected ? selected->m_workspace : m_state.ownerWorkspace;
         PHLMONITOR monitor = selectedWorkspace ? selectedWorkspace->m_monitor.lock() : m_state.ownerMonitor;
@@ -10236,7 +10240,7 @@ void OverviewController::moveSelection(Direction direction) {
         }
     }
 
-    if (niriModeEnabled() && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
+    if (niriModeAppliesToState(m_state) && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
         *m_state.selectedIndex < rects.size()) {
         const auto selectedWindow = m_state.windows[*m_state.selectedIndex].window;
         const auto selectedWorkspace = selectedWindow ? selectedWindow->m_workspace : PHLWORKSPACE{};
@@ -10328,7 +10332,7 @@ void OverviewController::activateSelection() {
         m_queuedOverviewLiveFocusSyncScrollingSpot = false;
         m_queuedOverviewLiveFocusCenterCursor = false;
 
-        if (niriModeEnabled()) {
+        if (niriModeAppliesToState(m_state)) {
             syncRealFocusDuringOverview(selected, true);
             refreshNiriScrollingOverviewAfterLayoutScroll("activate-selection-sync");
         }
