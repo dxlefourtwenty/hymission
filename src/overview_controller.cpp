@@ -5166,7 +5166,8 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .syntheticEmpty = syntheticEmpty,
     }};
 
-    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, focusCandidateForWorkspace(workspace));
+    const auto targetFocus = focusCandidateForWorkspace(workspace);
+    State      target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
     if (target.participatingMonitors.empty())
         return false;
 
@@ -5213,6 +5214,8 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
     refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
+    if (targetFocus)
+        m_state.focusDuringOverview = targetFocus;
     if (niriModeEnabled() && workspaceStripEnabled(m_state)) {
         for (auto& entry : m_state.stripEntries) {
             const auto targetIt = std::find_if(m_workspaceTransition.targetState.stripEntries.begin(), m_workspaceTransition.targetState.stripEntries.end(),
@@ -11076,7 +11079,11 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         }};
         const bool niriStripPreview = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace && targetWorkspace && isScrollingWorkspace(targetWorkspace);
         ScopedFlag niriStripSingleWorkspace(g_niriStripSnapshotSingleWorkspaceOnly, niriStripPreview);
-        previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false);
+        const auto preferredPreviewFocus =
+            entry.active && m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace == targetWorkspace ?
+            m_state.focusDuringOverview :
+            focusCandidateForWorkspace(targetWorkspace);
+        previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false, preferredPreviewFocus);
         previewState.phase = Phase::Active;
         previewState.animationProgress = 1.0;
         previewState.animationFromVisual = 1.0;
