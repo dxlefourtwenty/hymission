@@ -3084,6 +3084,13 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
         return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
 
+    if (usesDirectNiriScrollingOverview(m_state)) {
+        if (hideBarsWhenStripShownEnabled() && (layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces())))
+            return true;
+
+        return hideOverviewLayersEnabled() && shouldHideLayerSurfaceNamespace(layer, hideOverviewLayerNamespaces());
+    }
+
     return hideOverviewLayersEnabled() && m_state.collectionPolicy.requestedScope == ScopeOverride::ForceAll &&
         shouldHideLayerSurfaceNamespace(layer, hideOverviewLayerNamespaces());
 }
