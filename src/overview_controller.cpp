@@ -2580,6 +2580,12 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         renderBackdrop();
+        renderEmptyOverviewPlaceholder();
+        if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
+             m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
+            !m_deactivatePending) {
+            damageOwnedMonitors();
+        }
     } else if (stage == RENDER_POST_WINDOWS) {
         if (m_deactivatePending) {
             if (debugLogsEnabled())
@@ -2606,15 +2612,10 @@ void OverviewController::renderStage(eRenderStage stage) {
             m_stripSnapshotsDirty = true;
             scheduleWorkspaceStripSnapshotRefresh();
         }
-        if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
-             m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
-            !m_deactivatePending) {
-            damageOwnedMonitors();
-            if (m_postOpenRefreshFrames > 0)
-                --m_postOpenRefreshFrames;
-            if (m_overviewSurfaceFeedbackFrames > 0)
-                --m_overviewSurfaceFeedbackFrames;
-        }
+        if (m_postOpenRefreshFrames > 0)
+            --m_postOpenRefreshFrames;
+        if (m_overviewSurfaceFeedbackFrames > 0)
+            --m_overviewSurfaceFeedbackFrames;
     }
 }
 
