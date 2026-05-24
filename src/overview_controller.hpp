@@ -827,6 +827,10 @@ class OverviewController {
     bool                     m_stripSnapshotsDirty = false;
     bool                     m_stripSnapshotRefreshScheduled = false;
     std::size_t              m_stripSnapshotSurfaceFeedbackFrames = 0;
+    std::size_t              m_overviewSurfaceFeedbackFrames = 0;
+    std::size_t              m_pendingOverviewSurfaceFeedbackFrames = 0;
+    bool                     m_surfaceFeedbackOverrideActive = false;
+    bool                     m_surfaceFeedbackOverrideBackup = false;
     bool                     m_lastStripThemeColorValid = false;
     uint32_t                 m_lastStripThemeColor = 0;
     bool                     m_primaryButtonPressed = false;

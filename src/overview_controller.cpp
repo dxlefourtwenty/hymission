@@ -2462,6 +2462,11 @@ SDispatchResult OverviewController::debugCurrentLayout() const {
 }
 
 void OverviewController::renderStage(eRenderStage stage) {
+    if (stage == RENDER_POST && m_surfaceFeedbackOverrideActive) {
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = m_surfaceFeedbackOverrideBackup;
+        m_surfaceFeedbackOverrideActive = false;
+    }
+
     if (m_stripSnapshotRenderDepth > 0)
         return;
 
@@ -2479,6 +2484,12 @@ void OverviewController::renderStage(eRenderStage stage) {
 
     setFullscreenRenderOverride(true);
     expandRenderDamageToFullMonitor(monitor);
+
+    if (stage == RENDER_PRE_WINDOWS && m_overviewSurfaceFeedbackFrames > 0 && !m_surfaceFeedbackOverrideActive) {
+        m_surfaceFeedbackOverrideActive = true;
+        m_surfaceFeedbackOverrideBackup = g_pHyprRenderer->m_bBlockSurfaceFeedback;
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
+    }
 
     if (stage == RENDER_POST_WALLPAPER) {
         if (m_cursorShapeResetFrames > 0) {
@@ -2517,11 +2528,13 @@ void OverviewController::renderStage(eRenderStage stage) {
             scheduleWorkspaceStripSnapshotRefresh();
         }
         if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
-             m_stripSnapshotSurfaceFeedbackFrames > 0) &&
+             m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
             !m_deactivatePending) {
             damageOwnedMonitors();
             if (m_postOpenRefreshFrames > 0)
                 --m_postOpenRefreshFrames;
+            if (m_overviewSurfaceFeedbackFrames > 0)
+                --m_overviewSurfaceFeedbackFrames;
         }
     }
 }
@@ -2529,11 +2542,17 @@ void OverviewController::renderStage(eRenderStage stage) {
 void OverviewController::handleConfigReloaded() {
     replaceNativeWorkspaceGestures("config-reloaded");
 
-    if (!isVisible() || !refreshPreviewsOnConfigReloadEnabled())
+    if (!refreshPreviewsOnConfigReloadEnabled())
         return;
 
     const auto refreshFrames = static_cast<std::size_t>(stripThemeSurfaceFeedbackFrames());
+    if (!isVisible()) {
+        m_pendingOverviewSurfaceFeedbackFrames = std::max(m_pendingOverviewSurfaceFeedbackFrames, refreshFrames);
+        return;
+    }
+
     m_postOpenRefreshFrames = std::max(m_postOpenRefreshFrames, refreshFrames);
+    m_overviewSurfaceFeedbackFrames = std::max(m_overviewSurfaceFeedbackFrames, refreshFrames);
     m_stripSnapshotsDirty = true;
     m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, refreshFrames);
     scheduleWorkspaceStripSnapshotRefresh();
@@ -9400,6 +9419,16 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     refreshWorkspaceStripSnapshots();
     g_pHyprRenderer->m_directScanoutBlocked = true;
     m_postOpenRefreshFrames = 3;
+    if (m_pendingOverviewSurfaceFeedbackFrames > 0) {
+        m_overviewSurfaceFeedbackFrames = std::max(m_overviewSurfaceFeedbackFrames, m_pendingOverviewSurfaceFeedbackFrames);
+        m_postOpenRefreshFrames = std::max(m_postOpenRefreshFrames, m_pendingOverviewSurfaceFeedbackFrames);
+        if (workspaceStripEnabled(m_state)) {
+            m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, m_pendingOverviewSurfaceFeedbackFrames);
+            m_stripSnapshotsDirty = true;
+            scheduleWorkspaceStripSnapshotRefresh();
+        }
+        m_pendingOverviewSurfaceFeedbackFrames = 0;
+    }
     if (!m_suppressInitialHoverUpdate)
         updateHoveredFromPointer(false, false, false, false, "opening-complete");
 
@@ -9821,6 +9850,11 @@ void OverviewController::deactivate() {
     m_stripSnapshotsDirty = false;
     m_stripSnapshotRefreshScheduled = false;
     m_stripSnapshotSurfaceFeedbackFrames = 0;
+    m_overviewSurfaceFeedbackFrames = 0;
+    if (m_surfaceFeedbackOverrideActive) {
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = m_surfaceFeedbackOverrideBackup;
+        m_surfaceFeedbackOverrideActive = false;
+    }
     m_lastStripThemeColorValid = false;
     m_state = {};
     for (const auto& ownedMonitor : ownedMonitors) {
