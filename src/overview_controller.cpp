@@ -12000,14 +12000,24 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return std::nullopt;
 
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
-        const double maxNiriScale = g_niriStripSnapshotSingleWorkspaceOnly ?
-            std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_scale", 1.30), 0.05, 2.0) :
-            niriMultiWorkspaceScale();
         if (overflowAxis) {
-            const double visibleViewportCount = g_niriStripSnapshotSingleWorkspaceOnly ? 0.92 : 4.0;
-            const double viewportScale = previewArea.width / std::max(1.0, baseGlobal.width * visibleViewportCount);
-            scale = std::max(config.minSlotScale, std::min({scale, maxNiriScale, viewportScale}));
+            if (g_niriStripSnapshotSingleWorkspaceOnly) {
+                const double stripZoom = std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_zoom", 2.0), 0.05, 4.0);
+                const double visibleViewportCount = std::max(0.05, 0.92 / stripZoom);
+                const double previewLength = *overflowAxis == GestureAxis::Vertical ? previewArea.height : previewArea.width;
+                const double baseLength = *overflowAxis == GestureAxis::Vertical ? baseGlobal.height : baseGlobal.width;
+                const double viewportScale = previewLength / std::max(1.0, baseLength * visibleViewportCount);
+                scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
+            } else {
+                const double maxNiriScale = niriMultiWorkspaceScale();
+                const double visibleViewportCount = 4.0;
+                const double viewportScale = previewArea.width / std::max(1.0, baseGlobal.width * visibleViewportCount);
+                scale = std::max(config.minSlotScale, std::min({scale, maxNiriScale, viewportScale}));
+            }
         } else {
+            const double maxNiriScale = g_niriStripSnapshotSingleWorkspaceOnly ?
+                std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_strip_workspace_scale", 1.30), 0.05, 2.0) :
+                niriMultiWorkspaceScale();
             scale = std::max(config.minSlotScale, std::min(scale, maxNiriScale));
         }
         if (scale <= 0.0)
