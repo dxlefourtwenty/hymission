@@ -2769,8 +2769,10 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         return;
 
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
-    if (shouldPassThroughNiriOverviewArrowKeybind(keysym, keyboard->getModifiers()))
+    if (handleNiriOverviewArrowKeybind(keysym, keyboard->getModifiers())) {
+        info.cancelled = true;
         return;
+    }
 
     bool               handled = true;
     switch (keysym) {
@@ -6501,15 +6503,23 @@ bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
     return m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
 }
 
-bool OverviewController::shouldPassThroughNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) const {
+bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) {
     if (!isVisible() || m_state.phase != Phase::Active || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
         return false;
 
+    std::string direction;
     switch (keysym) {
         case XKB_KEY_Left:
+            direction = "l";
+            break;
         case XKB_KEY_Right:
+            direction = "r";
+            break;
         case XKB_KEY_Up:
+            direction = "u";
+            break;
         case XKB_KEY_Down:
+            direction = "d";
             break;
         default:
             return false;
@@ -6517,9 +6527,41 @@ bool OverviewController::shouldPassThroughNiriOverviewArrowKeybind(xkb_keysym_t 
 
     const bool hasSuper = (modifiers & HL_MODIFIER_META) != 0;
     const bool hasShift = (modifiers & HL_MODIFIER_SHIFT) != 0;
+    const bool hasCtrl = (modifiers & HL_MODIFIER_CTRL) != 0;
     const bool hasAlt = (modifiers & HL_MODIFIER_ALT) != 0;
+    if (!hasSuper)
+        return false;
 
-    return hasSuper && (hasShift || hasAlt);
+    const auto runNamedEditingDispatcher = [&](const char* name, std::string args) {
+        const auto original = m_overviewEditingDispatchersOriginal.find(name);
+        if (original == m_overviewEditingDispatchersOriginal.end())
+            return false;
+        return runOverviewEditingDispatcher(name, &original->second, std::move(args)).success;
+    };
+
+    const auto runLayoutMessage = [&](std::string args) {
+        if (!m_layoutMessageOriginal)
+            return false;
+        return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args)).success;
+    };
+
+    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+        return runLayoutMessage(std::string{"swapcol "} + direction);
+    }
+
+    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+        return runLayoutMessage(keysym == XKB_KEY_Left ? "move -col" : "move +col");
+    }
+
+    if (hasShift && hasCtrl && !hasAlt) {
+        return runNamedEditingDispatcher("swapwindow", direction);
+    }
+
+    if (hasShift && !hasCtrl && !hasAlt) {
+        return runNamedEditingDispatcher("movewindow", direction);
+    }
+
+    return false;
 }
 
 bool OverviewController::insideRenderLifecycle() const {

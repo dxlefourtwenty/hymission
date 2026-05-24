@@ -459,7 +459,7 @@ class OverviewController {
     void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {});
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
-    [[nodiscard]] bool         shouldPassThroughNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) const;
+    [[nodiscard]] bool         handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers);
     [[nodiscard]] bool         allowsWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldBlockWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldOverrideWorkspaceNames(const State& state) const;
