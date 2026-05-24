@@ -9439,11 +9439,6 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
     State next = buildState(monitor, requestedScope, {}, false, false, preferredSelectedWindow);
-    if (niriModeEnabled() && next.managedWorkspaces.empty()) {
-        setDamageTrackingOverride(false);
-        return;
-    }
-
     if (next.windows.empty() && next.stripEntries.empty() && !next.ownerMonitor) {
         setDamageTrackingOverride(false);
         return;
@@ -11172,15 +11167,18 @@ void OverviewController::renderBackdrop() const {
 }
 
 void OverviewController::renderEmptyOverviewPlaceholder() const {
-    if (niriModeEnabled() || !m_state.windows.empty())
+    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!renderMonitor)
+        return;
+
+    const bool hasWindowOnRenderMonitor = std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
+        return managed.window && managed.targetMonitor == renderMonitor;
+    });
+    if (hasWindowOnRenderMonitor)
         return;
 
     const double progress = visualProgress();
     if (progress <= 0.0)
-        return;
-
-    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
-    if (!renderMonitor)
         return;
 
     const Rect content = overviewContentRectForMonitor(renderMonitor, m_state);
