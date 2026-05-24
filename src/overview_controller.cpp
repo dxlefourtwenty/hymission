@@ -5213,6 +5213,21 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
     refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
+    if (niriModeEnabled() && workspaceStripEnabled(m_state)) {
+        for (auto& entry : m_state.stripEntries) {
+            const auto targetIt = std::find_if(m_workspaceTransition.targetState.stripEntries.begin(), m_workspaceTransition.targetState.stripEntries.end(),
+                                               [&](const WorkspaceStripEntry& targetEntry) {
+                                                   return workspaceStripEntriesMatchForSnapshot(entry, targetEntry);
+                                               });
+            if (targetIt == m_workspaceTransition.targetState.stripEntries.end())
+                continue;
+
+            entry.rect = targetIt->rect;
+            entry.relayoutFromRect = entry.rect;
+            entry.hasRelayoutFromRect = false;
+            entry.active = targetIt->active;
+        }
+    }
     armWorkspaceTransitionRenderState();
 
     if (debugLogsEnabled()) {
