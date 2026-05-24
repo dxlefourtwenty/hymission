@@ -3767,7 +3767,16 @@ bool OverviewController::niriModeEnabled() const {
 }
 
 bool OverviewController::niriModeAppliesToState(const State& state) const {
-    return niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace;
+    if (!niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
+        return false;
+
+    if (state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace))
+        return true;
+
+    if (state.focusDuringOverview && state.focusDuringOverview->m_workspace && isScrollingWorkspace(state.focusDuringOverview->m_workspace))
+        return true;
+
+    return std::ranges::any_of(state.managedWorkspaces, [this](const PHLWORKSPACE& workspace) { return isScrollingWorkspace(workspace); });
 }
 
 double OverviewController::niriScrollPixelsPerDelta() const {
