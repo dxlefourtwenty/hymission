@@ -12001,7 +12001,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
             const double gap = niriMultiWorkspaceGap();
-            const double laneStep = std::max(1.0, laneHeight + gap);
+            const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
+            const double laneStep = std::max(1.0, zoomedLaneHeight + gap);
             const double centerY = content.centerY();
             for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
                 const auto& workspace = monitorWorkspaces[index];
