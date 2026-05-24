@@ -8315,7 +8315,7 @@ void OverviewController::updateSelectedWindowLayout(const PHLWINDOW& previousSel
     if (!expandSelectedWindowEnabled() || !isVisible() || m_state.phase != Phase::Active || m_gestureSession.active || m_workspaceTransition.active)
         return;
 
-    if (usesDirectNiriScrollingOverview(m_state))
+    if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state))
         return;
 
     const bool multiWorkspaceOverview = !m_state.collectionPolicy.onlyActiveWorkspace;
