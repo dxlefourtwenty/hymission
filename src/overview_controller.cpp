@@ -11178,7 +11178,9 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     if (hasWindowOnRenderMonitor)
         return;
 
-    const double progress = visualProgress();
+    double progress = visualProgress();
+    if (progress <= 0.0 && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active))
+        progress = 1.0;
     if (progress <= 0.0)
         return;
 
@@ -11194,8 +11196,9 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     const Rect placeholder = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
     const Rect placeholderRender = scaleRectForRender(rectToMonitorLocal(placeholder, renderMonitor), renderMonitor);
 
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.62 * progress), {});
     g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.22 * progress), {.blur = true, .blurA = 1.0F});
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(1.0, 1.0, 1.0, 0.035 * progress), {});
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(1.0, 1.0, 1.0, 0.08 * progress), {});
     renderOutline(placeholder, activeBorderColorWithAlpha(0.72 * progress), 2.0);
 
     const auto label = g_pHyprRenderer->renderText("No windows", CHyprColor(1.0, 1.0, 1.0, std::min(1.0, progress)), scaleFontSizeForRender(renderMonitor, 16), false, "",
