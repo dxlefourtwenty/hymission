@@ -1387,6 +1387,60 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     };
 }
 
+std::optional<int> scrollingOverviewPrimaryOrdinalForWindow(const PHLWINDOW& window) {
+    if (!window || !window->m_workspace || !window->m_workspace->m_space)
+        return std::nullopt;
+
+    const auto target = window->layoutTarget();
+    if (!target || target->floating())
+        return std::nullopt;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return std::nullopt;
+
+    const auto targetData = scrolling->dataFor(target);
+    if (!targetData)
+        return std::nullopt;
+
+    const auto targetColumn = targetData->column.lock();
+    if (!targetColumn)
+        return std::nullopt;
+
+    struct ColumnEntry {
+        SP<Layout::Tiled::SColumnData> column;
+        double                         primary = 0.0;
+    };
+
+    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
+    std::vector<ColumnEntry> columns;
+    columns.reserve(scrolling->m_scrollingData->columns.size());
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column || column->targetDatas.empty())
+            continue;
+
+        const auto firstTarget = std::ranges::find_if(column->targetDatas, [](const auto& candidate) {
+            return candidate && candidate->target && candidate->layoutBox.width > 1.0 && candidate->layoutBox.height > 1.0;
+        });
+        if (firstTarget == column->targetDatas.end())
+            continue;
+
+        const CBox& box = (*firstTarget)->layoutBox;
+        columns.push_back({
+            .column = column,
+            .primary = horizontal ? box.x : box.y,
+        });
+    }
+
+    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        if (columns[index].column == targetColumn)
+            return static_cast<int>(index);
+    }
+
+    return std::nullopt;
+}
+
 Rect floatingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -12109,8 +12163,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
         Rect focusedAnchorSourceGlobal = anchorSourceGlobal;
+        PHLWINDOW anchorWindow;
         if (!anchorOverride && window->m_workspace) {
-            PHLWINDOW anchorWindow;
             if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
                 anchorWindow = state.focusDuringOverview;
             else
@@ -12142,14 +12196,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                                                       getConfigInt(m_handle, "general:gaps_out", 0)));
             const double previewGap = std::max(configuredGap * scale * (gapMultiplier - 1.0),
                                                niriSingleWorkspaceGapPixels());
-            if (previewGap > 0.0) {
-                if (*overflowAxis == GestureAxis::Horizontal) {
-                    const double width = std::max(1.0, targetLocal.width - previewGap);
-                    targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
-                } else {
-                    const double height = std::max(1.0, targetLocal.height - previewGap);
-                    targetLocal = makeRect(targetLocal.x, targetLocal.centerY() - height * 0.5, targetLocal.width, height);
-                }
+            const auto anchorOrdinal = scrollingOverviewPrimaryOrdinalForWindow(anchorWindow);
+            const auto windowOrdinal = scrollingOverviewPrimaryOrdinalForWindow(window);
+            if (previewGap > 0.0 && anchorOrdinal && windowOrdinal) {
+                const double offset = static_cast<double>(*windowOrdinal - *anchorOrdinal) * previewGap;
+                targetLocal = *overflowAxis == GestureAxis::Horizontal ? translateRect(targetLocal, offset, 0.0) : translateRect(targetLocal, 0.0, offset);
             }
         }
         if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
