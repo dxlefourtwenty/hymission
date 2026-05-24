@@ -3788,6 +3788,10 @@ double OverviewController::niriWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_workspace_scale", 1.0), 0.05, 1.0);
 }
 
+bool OverviewController::niriPreviewDisabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:niri_preview_disabled", 0) != 0;
+}
+
 bool OverviewController::niriOverviewAnimationsEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_overview_animations", 1) != 0 && getConfigInt(m_handle, "animations:enabled", 1) != 0;
 }
@@ -4134,8 +4138,21 @@ double OverviewController::workspaceStripLabelOpacity() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:workspace_strip_label_opacity", 0.30), 0.0, 1.0);
 }
 
+bool OverviewController::shouldDisableWorkspaceStripForNiriPreview(const State& state) const {
+    if (!niriPreviewDisabled() || !niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
+        return false;
+
+    if (state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace))
+        return true;
+
+    if (state.focusDuringOverview && state.focusDuringOverview->m_workspace && isScrollingWorkspace(state.focusDuringOverview->m_workspace))
+        return true;
+
+    return std::ranges::any_of(state.managedWorkspaces, [this](const PHLWORKSPACE& workspace) { return isScrollingWorkspace(workspace); });
+}
+
 bool OverviewController::workspaceStripEnabled(const State& state) const {
-    return state.collectionPolicy.onlyActiveWorkspace && !state.suppressWorkspaceStrip;
+    return state.collectionPolicy.onlyActiveWorkspace && !state.suppressWorkspaceStrip && !shouldDisableWorkspaceStripForNiriPreview(state);
 }
 
 bool OverviewController::isStripOnlyOverviewState(const State& state) const {

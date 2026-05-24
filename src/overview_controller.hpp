@@ -445,6 +445,7 @@ class OverviewController {
     [[nodiscard]] double       niriMultiWorkspaceScale() const;
     [[nodiscard]] double       niriMultiWorkspaceGap() const;
     [[nodiscard]] double       niriWorkspaceScale() const;
+    [[nodiscard]] bool         niriPreviewDisabled() const;
     [[nodiscard]] bool         niriOverviewAnimationsEnabled() const;
     [[nodiscard]] bool         debugLogsEnabled() const;
     [[nodiscard]] bool         debugSurfaceLogsEnabled() const;
@@ -471,6 +472,7 @@ class OverviewController {
     [[nodiscard]] double       workspaceStripGap() const;
     [[nodiscard]] int          workspaceStripLabelFontSize() const;
     [[nodiscard]] double       workspaceStripLabelOpacity() const;
+    [[nodiscard]] bool         shouldDisableWorkspaceStripForNiriPreview(const State& state) const;
     [[nodiscard]] bool         workspaceStripEnabled(const State& state) const;
     [[nodiscard]] bool         isStripOnlyOverviewState(const State& state) const;
     [[nodiscard]] bool         shouldContinuouslyRefreshWorkspaceStripSnapshots() const;

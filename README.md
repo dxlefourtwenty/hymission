@@ -268,6 +268,7 @@ plugin {
         niri_overview_scale = 0.65
         niri_workspace_scale = 1.0
         niri_strip_workspace_zoom = 2.0
+        niri_preview_disabled = 0
         niri_overview_animations = 1
         toggle_switch_mode = 1
         switch_toggle_auto_next = 1
@@ -313,6 +314,7 @@ hl.config({
             layout_engine = "grid",
             niri_mode = 0,
             niri_overview_scale = 0.65,
+            niri_preview_disabled = 0,
             niri_overview_animations = 1,
             multi_workspace_expand_selected_window = 1,
             switch_release_key = "Super_L",
@@ -361,6 +363,7 @@ hl.config({
 | `niri_overview_scale` | float | `0.65` | Extra zoom factor for scrolling-layout windows in niri overview. Lower values reveal more neighboring windows in the scroll order; values are clamped to `0.05` - `1.0`. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `niri_strip_workspace_zoom` | float | `2.0` | Extra zoom for scrolling-layout windows inside niri mode's active-workspace strip thumbnails only. Values are clamped to `0.05` - `4.0`; this does not affect the main overview, multi-workspace overview, non-niri strip thumbnails, or non-scrolling layouts. |
+| `niri_preview_disabled` | bool | `0` | Disable the workspace strip when niri mode is showing a single scrolling-layout workspace. |
 | `niri_overview_animations` | bool | `1` | Animate niri overview preview scrolling when Hyprland `animations:enabled` is on, and keep native window move animations active during niri focus sync. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
