@@ -4210,13 +4210,13 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
 
     if (niriModeAppliesToState(m_state) && !m_state.managedWorkspaces.empty()) {
         PHLWORKSPACE currentWorkspace = monitor->m_activeWorkspace;
-        if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
+        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
+            m_state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor) {
+            currentWorkspace = m_state.focusDuringOverview->m_workspace;
+        } else if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
             const auto selected = m_state.windows[*m_state.selectedIndex].window;
             if (selected && selected->m_workspace && selected->m_workspace->m_monitor.lock() == monitor)
                 currentWorkspace = selected->m_workspace;
-        } else if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
-                   m_state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor) {
-            currentWorkspace = m_state.focusDuringOverview->m_workspace;
         }
 
         std::vector<PHLWORKSPACE> monitorWorkspaces;
@@ -10405,48 +10405,8 @@ void OverviewController::moveSelection(Direction direction) {
     const auto rects = targetRects();
 
     if (niriModeAppliesToState(m_state) && (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
-        const auto selected = selectedWindow();
-        const auto selectedWorkspace = selected ? selected->m_workspace : m_state.ownerWorkspace;
-        PHLMONITOR monitor = selectedWorkspace ? selectedWorkspace->m_monitor.lock() : m_state.ownerMonitor;
-        if (!monitor)
-            monitor = m_state.ownerMonitor;
-
-        if (selectedWorkspace && monitor) {
-            std::optional<std::size_t> currentStripIndex;
-            for (std::size_t index = 0; index < m_state.stripEntries.size(); ++index) {
-                const auto& entry = m_state.stripEntries[index];
-                const bool sameWorkspace = (entry.workspace && entry.workspace == selectedWorkspace) ||
-                    (entry.workspaceId != WORKSPACE_INVALID && selectedWorkspace->m_id == entry.workspaceId);
-                if (sameWorkspace && (!entry.monitor || entry.monitor == monitor)) {
-                    currentStripIndex = index;
-                    break;
-                }
-            }
-
-            if (currentStripIndex) {
-                const int stripStep = direction == Direction::Up ? -1 : 1;
-                const auto targetIndexSigned = static_cast<long long>(*currentStripIndex) + stripStep;
-                if (targetIndexSigned < 0 || targetIndexSigned >= static_cast<long long>(m_state.stripEntries.size()))
-                    return;
-
-                const auto& targetEntry = m_state.stripEntries[static_cast<std::size_t>(targetIndexSigned)];
-                if (!targetEntry.monitor || targetEntry.monitor != monitor || targetEntry.workspaceId == WORKSPACE_INVALID)
-                    return;
-
-                auto targetWorkspace = targetEntry.workspace ? targetEntry.workspace : g_pCompositor->getWorkspaceByID(targetEntry.workspaceId);
-                if (targetWorkspace && targetWorkspace->m_isSpecialWorkspace)
-                    return;
-
-                const std::string targetName = targetEntry.workspaceName.empty() ? std::to_string(targetEntry.workspaceId) : targetEntry.workspaceName;
-                const bool syntheticTarget = !targetWorkspace && (targetEntry.syntheticEmpty || targetEntry.newWorkspaceSlot);
-                if (beginOverviewWorkspaceTransition(monitor, targetEntry.workspaceId, targetName, targetWorkspace, syntheticTarget, WorkspaceTransitionMode::TimedCommit)) {
-                    m_workspaceTransition.step = stripStep;
-                    m_workspaceTransition.animationToDelta = static_cast<double>(stripStep) * m_workspaceTransition.distance;
-                    damageOwnedMonitors();
-                }
-                return;
-            }
-        }
+        (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        return;
     }
 
     if (niriModeAppliesToState(m_state) && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
@@ -10625,6 +10585,12 @@ void OverviewController::activateStripTarget(std::size_t index) {
 
     if (targetWorkspace && entry.monitor->m_activeWorkspace == targetWorkspace) {
         m_state.hoveredStripIndex = index;
+        if (const auto targetFocus = focusCandidateForWorkspace(targetWorkspace)) {
+            m_state.focusDuringOverview = targetFocus;
+            selectWindowInState(m_state, targetFocus);
+            m_stripSnapshotsDirty = true;
+            scheduleWorkspaceStripSnapshotRefresh();
+        }
         damageOwnedMonitors();
         return;
     }
