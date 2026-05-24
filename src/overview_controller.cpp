@@ -5547,7 +5547,13 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         next.relayoutStart = {};
 
         clearOverviewWorkspaceTransition(targetWorkspace);
+        const bool stripRelayoutChanged = carryOverWorkspaceStripRelayout(next, m_state);
         carryOverWorkspaceStripSnapshots(next, m_state);
+        if (stripRelayoutChanged) {
+            next.relayoutActive = true;
+            next.relayoutProgress = 0.0;
+            next.relayoutStart = {};
+        }
         m_state = std::move(next);
         applyWorkspaceNameOverrides(m_state);
         if (targetFocus)
@@ -6822,7 +6828,7 @@ std::vector<Rect> OverviewController::stripRects() const {
     rects.reserve(m_state.stripEntries.size());
 
     for (const auto& entry : m_state.stripEntries)
-        rects.push_back(animatedWorkspaceStripRect(entry.rect, entry.monitor));
+        rects.push_back(animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), entry.monitor));
 
     return rects;
 }
@@ -7909,6 +7915,13 @@ Rect OverviewController::animatedWorkspaceStripRect(const Rect& rect, const PHLM
         return rect;
 
     return translateRect(rect, offset.x, offset.y);
+}
+
+Rect OverviewController::currentWorkspaceStripRect(const WorkspaceStripEntry& entry) const {
+    if (m_state.phase == Phase::Active && m_state.relayoutActive && entry.hasRelayoutFromRect)
+        return lerpRect(entry.relayoutFromRect, entry.rect, relayoutVisualProgress());
+
+    return entry.rect;
 }
 
 double OverviewController::relayoutVisualProgress() const {
@@ -10335,6 +10348,12 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     }
 
     clearStripWindowDragState();
+    const bool stripRelayoutChanged = carryOverWorkspaceStripRelayout(next, m_state);
+    if (!next.relayoutActive && stripRelayoutChanged) {
+        next.relayoutActive = true;
+        next.relayoutProgress = 0.0;
+        next.relayoutStart = {};
+    }
     carryOverWorkspaceStripSnapshots(next, m_state);
     restoreOverviewRenderState();
     m_state = std::move(next);
@@ -10880,6 +10899,32 @@ void OverviewController::carryOverWorkspaceStripSnapshots(State& next, const Sta
     }
 }
 
+bool OverviewController::carryOverWorkspaceStripRelayout(State& next, const State& previous) const {
+    if (next.stripEntries.empty() || previous.stripEntries.empty())
+        return false;
+
+    bool stripChanged = false;
+    for (auto& nextEntry : next.stripEntries) {
+        const auto previousIt = std::find_if(previous.stripEntries.begin(), previous.stripEntries.end(),
+                                             [&](const WorkspaceStripEntry& previousEntry) {
+                                                 return workspaceStripEntriesMatchForSnapshot(nextEntry, previousEntry);
+                                             });
+
+        if (previousIt == previous.stripEntries.end()) {
+            nextEntry.relayoutFromRect = nextEntry.rect;
+            nextEntry.hasRelayoutFromRect = false;
+            continue;
+        }
+
+        const Rect previousRect = previousIt->hasRelayoutFromRect ? currentWorkspaceStripRect(*previousIt) : previousIt->rect;
+        nextEntry.relayoutFromRect = previousRect;
+        nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
+        stripChanged = stripChanged || nextEntry.hasRelayoutFromRect;
+    }
+
+    return stripChanged;
+}
+
 void OverviewController::renderBackdrop() const {
     const double alpha = BACKDROP_ALPHA * visualProgress();
     if (alpha <= 0.0)
@@ -11376,7 +11421,7 @@ void OverviewController::renderWorkspaceStrip() const {
             continue;
 
         const bool hovered = m_state.hoveredStripIndex && *m_state.hoveredStripIndex == index;
-        const Rect outerGlobal = animatedWorkspaceStripRect(entry.rect, renderMonitor);
+        const Rect outerGlobal = animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), renderMonitor);
         const Rect outer = rectToMonitorLocal(outerGlobal, renderMonitor);
         if (outer.width <= 0.0 || outer.height <= 0.0)
             continue;

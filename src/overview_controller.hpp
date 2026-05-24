@@ -192,6 +192,8 @@ class OverviewController {
         WORKSPACEID              workspaceId = WORKSPACE_INVALID;
         std::string              workspaceName;
         Rect                     rect;
+        Rect                     relayoutFromRect;
+        bool                     hasRelayoutFromRect = false;
         std::shared_ptr<Snapshot> snapshot;
         std::vector<WindowPreview> windows;
         bool                     syntheticEmpty = false;
@@ -584,6 +586,7 @@ class OverviewController {
     [[nodiscard]] double       relayoutVisualProgress() const;
     [[nodiscard]] double       workspaceStripEnterProgress() const;
     [[nodiscard]] Vector2D     workspaceStripEnterOffset(const PHLMONITOR& monitor) const;
+    [[nodiscard]] Rect         currentWorkspaceStripRect(const WorkspaceStripEntry& entry) const;
     [[nodiscard]] Rect         animatedWorkspaceStripRect(const Rect& rect, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         transformBoxForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, CBox& box, bool scaled) const;
     [[nodiscard]] CRegion      transformRegionForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, const CRegion& region, bool scaled) const;
@@ -659,6 +662,7 @@ class OverviewController {
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
     [[nodiscard]] bool workspaceStripEntriesMatchForSnapshot(const WorkspaceStripEntry& lhs, const WorkspaceStripEntry& rhs) const;
     void carryOverWorkspaceStripSnapshots(State& next, const State& previous) const;
+    [[nodiscard]] bool carryOverWorkspaceStripRelayout(State& next, const State& previous) const;
     void renderWorkspaceStrip() const;
     [[nodiscard]] Rect workspaceStripThumbRect(const WorkspaceStripEntry& entry, const PHLMONITOR& monitor) const;
     void refreshWorkspaceStripSnapshots();
