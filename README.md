@@ -265,6 +265,7 @@ plugin {
         multi_workspace_sort_recent_first = 1
         niri_mode = 0
         niri_scroll_pixels_per_delta = 1.0
+        niri_layout_scale = 1.0
         niri_overview_scale = 0.65
         niri_workspace_scale = 1.0
         niri_strip_workspace_zoom = 2.0
@@ -313,6 +314,7 @@ hl.config({
             outer_padding_top = 92,
             layout_engine = "grid",
             niri_mode = 0,
+            niri_layout_scale = 1.0,
             niri_overview_scale = 0.65,
             niri_preview_disabled = 0,
             niri_overview_animations = 1,
@@ -360,6 +362,7 @@ hl.config({
 | `multi_workspace_sort_recent_first` | bool | `1` | Multi-workspace overview only. When enabled, `forceall` and any default overview scope that spans multiple workspaces place more recently used windows earlier in the grid, filling left-to-right then top-to-bottom. |
 | `niri_mode` | bool | `0` | Enable niri-like overflow behavior for the edge workspace strip. This is opt-in and does not turn the strip into the main overview content. |
 | `niri_scroll_pixels_per_delta` | float | `1.0` | Multiplier for `hymission:scroll,layout` movement outside overview. A value of `1.0` maps roughly one `gestures:workspace_swipe_distance` of finger travel to one viewport of scrolling-layout movement. Native `scrollMove` ignores this option. |
+| `niri_layout_scale` | float | `1.0` | Extra scale applied to niri-mode active-workspace overview window targets, including direct scrolling-layout previews. Values are clamped to `0.50` - `2.0`. |
 | `niri_overview_scale` | float | `0.65` | Extra zoom factor for scrolling-layout windows in niri overview. Lower values reveal more neighboring windows in the scroll order; values are clamped to `0.05` - `1.0`. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `niri_strip_workspace_zoom` | float | `2.0` | Extra zoom for scrolling-layout windows inside niri mode's active-workspace strip thumbnails only. Values are clamped to `0.05` - `4.0`; this does not affect the main overview, multi-workspace overview, non-niri strip thumbnails, or non-scrolling layouts. |

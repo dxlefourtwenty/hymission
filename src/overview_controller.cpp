@@ -3770,6 +3770,10 @@ double OverviewController::niriScrollPixelsPerDelta() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_scroll_pixels_per_delta", 1.0), 0.0, 20.0);
 }
 
+double OverviewController::niriLayoutScale() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_layout_scale", 1.0), 0.50, 2.0);
+}
+
 double OverviewController::niriOverviewScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_scale", 0.65), 0.05, 1.0);
 }
@@ -11950,6 +11954,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     config.forceRowGroups = useWorkspaceRows;
     config.rankScaleByInputOrder = orderByRecentUse;
     const bool allowDirectNiriOverviewLayout = niriDirectSingleWorkspaceOverview;
+    const double niriActiveWorkspaceLayoutScale =
+        niriModeAppliesToState(state) && !g_niriStripSnapshotSingleWorkspaceOnly ? niriLayoutScale() : 1.0;
 
     if (allowDirectNiriOverviewLayout) {
         for (const auto& candidateMonitor : state.participatingMonitors) {
@@ -12102,6 +12108,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+        if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001) {
+            targetLocal = scaleRectAroundCenter(targetLocal, niriActiveWorkspaceLayoutScale);
+            scale *= niriActiveWorkspaceLayoutScale;
+        }
         if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double configuredGap = std::min(config.columnSpacing, config.rowSpacing);
             const double previewGap = std::max(2.0, std::min(18.0, configuredGap * 0.35));
@@ -12263,9 +12273,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             engine.compute(inputsIt->second,
                            previewArea,
                            config);
-        for (const auto& slot : slots) {
+        for (auto slot : slots) {
             if (slot.index >= state.windows.size())
                 continue;
+
+            if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001) {
+                slot.target = scaleRectAroundCenter(slot.target, niriActiveWorkspaceLayoutScale);
+                slot.scale *= niriActiveWorkspaceLayoutScale;
+            }
 
             auto& managed = state.windows[slot.index];
             if (managed.targetMonitor != candidateMonitor)
