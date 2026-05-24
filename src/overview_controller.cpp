@@ -7067,7 +7067,7 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
         return false;
 
     for (auto& managed : m_state.windows) {
-        if (!managed.window || !managed.window->m_isMapped || managed.window->m_workspace != window->m_workspace)
+        if (!managed.window || !managed.window->m_isMapped)
             continue;
 
         const Rect preview = currentPreviewRect(managed);
@@ -7108,7 +7108,7 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
         return false;
 
     for (auto& managed : m_state.windows) {
-        if (!managed.window || !managed.window->m_isMapped || managed.window->m_workspace != window->m_workspace)
+        if (!managed.window || !managed.window->m_isMapped)
             continue;
 
         const Rect target = managed.targetGlobal;
