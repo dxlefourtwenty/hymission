@@ -682,6 +682,7 @@ class OverviewController {
     [[nodiscard]] bool shouldHideLayerSurface(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool shouldHideLayerSurfaceNamespace(const PHLLS& layer, const std::string& namespaces) const;
     void renderBackdrop() const;
+    void renderEmptyOverviewPlaceholder() const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
     void activateStripTarget(std::size_t index);
