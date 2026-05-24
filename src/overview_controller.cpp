@@ -9438,9 +9438,13 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
     State next = buildState(monitor, requestedScope, {}, false, false, preferredSelectedWindow);
-    if (next.windows.empty() && next.stripEntries.empty()) {
+    if (niriModeEnabled() && next.managedWorkspaces.empty()) {
         setDamageTrackingOverride(false);
-        notify(collectionSummary(monitor), CHyprColor(1.0, 0.7, 0.2, 1.0), 5000);
+        return;
+    }
+
+    if (next.windows.empty() && next.stripEntries.empty() && !next.ownerMonitor) {
+        setDamageTrackingOverride(false);
         return;
     }
 
@@ -11964,7 +11968,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                                          bool keepEmptyParticipatingMonitors, bool suppressWorkspaceStrip,
                                                          PHLWINDOW preferredSelectedWindow) const {
     State state;
-    if (!monitor || !monitor->m_activeWorkspace)
+    if (!monitor)
         return state;
 
     const bool preserveExistingOrder =
