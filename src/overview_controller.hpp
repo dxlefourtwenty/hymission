@@ -30,6 +30,7 @@
 #include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/pass/SurfacePassElement.hpp>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 #include "mission_layout.hpp"
 #include "overview_logic.hpp"
@@ -458,6 +459,7 @@ class OverviewController {
     void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {});
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
+    [[nodiscard]] bool         shouldPassThroughNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) const;
     [[nodiscard]] bool         allowsWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldBlockWorkspaceSwitchInOverview() const;
     [[nodiscard]] bool         shouldOverrideWorkspaceNames(const State& state) const;

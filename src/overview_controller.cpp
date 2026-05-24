@@ -2769,6 +2769,9 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         return;
 
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
+    if (shouldPassThroughNiriOverviewArrowKeybind(keysym, keyboard->getModifiers()))
+        return;
+
     bool               handled = true;
     switch (keysym) {
         case XKB_KEY_Escape:
@@ -6496,6 +6499,27 @@ bool OverviewController::shouldSyncRealFocusDuringOverview() const {
 
 bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
     return m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
+}
+
+bool OverviewController::shouldPassThroughNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) const {
+    if (!isVisible() || m_state.phase != Phase::Active || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    switch (keysym) {
+        case XKB_KEY_Left:
+        case XKB_KEY_Right:
+        case XKB_KEY_Up:
+        case XKB_KEY_Down:
+            break;
+        default:
+            return false;
+    }
+
+    const bool hasSuper = (modifiers & HL_MODIFIER_META) != 0;
+    const bool hasShift = (modifiers & HL_MODIFIER_SHIFT) != 0;
+    const bool hasAlt = (modifiers & HL_MODIFIER_ALT) != 0;
+
+    return hasSuper && (hasShift || hasAlt);
 }
 
 bool OverviewController::insideRenderLifecycle() const {
