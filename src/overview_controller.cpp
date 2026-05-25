@@ -5403,6 +5403,7 @@ void OverviewController::endTrackpadGesture(bool cancelled) {
             m_gestureSession = {};
             clearPostCloseDispatcher();
             m_state.pendingExitFocus = m_state.focusBeforeOpen;
+            m_state.pendingExitWorkspace.reset();
             m_state.closeMode = m_state.focusBeforeOpen ? CloseMode::Normal : CloseMode::Abort;
             if (m_state.focusBeforeOpen && m_state.focusBeforeOpen->m_isMapped)
                 commitOverviewExitFocus(m_state.focusBeforeOpen);
@@ -5461,6 +5462,7 @@ void OverviewController::endTrackpadGesture(bool cancelled) {
         } else {
             clearPostCloseDispatcher();
             m_state.pendingExitFocus = m_state.focusBeforeOpen;
+            m_state.pendingExitWorkspace.reset();
             m_state.closeMode = m_state.focusBeforeOpen ? CloseMode::Normal : CloseMode::Abort;
             if (m_state.focusBeforeOpen && m_state.focusBeforeOpen->m_isMapped)
                 commitOverviewExitFocus(m_state.focusBeforeOpen);
@@ -5686,6 +5688,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     target.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, target, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
     target.closeMode = m_state.closeMode;
     target.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, target, false) ? m_state.pendingExitFocus : PHLWINDOW{};
+    target.pendingExitWorkspace = containsHandle(target.managedWorkspaces, m_state.pendingExitWorkspace) ? m_state.pendingExitWorkspace : PHLWORKSPACE{};
     target.relayoutActive = false;
     target.relayoutProgress = 1.0;
     target.relayoutStart = {};
@@ -6066,6 +6069,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         refreshWorkspaceStripActivity(next, transitionMonitor, targetWorkspaceId);
         next.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, next, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
         next.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, next, false) ? m_state.pendingExitFocus : PHLWINDOW{};
+        next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, m_state.pendingExitWorkspace) ? m_state.pendingExitWorkspace : PHLWORKSPACE{};
         next.closeMode = m_state.closeMode;
         next.relayoutActive = false;
         next.relayoutProgress = 1.0;
@@ -7483,6 +7487,18 @@ void OverviewController::reconcileNiriCenteredSelectionForExit() {
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
 
+    if (centeredEmptyWorkspacePlaceholder(m_state)) {
+        m_state.selectedIndex.reset();
+        m_state.focusDuringOverview.reset();
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+        return;
+    }
+
     PHLWINDOW centeredTarget;
     if (const auto queuedSelection = m_queuedOverviewSelectionTarget.lock(); queuedSelection && queuedSelection->m_isMapped && hasManagedWindow(queuedSelection))
         centeredTarget = queuedSelection;
@@ -8525,10 +8541,50 @@ PHLWINDOW OverviewController::resolveExitFocus(CloseMode mode) const {
     if (mode == CloseMode::Abort)
         return {};
 
+    if (resolveExitWorkspace(mode))
+        return {};
+
     if (const auto target = preferredOverviewExitFocus(); target)
         return target;
 
     return m_state.focusBeforeOpen;
+}
+
+PHLWORKSPACE OverviewController::resolveExitWorkspace(CloseMode mode) const {
+    if (mode == CloseMode::Abort)
+        return {};
+
+    const auto* placeholder = centeredEmptyWorkspacePlaceholder(m_state);
+    return placeholder ? placeholder->workspace : PHLWORKSPACE{};
+}
+
+const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centeredEmptyWorkspacePlaceholder(const State& state) const {
+    if (!state.collectionPolicy.onlyActiveWorkspace || !niriModeAppliesToState(state) || !state.ownerMonitor)
+        return nullptr;
+
+    const Rect content = overviewContentRectForMonitor(state.ownerMonitor, state);
+    if (content.width <= 0.0 || content.height <= 0.0)
+        return nullptr;
+
+    const double centerX = state.ownerMonitor->m_position.x + content.centerX();
+    const double centerY = state.ownerMonitor->m_position.y + content.centerY();
+    const EmptyWorkspacePlaceholder* best = nullptr;
+    double bestDistance2 = std::numeric_limits<double>::max();
+
+    for (const auto& placeholder : state.emptyWorkspacePlaceholders) {
+        if (!placeholder.monitor || placeholder.monitor != state.ownerMonitor || !placeholder.workspace || !isScrollingWorkspace(placeholder.workspace))
+            continue;
+
+        const double dx = placeholder.targetGlobal.centerX() - centerX;
+        const double dy = placeholder.targetGlobal.centerY() - centerY;
+        const double distance2 = dx * dx + dy * dy;
+        if (distance2 < bestDistance2) {
+            best = &placeholder;
+            bestDistance2 = distance2;
+        }
+    }
+
+    return best && bestDistance2 <= 4.0 ? best : nullptr;
 }
 
 bool OverviewController::exitFocusChangedWorkspace(const PHLWINDOW& window) const {
@@ -8653,6 +8709,27 @@ bool OverviewController::activateWindowWorkspaceForFocus(const PHLWINDOW& window
     workspace->m_lastFocusedWindow = window;
     monitor->changeWorkspace(workspace, true, true, true);
     return true;
+}
+
+bool OverviewController::activateWorkspaceForExit(const PHLWORKSPACE& workspace) const {
+    if (!workspace || workspace->m_isSpecialWorkspace)
+        return false;
+
+    auto monitor = workspace->m_monitor.lock();
+    if (!monitor)
+        monitor = m_state.ownerMonitor;
+    if (!monitor)
+        return false;
+
+    const bool alreadyActive = monitor->m_activeWorkspace == workspace;
+    if (!alreadyActive)
+        monitor->changeWorkspace(workspace, true, true, false);
+
+    clearWindowFocusCompat(monitor);
+    if (g_pAnimationManager)
+        g_pAnimationManager->frameTick();
+
+    return !alreadyActive;
 }
 
 void OverviewController::commitOverviewExitFocus(const PHLWINDOW& window) {
@@ -9915,6 +9992,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     }
 
     const double fromVisual = fromVisualOverride.value_or(visualProgress());
+    m_state.pendingExitWorkspace = resolveExitWorkspace(mode);
     m_state.pendingExitFocus = resolveExitFocus(mode);
     m_state.closeMode = mode;
     m_state.settleStableFrames = 0;
@@ -9947,6 +10025,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             out << " pendingExitFocus=" << debugWindowLabel(m_state.pendingExitFocus);
         else
             out << " pendingExitFocus=<null>";
+        if (m_state.pendingExitWorkspace)
+            out << " pendingExitWorkspace=" << debugWorkspaceLabel(m_state.pendingExitWorkspace);
+        else
+            out << " pendingExitWorkspace=<null>";
         if (m_state.focusDuringOverview)
             out << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
         else
@@ -9969,9 +10051,9 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         else
             out << " activeBeforeClose=<null>";
         if (m_state.pendingExitFocus && m_state.pendingExitFocus->m_workspace)
-            out << " pendingExitWorkspace=" << debugWorkspaceLabel(m_state.pendingExitFocus->m_workspace);
+            out << " pendingExitFocusWorkspace=" << debugWorkspaceLabel(m_state.pendingExitFocus->m_workspace);
         else
-            out << " pendingExitWorkspace=<null>";
+            out << " pendingExitFocusWorkspace=<null>";
         if (m_state.focusBeforeOpen && m_state.focusBeforeOpen->m_workspace)
             out << " focusBeforeOpenWorkspace=" << debugWorkspaceLabel(m_state.focusBeforeOpen->m_workspace);
         else
@@ -10067,8 +10149,12 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         if (debugLogsEnabled())
             debugLog("[hymission] beginClose settle start");
     } else {
-        if (mode != CloseMode::Abort)
-            commitOverviewExitFocus(m_state.pendingExitFocus);
+        if (mode != CloseMode::Abort) {
+            if (m_state.pendingExitWorkspace)
+                (void)activateWorkspaceForExit(m_state.pendingExitWorkspace);
+            else
+                commitOverviewExitFocus(m_state.pendingExitFocus);
+        }
         m_state.phase = Phase::Closing;
         m_state.animationProgress = 0.0;
         m_state.animationFromVisual = fromVisual;
@@ -10100,6 +10186,7 @@ void OverviewController::deactivate() {
     const auto originalFullscreenWindow = desiredFullscreenBackup ? desiredFullscreenBackup->originalFullscreenWindow : PHLWINDOW{};
     const auto originalFullscreenMode = desiredFullscreenBackup ? desiredFullscreenBackup->originalFullscreenMode : FSMODE_NONE;
     const auto desiredFocus = m_state.closeMode != CloseMode::Abort && m_state.pendingExitFocus && m_state.pendingExitFocus->m_isMapped ? m_state.pendingExitFocus : PHLWINDOW{};
+    const auto desiredWorkspace = m_state.closeMode != CloseMode::Abort && m_state.pendingExitWorkspace ? m_state.pendingExitWorkspace : PHLWORKSPACE{};
     const auto closedScope = m_state.collectionPolicy.requestedScope;
     const auto postCloseDispatcher = desiredFocus ? m_postCloseDispatcher : PostCloseDispatcher::None;
     const auto postCloseDispatcherArgs = desiredFocus ? m_postCloseDispatcherArgs : std::string{};
@@ -10141,6 +10228,10 @@ void OverviewController::deactivate() {
             out << " desiredFocus=" << debugWindowLabel(desiredFocus);
         else
             out << " desiredFocus=<null>";
+        if (desiredWorkspace)
+            out << " desiredExitWorkspace=" << debugWorkspaceLabel(desiredWorkspace);
+        else
+            out << " desiredExitWorkspace=<null>";
         if (desiredFocus && desiredFocus->m_workspace)
             out << " desiredWorkspace=" << debugWorkspaceLabel(desiredFocus->m_workspace);
         else
@@ -10210,6 +10301,8 @@ void OverviewController::deactivate() {
     }
     if (desiredFocus && Desktop::focusState()->window() != desiredFocus)
         focusWindowCompat(desiredFocus);
+    if (!desiredFocus && desiredWorkspace)
+        (void)activateWorkspaceForExit(desiredWorkspace);
     if (!m_state.exitFullscreenReapplied && desiredFocus && desiredFocus == originalFullscreenWindow && originalFullscreenMode != FSMODE_NONE && desiredFocus->m_isMapped) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
@@ -10742,6 +10835,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     const auto previousRelayoutStart = m_state.relayoutStart;
     const auto previousFocusBeforeOpen = m_state.focusBeforeOpen;
     const auto previousPendingExitFocus = m_state.pendingExitFocus;
+    const auto previousPendingExitWorkspace = m_state.pendingExitWorkspace;
     const auto previousCloseMode = m_state.closeMode;
     const bool previousExitFullscreenReapplied = m_state.exitFullscreenReapplied;
     const auto previousFullscreenBackups = m_state.fullscreenBackups;
@@ -10828,6 +10922,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         next.pendingExitFocus = previousPendingExitFocus;
     else
         next.pendingExitFocus = {};
+    next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousPendingExitWorkspace) ? previousPendingExitWorkspace : PHLWORKSPACE{};
 
     const bool sameWindowSet = next.windows.size() == m_state.windows.size() &&
         std::ranges::all_of(next.windows, [&](const ManagedWindow& managed) { return managed.window && previousManagedForWindow(managed.window) != nullptr; });

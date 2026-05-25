@@ -226,6 +226,7 @@ class OverviewController {
         PHLWINDOW                              focusBeforeOpen;
         PHLWINDOW                              focusDuringOverview;
         PHLWINDOW                              pendingExitFocus;
+        PHLWORKSPACE                           pendingExitWorkspace;
         CloseMode                              closeMode = CloseMode::Normal;
         bool                                   fullscreenOverrideActive = false;
         std::vector<ManagedWindow>             windows;
@@ -627,12 +628,15 @@ class OverviewController {
     [[nodiscard]] bool         transformBoxForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, CBox& box, bool scaled) const;
     [[nodiscard]] CRegion      transformRegionForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, const CRegion& region, bool scaled) const;
     [[nodiscard]] PHLWINDOW    resolveExitFocus(CloseMode mode) const;
+    [[nodiscard]] PHLWORKSPACE resolveExitWorkspace(CloseMode mode) const;
+    [[nodiscard]] const EmptyWorkspacePlaceholder* centeredEmptyWorkspacePlaceholder(const State& state) const;
     [[nodiscard]] bool         exitFocusChangedWorkspace(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldPreferGoalExitGeometry(const PHLWINDOW& window) const;
     [[nodiscard]] std::optional<Vector2D> visiblePointForWindowOnMonitor(const PHLWINDOW& window, const PHLMONITOR& monitor, bool preferGoal = false) const;
     [[nodiscard]] bool         clearWorkspaceFullscreenForExitTarget(const PHLWINDOW& window);
     [[nodiscard]] bool         shouldClearWorkspaceFullscreenForExitTarget(const PHLWINDOW& window) const;
     [[nodiscard]] bool         activateWindowWorkspaceForFocus(const PHLWINDOW& window) const;
+    [[nodiscard]] bool         activateWorkspaceForExit(const PHLWORKSPACE& workspace) const;
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const;
