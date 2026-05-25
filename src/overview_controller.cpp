@@ -12168,6 +12168,13 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
     const bool                   horizontal = anchor == "top";
     const double                 stripGap = std::clamp(workspaceStripGap() * 0.5, 8.0, 24.0);
     const double                 padding = 12.0;
+    std::unordered_set<WORKSPACEID> workspacesWithWindows;
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (!window || !window->m_workspace || !window->m_isMapped || window->m_fadingOut || window->isHidden())
+            continue;
+
+        workspacesWithWindows.insert(window->m_workspace->m_id);
+    }
 
     for (const auto& monitor : state.participatingMonitors) {
         if (!monitor)
@@ -12234,6 +12241,25 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
                     .active = false,
                 });
             }
+        }
+
+        const bool singleWorkspaceScrollingNiri =
+            niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(monitor->m_activeWorkspace);
+        if (singleWorkspaceScrollingNiri) {
+            const auto trimEdgeEntries = [&](bool fromFront) {
+                while (!monitorEntries.empty()) {
+                    const auto& entry = fromFront ? monitorEntries.front() : monitorEntries.back();
+                    if (entry.active || workspacesWithWindows.contains(entry.workspaceId))
+                        break;
+
+                    if (fromFront)
+                        monitorEntries.erase(monitorEntries.begin());
+                    else
+                        monitorEntries.pop_back();
+                }
+            };
+            trimEdgeEntries(true);
+            trimEdgeEntries(false);
         }
 
         WORKSPACEID nextWorkspaceId = stripWorkspaceIds.empty() ? 1 : static_cast<WORKSPACEID>(std::max<int64_t>(stripWorkspaceIds.back(), 0) + 1);
