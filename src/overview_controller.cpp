@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -2833,7 +2834,8 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         renderBackdrop();
-        renderEmptyOverviewPlaceholder();
+        if (m_state.emptyWorkspacePlaceholders.empty())
+            renderEmptyOverviewPlaceholder();
         if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
              m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
             !m_deactivatePending) {
@@ -10730,6 +10732,18 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         previousPreviewRects.emplace_back(window.window, currentPreviewRect(window));
     for (const auto& window : m_state.transientClosingWindows)
         previousPreviewRects.emplace_back(window.window, currentPreviewRect(window));
+    std::vector<std::tuple<MONITORID, WORKSPACEID, Rect>> previousPlaceholderRects;
+    previousPlaceholderRects.reserve(m_state.emptyWorkspacePlaceholders.size());
+    const double relayoutProgress = relayoutVisualProgress();
+    for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (!placeholder.monitor)
+            continue;
+
+        const Rect currentRect = (m_state.phase == Phase::Active && m_state.relayoutActive)
+            ? lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutProgress) :
+            placeholder.targetGlobal;
+        previousPlaceholderRects.emplace_back(placeholder.monitor->m_id, placeholder.workspaceId, currentRect);
+    }
 
     const auto layoutSelectedWindow =
         expandSelectedWindowEnabled() ? (preferredSelectedWindow ? preferredSelectedWindow : (selectedWindow() ? selectedWindow() : Desktop::focusState()->window())) : PHLWINDOW{};
@@ -10802,6 +10816,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     const bool selectionRelayoutForced = forceRelayout && expandSelectedWindowEnabled();
 
     bool shouldAnimateRelayout = false;
+    bool placeholderRelayoutChanged = false;
     if (sameWindowSet && sameMonitorSet && !selectionRelayoutForced) {
         for (auto& window : next.windows) {
             const auto* previousManaged = previousManagedForWindow(window.window);
@@ -10813,6 +10828,23 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
             window.targetGlobal = previousManaged->targetGlobal;
             window.relayoutFromGlobal = previousManaged->targetGlobal;
             window.exitGlobal = previousManaged->exitGlobal;
+        }
+
+        for (auto& placeholder : next.emptyWorkspacePlaceholders) {
+            if (!placeholder.monitor)
+                continue;
+
+            const auto previousIt = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(),
+                                                 [&](const auto& entry) {
+                                                     return std::get<0>(entry) == placeholder.monitor->m_id && std::get<1>(entry) == placeholder.workspaceId;
+                                                 });
+            if (previousIt == previousPlaceholderRects.end()) {
+                placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+                continue;
+            }
+
+            placeholder.targetGlobal = std::get<2>(*previousIt);
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
         }
     } else if (previousPhase == Phase::Active || selectionRelayoutForced) {
         for (auto& window : next.windows) {
@@ -10828,6 +10860,29 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
             if (!rectApproxEqual(window.relayoutFromGlobal, window.targetGlobal, 0.5))
                 shouldAnimateRelayout = true;
         }
+
+        for (auto& placeholder : next.emptyWorkspacePlaceholders) {
+            if (!placeholder.monitor) {
+                placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+                continue;
+            }
+
+            const auto previousIt = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(),
+                                                 [&](const auto& entry) {
+                                                     return std::get<0>(entry) == placeholder.monitor->m_id && std::get<1>(entry) == placeholder.workspaceId;
+                                                 });
+            if (previousIt == previousPlaceholderRects.end()) {
+                placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+                continue;
+            }
+
+            placeholder.relayoutFromGlobal = std::get<2>(*previousIt);
+            if (!rectApproxEqual(placeholder.relayoutFromGlobal, placeholder.targetGlobal, 0.5))
+                placeholderRelayoutChanged = true;
+        }
+    } else {
+        for (auto& placeholder : next.emptyWorkspacePlaceholders)
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
     }
 
     auto appendTransientClosingWindow = [&](const ManagedWindow& source) {
@@ -10864,7 +10919,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         next.relayoutActive = false;
         next.relayoutProgress = 1.0;
         next.relayoutStart = {};
-    } else if (shouldAnimateRelayout) {
+    } else if (shouldAnimateRelayout || placeholderRelayoutChanged) {
         next.relayoutActive = true;
         next.relayoutProgress = 0.0;
         next.relayoutStart = {};
@@ -10874,6 +10929,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         next.relayoutStart = {};
         for (auto& window : next.windows)
             window.relayoutFromGlobal = window.targetGlobal;
+        for (auto& placeholder : next.emptyWorkspacePlaceholders)
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
     }
 
     if (debugLogsEnabled()) {
@@ -11505,18 +11562,81 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
         return;
 
+    const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& placeholder) {
+        if (m_state.phase == Phase::Active && m_state.relayoutActive)
+            return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
+        return placeholder.targetGlobal;
+    };
+
     bool renderedStatePlaceholder = false;
-    for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-        if (!placeholder.monitor || placeholder.monitor != renderMonitor)
-            continue;
+    if (m_workspaceTransition.active) {
+        const auto monitor = m_workspaceTransition.monitor;
+        if (monitor && monitor == renderMonitor) {
+            const auto clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
+            const double sourceOffset = -clampedDelta;
+            const int targetDirection = clampedDelta < -0.0001 ? -1 : clampedDelta > 0.0001 ? 1 : (m_workspaceTransition.step < 0 ? -1 : 1);
+            const double targetOffset = sourceOffset + static_cast<double>(targetDirection) * m_workspaceTransition.distance;
+            const double t = m_workspaceTransition.distance > 0.0 ? clampUnit(std::abs(clampedDelta) / m_workspaceTransition.distance) : 1.0;
+            const auto translated = [&](const Rect& rect, double offset) {
+                return m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? translateRect(rect, 0.0, offset) : translateRect(rect, offset, 0.0);
+            };
+            const auto placeholderForWorkspace = [&](const State& state, WORKSPACEID workspaceId) -> const EmptyWorkspacePlaceholder* {
+                const auto it = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
+                                             [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                                 return placeholder.monitor && placeholder.monitor == renderMonitor && placeholder.workspaceId == workspaceId;
+                                             });
+                return it == state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+            };
 
-        const Rect targetLocal = rectToMonitorLocal(placeholder.targetGlobal, renderMonitor);
-        const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
-        if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
-            continue;
+            std::unordered_set<WORKSPACEID> placeholderWorkspaceIds;
+            for (const auto& placeholder : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders) {
+                if (placeholder.monitor && placeholder.monitor == renderMonitor)
+                    placeholderWorkspaceIds.insert(placeholder.workspaceId);
+            }
+            for (const auto& placeholder : m_workspaceTransition.targetState.emptyWorkspacePlaceholders) {
+                if (placeholder.monitor && placeholder.monitor == renderMonitor)
+                    placeholderWorkspaceIds.insert(placeholder.workspaceId);
+            }
 
-        g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
-        renderedStatePlaceholder = true;
+            for (const auto workspaceId : placeholderWorkspaceIds) {
+                const auto* sourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, workspaceId);
+                const auto* targetPlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, workspaceId);
+                if (!sourcePlaceholder && !targetPlaceholder)
+                    continue;
+
+                Rect transitionGlobal;
+                if (sourcePlaceholder && targetPlaceholder) {
+                    const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
+                    const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
+                    transitionGlobal = lerpRect(sourceRect, targetRect, t);
+                } else if (sourcePlaceholder) {
+                    transitionGlobal = translated(sourcePlaceholder->targetGlobal, sourceOffset);
+                } else {
+                    transitionGlobal = translated(targetPlaceholder->targetGlobal, targetOffset);
+                }
+
+                const Rect targetLocal = rectToMonitorLocal(transitionGlobal, renderMonitor);
+                const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
+                if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
+                    continue;
+
+                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+                renderedStatePlaceholder = true;
+            }
+        }
+    } else {
+        for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+            if (!placeholder.monitor || placeholder.monitor != renderMonitor)
+                continue;
+
+            const Rect targetLocal = rectToMonitorLocal(currentPlaceholderRect(placeholder), renderMonitor);
+            const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
+            if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
+                continue;
+
+            g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+            renderedStatePlaceholder = true;
+        }
     }
     if (renderedStatePlaceholder)
         return;
@@ -13085,6 +13205,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 .workspace = workspace,
                 .workspaceId = workspace->m_id,
                 .targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width, targetLocal.height),
+                .relayoutFromGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
+                                               targetLocal.height),
             });
         }
     }

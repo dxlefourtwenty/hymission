@@ -207,6 +207,7 @@ class OverviewController {
         PHLWORKSPACE workspace;
         WORKSPACEID workspaceId = WORKSPACE_INVALID;
         Rect        targetGlobal;
+        Rect        relayoutFromGlobal;
     };
 
     struct State {
