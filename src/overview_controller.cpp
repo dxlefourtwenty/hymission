@@ -11215,7 +11215,7 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
     const Rect placeholderRender = scaleRectForRender(placeholderLocal, renderMonitor);
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.05, 0.06, 0.08, 0.72 * progress), {.blur = true, .blurA = 1.0F});
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24 * progress), {.blur = true, .blurA = 1.0F});
 }
 
 void OverviewController::renderSelectionChrome() const {
