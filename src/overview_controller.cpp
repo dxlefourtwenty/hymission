@@ -154,6 +154,7 @@ constexpr auto   POST_CLOSE_CURSOR_SHAPE_RESET_INTERVAL = std::chrono::milliseco
 constexpr std::size_t POST_CLOSE_CURSOR_SHAPE_RESET_TICKS = 8;
 constexpr auto   DEFERRED_OPEN_POLL_INTERVAL = std::chrono::milliseconds(16);
 constexpr auto   THEME_SURFACE_FEEDBACK_INTERVAL = std::chrono::milliseconds(16);
+constexpr std::size_t THEME_WORKSPACE_FEEDBACK_FRAMES = 3;
 constexpr auto   MISSION_CONTROL_WORKSPACE_NAME = "Mission Control";
 constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__:";
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard,rofi";
@@ -2338,6 +2339,7 @@ void OverviewController::armThemeSurfaceFeedback(std::size_t frames) {
         return;
 
     m_themeSurfaceFeedbackFrames = std::max(m_themeSurfaceFeedbackFrames, frames);
+    m_themeWorkspaceFeedbackFrames = std::max(m_themeWorkspaceFeedbackFrames, std::min(frames, THEME_WORKSPACE_FEEDBACK_FRAMES));
     pumpThemeSurfaceFeedbackFrames();
 
     if (m_themeSurfaceFeedbackFrames == 0 || !g_pEventLoopManager)
@@ -2395,24 +2397,107 @@ void OverviewController::pumpThemeSurfaceFeedbackFrames() {
         sendFrameEventsToWorkspaceFn(g_pHyprRenderer.get(), monitor, workspace, now);
     }
 
-    queueThemeRenderUnfocusedWindows();
+    if (m_themeWorkspaceFeedbackFrames > 0 && renderThemeWorkspaceFeedbackFrame())
+        --m_themeWorkspaceFeedbackFrames;
+
     --m_themeSurfaceFeedbackFrames;
 }
 
-void OverviewController::queueThemeRenderUnfocusedWindows() const {
-    if (!g_pHyprRenderer || !g_pCompositor)
-        return;
+bool OverviewController::renderThemeWorkspaceFeedbackFrame() {
+    if (!g_pHyprRenderer || !g_pHyprOpenGL || !g_pCompositor)
+        return false;
 
-    for (const auto& window : g_pCompositor->m_windows) {
-        if (!window || !window->m_isMapped || window->isHidden() || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace)
+    if (m_stripSnapshotRenderDepth > 0 || g_pHyprRenderer->m_renderData.pMonitor)
+        return false;
+
+    using RenderWindowFn = void (*)(Render::IHyprRenderer*, PHLWINDOW, PHLMONITOR, const Time::steady_tp&, bool, Render::eRenderPassMode, bool, bool);
+    static RenderWindowFn renderWindowFn = nullptr;
+    static bool           renderWindowResolved = false;
+    if (!renderWindowResolved) {
+        renderWindowResolved = true;
+        renderWindowFn = reinterpret_cast<RenderWindowFn>(findFunction("renderWindow", "IHyprRenderer::renderWindow"));
+        if (!renderWindowFn)
+            debugLog("[hymission] failed to resolve IHyprRenderer::renderWindow for theme feedback");
+    }
+    if (!renderWindowFn)
+        return false;
+
+    bool rendered = false;
+    for (const auto& workspace : g_pCompositor->getWorkspacesCopy()) {
+        if (!workspace || workspace->m_isSpecialWorkspace)
             continue;
 
-        g_pHyprRenderer->addWindowToRenderUnfocused(window);
+        const auto monitor = workspace->m_monitor.lock();
+        if (!monitor)
+            continue;
+
+        std::vector<PHLWINDOW> workspaceWindows;
+        for (const auto& window : g_pCompositor->m_windows) {
+            if (!window || !window->m_isMapped || window->isHidden() || window->m_workspace != workspace)
+                continue;
+            workspaceWindows.push_back(window);
+        }
+        if (workspaceWindows.empty())
+            continue;
+
+        const int fbWidth = std::max(1, static_cast<int>(std::ceil(static_cast<double>(monitor->m_size.x) * renderScaleForMonitor(monitor))));
+        const int fbHeight = std::max(1, static_cast<int>(std::ceil(static_cast<double>(monitor->m_size.y) * renderScaleForMonitor(monitor))));
+        auto      framebuffer = createFramebuffer("hymission theme workspace feedback");
+        if (!framebuffer || !framebuffer->alloc(fbWidth, fbHeight))
+            continue;
+        framebuffer->setImageDescription(monitor->workBufferImageDescription());
+
+        const auto previousWorkspace = monitor->m_activeWorkspace;
+        const auto previousSpecialWorkspace = monitor->m_activeSpecialWorkspace;
+        const bool previousVisible = workspace->m_visible;
+        const auto previousRenderOffsetValue = workspace->m_renderOffset->value();
+        const auto previousRenderOffsetGoal = workspace->m_renderOffset->goal();
+        const float previousAlphaValue = workspace->m_alpha->value();
+        const float previousAlphaGoal = workspace->m_alpha->goal();
+        const bool previousBlockSurfaceFeedback = g_pHyprRenderer->m_bBlockSurfaceFeedback;
+        const bool previousBlockScreenShader = g_pHyprRenderer->m_renderData.blockScreenShader;
+        const bool previousRenderingSnapshot = g_pHyprRenderer->m_bRenderingSnapshot;
+
+        monitor->m_activeWorkspace = workspace;
+        monitor->m_activeSpecialWorkspace.reset();
+        workspace->m_visible = true;
+        workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+        workspace->m_alpha->setValueAndWarp(1.F);
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
+        g_pHyprRenderer->m_bRenderingSnapshot = true;
+        g_pHyprOpenGL->makeEGLCurrent();
+
+        CRegion fakeDamage{0, 0, fbWidth, fbHeight};
+        if (g_pHyprRenderer->beginFullFakeRender(monitor, fakeDamage, framebuffer)) {
+            g_pHyprRenderer->draw(CClearPassElement::SClearData{.color = CHyprColor{0.0, 0.0, 0.0, 1.0}}, fakeDamage);
+            const auto now = Time::steadyNow();
+            for (const auto& window : workspaceWindows)
+                renderWindowFn(g_pHyprRenderer.get(), window, monitor, now, false, Render::RENDER_PASS_ALL, false, true);
+            g_pHyprRenderer->m_renderData.blockScreenShader = true;
+            g_pHyprRenderer->endRender();
+            rendered = true;
+        }
+
+        g_pHyprRenderer->m_bRenderingSnapshot = previousRenderingSnapshot;
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = previousBlockSurfaceFeedback;
+        g_pHyprRenderer->m_renderData.blockScreenShader = previousBlockScreenShader;
+        workspace->m_visible = previousVisible;
+        workspace->m_renderOffset->setValueAndWarp(previousRenderOffsetValue);
+        if (previousRenderOffsetGoal != previousRenderOffsetValue)
+            *workspace->m_renderOffset = previousRenderOffsetGoal;
+        workspace->m_alpha->setValueAndWarp(previousAlphaValue);
+        if (std::abs(previousAlphaGoal - previousAlphaValue) > 0.0001F)
+            *workspace->m_alpha = previousAlphaGoal;
+        monitor->m_activeSpecialWorkspace = previousSpecialWorkspace;
+        monitor->m_activeWorkspace = previousWorkspace;
     }
+
+    return rendered;
 }
 
 void OverviewController::clearThemeSurfaceFeedbackTimer() {
     m_themeSurfaceFeedbackFrames = 0;
+    m_themeWorkspaceFeedbackFrames = 0;
     if (!m_themeSurfaceFeedbackTimer)
         return;
 

@@ -496,7 +496,7 @@ class OverviewController {
     void                       setDamageTrackingOverride(bool disable);
     void                       armThemeSurfaceFeedback(std::size_t frames);
     void                       pumpThemeSurfaceFeedbackFrames();
-    void                       queueThemeRenderUnfocusedWindows() const;
+    bool                       renderThemeWorkspaceFeedbackFrame();
     void                       clearThemeSurfaceFeedbackTimer();
     void                       clearWorkspaceStripSnapshotRefreshTimer();
     void                       closeActiveSpecialWorkspaces();
@@ -772,6 +772,7 @@ class OverviewController {
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;
+    std::size_t               m_themeWorkspaceFeedbackFrames = 0;
     bool                      m_damageTrackingOverridden = false;
     long                      m_damageTrackingBackup = 2;
     SP<CEventLoopTimer>       m_toggleSwitchReleasePollTimer;
