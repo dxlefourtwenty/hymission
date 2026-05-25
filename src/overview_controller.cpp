@@ -11197,13 +11197,15 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     const double scale = std::min(1.0, std::min(content.width / std::max(1.0, targetWidth), content.height / std::max(1.0, targetHeight)));
     const double cardWidth = targetWidth * scale;
     const double cardHeight = targetHeight * scale;
-    const Rect placeholder = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
-    const Rect placeholderRender = scaleRectForRender(rectToMonitorLocal(placeholder, renderMonitor), renderMonitor);
+    const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
+    const Rect placeholderGlobal =
+        makeRect(renderMonitor->m_position.x + placeholderLocal.x, renderMonitor->m_position.y + placeholderLocal.y, placeholderLocal.width, placeholderLocal.height);
+    const Rect placeholderRender = scaleRectForRender(placeholderLocal, renderMonitor);
 
     g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.62 * progress), {});
     g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.22 * progress), {.blur = true, .blurA = 1.0F});
     g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(1.0, 1.0, 1.0, 0.08 * progress), {});
-    renderOutline(placeholder, activeBorderColorWithAlpha(0.72 * progress), 2.0);
+    renderOutline(placeholderGlobal, activeBorderColorWithAlpha(0.72 * progress), 2.0);
 
     const auto label = g_pHyprRenderer->renderText("No windows", CHyprColor(1.0, 1.0, 1.0, std::min(1.0, progress)), scaleFontSizeForRender(renderMonitor, 16), false, "",
                                                    static_cast<int>(std::max(1.0, placeholderRender.width * 0.85)));
