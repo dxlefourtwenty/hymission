@@ -3184,7 +3184,7 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
         return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
 
-    if (usesDirectNiriScrollingOverview(m_state)) {
+    if (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) {
         if (hideBarsWhenStripShownEnabled() && (layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces())))
             return true;
 
@@ -11209,18 +11209,13 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
             niriScale *= layoutScale;
             cardWidth = baseGlobal.width * niriScale;
             cardHeight = baseGlobal.height * niriScale;
-
-            if (std::abs(layoutScale - 1.0) > 0.001) {
-                cardWidth *= layoutScale;
-                cardHeight *= layoutScale;
-            }
         }
     }
 
     const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
     const Rect placeholderRender = scaleRectForRender(placeholderLocal, renderMonitor);
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24 * progress), {.blur = true, .blurA = 1.0F});
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.05, 0.06, 0.08, 0.72 * progress), {.blur = true, .blurA = 1.0F});
 }
 
 void OverviewController::renderSelectionChrome() const {
