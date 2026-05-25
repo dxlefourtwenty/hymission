@@ -4641,6 +4641,14 @@ bool OverviewController::shouldDisableWorkspaceStripForNiriPreview(const State& 
     return std::ranges::any_of(state.managedWorkspaces, [this](const PHLWORKSPACE& workspace) { return isScrollingWorkspace(workspace); });
 }
 
+bool OverviewController::shouldRenderEmptyOverviewPlaceholder(const State& state, const PHLMONITOR& monitor) const {
+    if (!niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
+        return false;
+
+    const auto workspace = state.ownerWorkspace ? state.ownerWorkspace : (monitor ? monitor->m_activeWorkspace : PHLWORKSPACE{});
+    return workspace && isScrollingWorkspace(workspace);
+}
+
 bool OverviewController::workspaceStripEnabled(const State& state) const {
     return state.collectionPolicy.onlyActiveWorkspace && !state.suppressWorkspaceStrip && !shouldDisableWorkspaceStripForNiriPreview(state);
 }
@@ -11745,6 +11753,9 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
 void OverviewController::renderEmptyOverviewPlaceholder() const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
+        return;
+
+    if (!shouldRenderEmptyOverviewPlaceholder(m_state, renderMonitor))
         return;
 
     const double progress = visualProgress();
