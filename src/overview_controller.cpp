@@ -7654,6 +7654,18 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
                                       preview.width * scaleX, preview.height * scaleY);
     }
 
+    const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& placeholder) {
+        if (m_state.phase == Phase::Active && m_state.relayoutActive)
+            return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
+        return placeholder.targetGlobal;
+    };
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        const Rect preview = currentPlaceholderRect(placeholder);
+        placeholder.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                                          selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                                          preview.width * scaleX, preview.height * scaleY);
+    }
+
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri scrolling camera exit target=" << debugWindowLabel(window)
@@ -7694,6 +7706,14 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
                                          selectedStart.centerY() + (target.centerY() - selectedTarget.centerY()) * scaleY - target.height * scaleY * 0.5,
                                          target.width * scaleX, target.height * scaleY);
         managed.exitGlobal = managed.naturalGlobal;
+    }
+
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        const Rect target = placeholder.targetGlobal;
+        placeholder.naturalGlobal = makeRect(selectedStart.centerX() + (target.centerX() - selectedTarget.centerX()) * scaleX - target.width * scaleX * 0.5,
+                                             selectedStart.centerY() + (target.centerY() - selectedTarget.centerY()) * scaleY - target.height * scaleY * 0.5,
+                                             target.width * scaleX, target.height * scaleY);
+        placeholder.exitGlobal = placeholder.naturalGlobal;
     }
 
     if (debugLogsEnabled()) {
@@ -10990,6 +11010,12 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 }
 
 void OverviewController::moveSelection(Direction direction) {
+    if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && isScrollingWorkspace(activeLayoutWorkspace()) &&
+        (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
+        (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        return;
+    }
+
     if (m_state.windows.empty())
         return;
 
@@ -11001,11 +11027,6 @@ void OverviewController::moveSelection(Direction direction) {
     }
 
     const auto rects = targetRects();
-
-    if (niriModeAppliesToState(m_state) && (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview()) {
-        (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
-        return;
-    }
 
     if (niriModeAppliesToState(m_state) && (direction == Direction::Left || direction == Direction::Right) && *m_state.selectedIndex < m_state.windows.size() &&
         *m_state.selectedIndex < rects.size()) {
@@ -11563,6 +11584,22 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
         return;
 
     const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& placeholder) {
+        if (m_gestureSession.active)
+            return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
+                                              lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+
+        switch (m_state.phase) {
+            case Phase::Opening:
+                return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
+            case Phase::ClosingSettle:
+            case Phase::Closing:
+                return lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+            case Phase::Inactive:
+                return placeholder.naturalGlobal;
+            case Phase::Active:
+                break;
+        }
+
         if (m_state.phase == Phase::Active && m_state.relayoutActive)
             return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
         return placeholder.targetGlobal;
@@ -13168,6 +13205,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     }
 
     if (allowDirectNiriOverviewLayout) {
+        const auto placeholderSourceGlobalForWorkspace = [&](const PHLMONITOR& targetMonitor, const PHLWORKSPACE& workspace) {
+            if (workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
+                const CBox workAreaBox = workspace->m_space->workArea();
+                const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+                if (workArea.width > 1.0 && workArea.height > 1.0)
+                    return workArea;
+            }
+
+            return makeRect(targetMonitor->m_position.x, targetMonitor->m_position.y, targetMonitor->m_size.x, targetMonitor->m_size.y);
+        };
+
         for (const auto& workspace : state.managedWorkspaces) {
             if (!workspace || workspace->m_isSpecialWorkspace)
                 continue;
@@ -13200,13 +13248,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
                 continue;
 
+            const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
+                                               targetLocal.height);
+            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, workspace);
             state.emptyWorkspacePlaceholders.push_back({
                 .monitor = targetMonitor,
                 .workspace = workspace,
                 .workspaceId = workspace->m_id,
-                .targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width, targetLocal.height),
-                .relayoutFromGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
-                                               targetLocal.height),
+                .naturalGlobal = sourceGlobal,
+                .exitGlobal = sourceGlobal,
+                .targetGlobal = targetGlobal,
+                .relayoutFromGlobal = targetGlobal,
             });
         }
     }

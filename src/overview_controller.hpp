@@ -206,6 +206,8 @@ class OverviewController {
         PHLMONITOR  monitor;
         PHLWORKSPACE workspace;
         WORKSPACEID workspaceId = WORKSPACE_INVALID;
+        Rect        naturalGlobal;
+        Rect        exitGlobal;
         Rect        targetGlobal;
         Rect        relayoutFromGlobal;
     };
