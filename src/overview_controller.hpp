@@ -496,6 +496,7 @@ class OverviewController {
     void                       setDamageTrackingOverride(bool disable);
     void                       armThemeSurfaceFeedback(std::size_t frames);
     void                       pumpThemeSurfaceFeedbackFrames();
+    void                       queueThemeRenderUnfocusedWindows() const;
     void                       clearThemeSurfaceFeedbackTimer();
     void                       clearWorkspaceStripSnapshotRefreshTimer();
     void                       closeActiveSpecialWorkspaces();

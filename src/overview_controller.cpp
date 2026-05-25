@@ -2395,7 +2395,20 @@ void OverviewController::pumpThemeSurfaceFeedbackFrames() {
         sendFrameEventsToWorkspaceFn(g_pHyprRenderer.get(), monitor, workspace, now);
     }
 
+    queueThemeRenderUnfocusedWindows();
     --m_themeSurfaceFeedbackFrames;
+}
+
+void OverviewController::queueThemeRenderUnfocusedWindows() const {
+    if (!g_pHyprRenderer || !g_pCompositor)
+        return;
+
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (!window || !window->m_isMapped || window->isHidden() || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace)
+            continue;
+
+        g_pHyprRenderer->addWindowToRenderUnfocused(window);
+    }
 }
 
 void OverviewController::clearThemeSurfaceFeedbackTimer() {
