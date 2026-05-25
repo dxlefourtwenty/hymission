@@ -11182,10 +11182,8 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     if (hasWindowOnRenderMonitor)
         return;
 
-    double progress = visualProgress();
-    if (progress <= 0.0 && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active))
-        progress = 1.0;
-    if (progress <= 0.0)
+    const double progress = visualProgress();
+    if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
         return;
 
     const Rect content = overviewContentRectForMonitor(renderMonitor, m_state);
@@ -11194,12 +11192,14 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
 
     double cardWidth = content.width * 0.62;
     double cardHeight = content.height * 0.62;
+    Rect   sourceLocal = makeRect(0.0, 0.0, renderMonitor->m_size.x, renderMonitor->m_size.y);
 
     const auto workspace = m_state.ownerWorkspace ? m_state.ownerWorkspace : renderMonitor->m_activeWorkspace;
     if (niriModeAppliesToState(m_state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
         const CBox workAreaBox = workspace->m_space->workArea();
         const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
+            sourceLocal = rectToMonitorLocal(baseGlobal, renderMonitor);
             const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
             const LayoutConfig config = layoutConfigForState(m_state);
             const double layoutScale = niriLayoutScale();
@@ -11213,9 +11213,29 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     }
 
     const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
-    const Rect placeholderRender = scaleRectForRender(placeholderLocal, renderMonitor);
+    Rect       currentLocal = placeholderLocal;
+    if (m_gestureSession.active) {
+        currentLocal = lerpRect(sourceLocal, placeholderLocal, progress);
+    } else {
+        switch (m_state.phase) {
+            case Phase::Opening:
+                currentLocal = lerpRect(sourceLocal, placeholderLocal, progress);
+                break;
+            case Phase::ClosingSettle:
+            case Phase::Closing:
+                currentLocal = lerpRect(sourceLocal, placeholderLocal, progress);
+                break;
+            case Phase::Active:
+                currentLocal = placeholderLocal;
+                break;
+            case Phase::Inactive:
+                currentLocal = sourceLocal;
+                break;
+        }
+    }
+    const Rect placeholderRender = scaleRectForRender(currentLocal, renderMonitor);
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24 * progress), {.blur = true, .blurA = 1.0F});
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
 }
 
 void OverviewController::renderSelectionChrome() const {
