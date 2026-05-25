@@ -497,6 +497,7 @@ class OverviewController {
     void                       armThemeSurfaceFeedback(std::size_t frames);
     void                       pumpThemeSurfaceFeedbackFrames();
     void                       clearThemeSurfaceFeedbackTimer();
+    void                       clearWorkspaceStripSnapshotRefreshTimer();
     void                       closeActiveSpecialWorkspaces();
     void                       applyWorkspaceNameOverrides(const State& state);
     void                       restoreWorkspaceNameOverrides();
@@ -832,6 +833,7 @@ class OverviewController {
     std::size_t              m_stripSnapshotRenderDepth = 0;
     bool                     m_stripSnapshotsDirty = false;
     bool                     m_stripSnapshotRefreshScheduled = false;
+    SP<CEventLoopTimer>      m_stripSnapshotRefreshTimer;
     std::size_t              m_stripSnapshotSurfaceFeedbackFrames = 0;
     std::size_t              m_overviewSurfaceFeedbackFrames = 0;
     std::size_t              m_pendingOverviewSurfaceFeedbackFrames = 0;

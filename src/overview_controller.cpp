@@ -1935,6 +1935,7 @@ OverviewController::~OverviewController() {
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
     clearThemeSurfaceFeedbackTimer();
+    clearWorkspaceStripSnapshotRefreshTimer();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
     clearPostCloseDispatcher();
@@ -2406,6 +2407,16 @@ void OverviewController::clearThemeSurfaceFeedbackTimer() {
     if (g_pEventLoopManager)
         g_pEventLoopManager->removeTimer(m_themeSurfaceFeedbackTimer);
     m_themeSurfaceFeedbackTimer.reset();
+}
+
+void OverviewController::clearWorkspaceStripSnapshotRefreshTimer() {
+    if (!m_stripSnapshotRefreshTimer)
+        return;
+
+    m_stripSnapshotRefreshTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_stripSnapshotRefreshTimer);
+    m_stripSnapshotRefreshTimer.reset();
 }
 
 void OverviewController::armPostCloseOpenDebounce(ScopeOverride closedScope) {
@@ -9933,6 +9944,7 @@ void OverviewController::deactivate() {
     m_workspaceSwipeGesture = {};
     m_stripSnapshotsDirty = false;
     m_stripSnapshotRefreshScheduled = false;
+    clearWorkspaceStripSnapshotRefreshTimer();
     m_stripSnapshotSurfaceFeedbackFrames = 0;
     m_overviewSurfaceFeedbackFrames = 0;
     if (m_surfaceFeedbackOverrideActive) {
@@ -11703,6 +11715,34 @@ void OverviewController::scheduleWorkspaceStripSnapshotRefresh() {
         return;
 
     m_stripSnapshotRefreshScheduled = true;
+    const auto refresh = [this] {
+        if (g_controller != this)
+            return;
+
+        m_stripSnapshotRefreshScheduled = false;
+        if (!m_stripSnapshotsDirty)
+            return;
+
+        refreshWorkspaceStripSnapshots();
+    };
+
+    if (m_stripSnapshotSurfaceFeedbackFrames > 0) {
+        if (!m_stripSnapshotRefreshTimer) {
+            m_stripSnapshotRefreshTimer = makeShared<CEventLoopTimer>(
+                THEME_SURFACE_FEEDBACK_INTERVAL,
+                [this, refresh](SP<CEventLoopTimer> self, void*) {
+                    self->updateTimeout(std::nullopt);
+                    refresh();
+                },
+                nullptr);
+            g_pEventLoopManager->addTimer(m_stripSnapshotRefreshTimer);
+            return;
+        }
+
+        m_stripSnapshotRefreshTimer->updateTimeout(THEME_SURFACE_FEEDBACK_INTERVAL);
+        return;
+    }
+
     g_pEventLoopManager->doLater([this] {
         if (g_controller != this)
             return;
