@@ -1936,6 +1936,7 @@ OverviewController::~OverviewController() {
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
     clearThemeSurfaceFeedbackTimer();
+    clearThemeWorkspaceActivationRefresh();
     clearWorkspaceStripSnapshotRefreshTimer();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
@@ -2403,6 +2404,147 @@ void OverviewController::pumpThemeSurfaceFeedbackFrames() {
     --m_themeSurfaceFeedbackFrames;
 }
 
+void OverviewController::armThemeWorkspaceActivationRefresh() {
+    if (!stripThemeWorkspaceActivationRefreshEnabled() || !g_pEventLoopManager || !isVisible() || !workspaceStripEnabled(m_state) || m_state.stripEntries.empty() ||
+        !m_focusWorkspaceOnCurrentMonitorOriginal)
+        return;
+
+    clearThemeWorkspaceActivationRefresh();
+
+    std::vector<std::size_t> targetIndexes;
+    for (std::size_t index = 0; index < m_state.stripEntries.size(); ++index) {
+        const auto& entry = m_state.stripEntries[index];
+        if (!entry.active)
+            continue;
+
+        for (std::size_t previous = index; previous > 0; --previous) {
+            if (m_state.stripEntries[previous - 1].monitor != entry.monitor)
+                break;
+
+            targetIndexes.push_back(previous - 1);
+            break;
+        }
+
+        for (std::size_t next = index + 1; next < m_state.stripEntries.size(); ++next) {
+            if (m_state.stripEntries[next].monitor != entry.monitor)
+                break;
+
+            targetIndexes.push_back(next);
+            break;
+        }
+    }
+
+    for (const auto index : targetIndexes) {
+        if (index >= m_state.stripEntries.size())
+            continue;
+
+        const auto& entry = m_state.stripEntries[index];
+        if (!entry.monitor || !entry.workspace || entry.workspace->m_isSpecialWorkspace || entry.workspaceId == WORKSPACE_INVALID)
+            continue;
+        if (entry.monitor->m_activeWorkspace == entry.workspace)
+            continue;
+        if (std::ranges::any_of(m_themeWorkspaceActivationRefreshTargets,
+                                [&](const ThemeWorkspaceActivationTarget& target) { return target.workspace == entry.workspace; }))
+            continue;
+
+        m_themeWorkspaceActivationRefreshTargets.push_back({
+            .monitor = entry.monitor,
+            .workspace = entry.workspace,
+            .workspaceId = entry.workspaceId,
+        });
+    }
+
+    if (m_themeWorkspaceActivationRefreshTargets.empty())
+        return;
+
+    const auto focusState = Desktop::focusState();
+    m_themeWorkspaceActivationRefreshOriginalMonitor = focusState ? focusState->monitor() : PHLMONITOR{};
+    m_themeWorkspaceActivationRefreshOriginalWorkspace =
+        m_themeWorkspaceActivationRefreshOriginalMonitor ? m_themeWorkspaceActivationRefreshOriginalMonitor->m_activeWorkspace : PHLWORKSPACE{};
+    m_themeWorkspaceActivationRefreshOriginalFocus = focusState ? focusState->window() : PHLWINDOW{};
+    m_themeWorkspaceActivationRefreshActive = true;
+    m_themeWorkspaceActivationRefreshRestoring = false;
+    m_themeWorkspaceActivationRefreshIndex = 0;
+    const auto generation = ++m_themeWorkspaceActivationRefreshGeneration;
+
+    m_themeWorkspaceActivationRefreshTimer = makeShared<CEventLoopTimer>(
+        THEME_SURFACE_FEEDBACK_INTERVAL,
+        [this, generation](SP<CEventLoopTimer> self, void*) {
+            if (g_controller != this || generation != m_themeWorkspaceActivationRefreshGeneration || !m_themeWorkspaceActivationRefreshActive) {
+                self->updateTimeout(std::nullopt);
+                return;
+            }
+
+            stepThemeWorkspaceActivationRefresh();
+            self->updateTimeout(m_themeWorkspaceActivationRefreshActive ? std::optional{THEME_SURFACE_FEEDBACK_INTERVAL} : std::nullopt);
+        },
+        nullptr);
+    g_pEventLoopManager->addTimer(m_themeWorkspaceActivationRefreshTimer);
+
+    stepThemeWorkspaceActivationRefresh();
+}
+
+void OverviewController::stepThemeWorkspaceActivationRefresh() {
+    if (!m_themeWorkspaceActivationRefreshActive)
+        return;
+
+    if (m_themeWorkspaceActivationRefreshIndex < m_themeWorkspaceActivationRefreshTargets.size()) {
+        const auto target = m_themeWorkspaceActivationRefreshTargets[m_themeWorkspaceActivationRefreshIndex++];
+        if (!target.monitor || !target.workspace || target.workspace->m_isSpecialWorkspace || target.workspaceId == WORKSPACE_INVALID)
+            return;
+
+        m_pendingStripWorkspaceChangeTarget = target.workspace;
+        Desktop::focusState()->rawMonitorFocus(target.monitor);
+        m_focusWorkspaceOnCurrentMonitorOriginal(std::to_string(target.workspaceId));
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+        damageOwnedMonitors();
+        return;
+    }
+
+    if (!m_themeWorkspaceActivationRefreshRestoring) {
+        m_themeWorkspaceActivationRefreshRestoring = true;
+        const auto originalMonitor = m_themeWorkspaceActivationRefreshOriginalMonitor.lock();
+        const auto originalWorkspace = m_themeWorkspaceActivationRefreshOriginalWorkspace.lock();
+        if (originalMonitor && originalWorkspace && originalWorkspace->m_monitor.lock() == originalMonitor) {
+            m_pendingStripWorkspaceChangeTarget = originalWorkspace;
+            Desktop::focusState()->rawMonitorFocus(originalMonitor);
+            m_focusWorkspaceOnCurrentMonitorOriginal(std::to_string(originalWorkspace->m_id));
+        }
+        return;
+    }
+
+    if (const auto originalFocus = m_themeWorkspaceActivationRefreshOriginalFocus.lock(); originalFocus && originalFocus->m_isMapped && !originalFocus->isHidden())
+        focusWindowCompat(originalFocus);
+    else if (const auto originalMonitor = m_themeWorkspaceActivationRefreshOriginalMonitor.lock())
+        Desktop::focusState()->rawMonitorFocus(originalMonitor);
+
+    m_stripSnapshotsDirty = true;
+    m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, static_cast<std::size_t>(std::max(1, stripThemeSurfaceFeedbackFrames())));
+    scheduleWorkspaceStripSnapshotRefresh();
+    damageOwnedMonitors();
+    clearThemeWorkspaceActivationRefresh();
+}
+
+void OverviewController::clearThemeWorkspaceActivationRefresh() {
+    ++m_themeWorkspaceActivationRefreshGeneration;
+    m_themeWorkspaceActivationRefreshActive = false;
+    m_themeWorkspaceActivationRefreshRestoring = false;
+    m_themeWorkspaceActivationRefreshTargets.clear();
+    m_themeWorkspaceActivationRefreshIndex = 0;
+    m_themeWorkspaceActivationRefreshOriginalMonitor.reset();
+    m_themeWorkspaceActivationRefreshOriginalWorkspace.reset();
+    m_themeWorkspaceActivationRefreshOriginalFocus.reset();
+
+    if (!m_themeWorkspaceActivationRefreshTimer)
+        return;
+
+    m_themeWorkspaceActivationRefreshTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_themeWorkspaceActivationRefreshTimer);
+    m_themeWorkspaceActivationRefreshTimer.reset();
+}
+
 bool OverviewController::renderThemeWorkspaceFeedbackFrame() {
     if (!g_pHyprRenderer || !g_pHyprOpenGL || !g_pCompositor)
         return false;
@@ -2746,6 +2888,7 @@ void OverviewController::handleConfigReloaded() {
     m_stripSnapshotsDirty = true;
     m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, refreshFrames);
     scheduleWorkspaceStripSnapshotRefresh();
+    armThemeWorkspaceActivationRefresh();
     damageOwnedMonitors();
 }
 
@@ -3942,6 +4085,10 @@ bool OverviewController::refreshPreviewsOnConfigReloadEnabled() const {
 
 int OverviewController::stripThemeSurfaceFeedbackFrames() const {
     return getConfigInt(m_handle, "plugin:hymission:strip_theme_surface_feedback_frames", 300);
+}
+
+bool OverviewController::stripThemeWorkspaceActivationRefreshEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:strip_theme_workspace_activation_refresh", 1) != 0;
 }
 
 bool OverviewController::multiWorkspaceSortRecentFirstEnabled() const {

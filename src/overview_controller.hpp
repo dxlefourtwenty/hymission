@@ -377,6 +377,12 @@ class OverviewController {
         Vector2D   framebufferSize;
     };
 
+    struct ThemeWorkspaceActivationTarget {
+        PHLMONITOR   monitor;
+        PHLWORKSPACE workspace;
+        WORKSPACEID  workspaceId = WORKSPACE_INVALID;
+    };
+
     struct HiddenStripLayerProxy {
         PHLLS      layer;
         PHLMONITOR monitor;
@@ -498,6 +504,10 @@ class OverviewController {
     void                       pumpThemeSurfaceFeedbackFrames();
     bool                       renderThemeWorkspaceFeedbackFrame();
     void                       clearThemeSurfaceFeedbackTimer();
+    [[nodiscard]] bool         stripThemeWorkspaceActivationRefreshEnabled() const;
+    void                       armThemeWorkspaceActivationRefresh();
+    void                       stepThemeWorkspaceActivationRefresh();
+    void                       clearThemeWorkspaceActivationRefresh();
     void                       clearWorkspaceStripSnapshotRefreshTimer();
     void                       closeActiveSpecialWorkspaces();
     void                       applyWorkspaceNameOverrides(const State& state);
@@ -773,6 +783,15 @@ class OverviewController {
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;
     std::size_t               m_themeWorkspaceFeedbackFrames = 0;
+    SP<CEventLoopTimer>       m_themeWorkspaceActivationRefreshTimer;
+    std::vector<ThemeWorkspaceActivationTarget> m_themeWorkspaceActivationRefreshTargets;
+    std::size_t               m_themeWorkspaceActivationRefreshIndex = 0;
+    std::size_t               m_themeWorkspaceActivationRefreshGeneration = 0;
+    bool                      m_themeWorkspaceActivationRefreshActive = false;
+    bool                      m_themeWorkspaceActivationRefreshRestoring = false;
+    PHLMONITORREF             m_themeWorkspaceActivationRefreshOriginalMonitor;
+    PHLWORKSPACEREF           m_themeWorkspaceActivationRefreshOriginalWorkspace;
+    PHLWINDOWREF              m_themeWorkspaceActivationRefreshOriginalFocus;
     bool                      m_damageTrackingOverridden = false;
     long                      m_damageTrackingBackup = 2;
     SP<CEventLoopTimer>       m_toggleSwitchReleasePollTimer;
