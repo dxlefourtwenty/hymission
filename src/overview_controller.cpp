@@ -2608,7 +2608,7 @@ bool OverviewController::renderThemeWorkspaceFeedbackFrame() {
         workspace->m_renderOffset->setValueAndWarp(Vector2D{});
         workspace->m_alpha->setValueAndWarp(1.F);
         g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
-        g_pHyprRenderer->m_bRenderingSnapshot = true;
+        g_pHyprRenderer->m_bRenderingSnapshot = false;
         g_pHyprOpenGL->makeEGLCurrent();
 
         CRegion fakeDamage{0, 0, fbWidth, fbHeight};
@@ -11918,7 +11918,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         g_pHyprRenderer->draw(CClearPassElement::SClearData{.color = CHyprColor{0.05, 0.06, 0.08, 1.0}}, fakeDamage);
         renderBackgroundLayers(renderNow);
         if (renderWorkspaceContents && targetWorkspace && renderWindowFn) {
-            g_pHyprRenderer->m_bRenderingSnapshot = true;
             const auto renderPreviewWindows = [&](bool floating) {
                 for (const auto& managed : m_stripPreviewContext.state.windows) {
                     if (!managed.window || managed.isFloating != floating)
@@ -11930,7 +11929,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             renderPreviewWindows(false);
             renderPreviewWindows(true);
             renderFocusedWindowBorder(m_stripPreviewContext.state, 1.0, true);
-            g_pHyprRenderer->m_bRenderingSnapshot = previousRenderingSnapshot;
         }
         g_pHyprRenderer->m_renderData.blockScreenShader = true;
         g_pHyprRenderer->endRender();
