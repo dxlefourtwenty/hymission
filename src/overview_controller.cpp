@@ -11192,28 +11192,35 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     if (content.width <= 0.0 || content.height <= 0.0)
         return;
 
-    const double targetWidth = content.width * 0.62;
-    const double targetHeight = content.height * 0.62;
-    const double scale = std::min(1.0, std::min(content.width / std::max(1.0, targetWidth), content.height / std::max(1.0, targetHeight)));
-    const double cardWidth = targetWidth * scale;
-    const double cardHeight = targetHeight * scale;
+    double cardWidth = content.width * 0.62;
+    double cardHeight = content.height * 0.62;
+
+    const auto workspace = m_state.ownerWorkspace ? m_state.ownerWorkspace : renderMonitor->m_activeWorkspace;
+    if (niriModeAppliesToState(m_state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
+        const CBox workAreaBox = workspace->m_space->workArea();
+        const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
+            const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
+            const LayoutConfig config = layoutConfigForState(m_state);
+            const double layoutScale = niriLayoutScale();
+            double niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+            const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
+            niriScale = std::max(config.minSlotScale, std::min({niriScale, niriMultiWorkspaceScale(), viewportScale}));
+            niriScale *= layoutScale;
+            cardWidth = baseGlobal.width * niriScale;
+            cardHeight = baseGlobal.height * niriScale;
+
+            if (std::abs(layoutScale - 1.0) > 0.001) {
+                cardWidth *= layoutScale;
+                cardHeight *= layoutScale;
+            }
+        }
+    }
+
     const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
-    const Rect placeholderGlobal =
-        makeRect(renderMonitor->m_position.x + placeholderLocal.x, renderMonitor->m_position.y + placeholderLocal.y, placeholderLocal.width, placeholderLocal.height);
     const Rect placeholderRender = scaleRectForRender(placeholderLocal, renderMonitor);
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.62 * progress), {});
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.06, 0.10, 0.16, 0.22 * progress), {.blur = true, .blurA = 1.0F});
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(1.0, 1.0, 1.0, 0.08 * progress), {});
-    renderOutline(placeholderGlobal, activeBorderColorWithAlpha(0.72 * progress), 2.0);
-
-    const auto label = g_pHyprRenderer->renderText("No windows", CHyprColor(1.0, 1.0, 1.0, std::min(1.0, progress)), scaleFontSizeForRender(renderMonitor, 16), false, "",
-                                                   static_cast<int>(std::max(1.0, placeholderRender.width * 0.85)));
-    if (label) {
-        const Rect labelRect =
-            makeRect(placeholderRender.centerX() - label->m_size.x * 0.5, placeholderRender.centerY() - label->m_size.y * 0.5, label->m_size.x, label->m_size.y);
-        g_pHyprOpenGL->renderTexture(label, toBox(labelRect), {});
-    }
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24 * progress), {.blur = true, .blurA = 1.0F});
 }
 
 void OverviewController::renderSelectionChrome() const {
