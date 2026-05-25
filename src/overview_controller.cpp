@@ -7694,6 +7694,56 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     return true;
 }
 
+bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder) {
+    if (!placeholder.workspace || !isScrollingWorkspace(placeholder.workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+        !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& current) {
+        if (m_state.phase == Phase::Active && m_state.relayoutActive)
+            return lerpRect(current.relayoutFromGlobal, current.targetGlobal, relayoutVisualProgress());
+        return current.targetGlobal;
+    };
+
+    const Rect selectedPreview = currentPlaceholderRect(placeholder);
+    const Rect selectedExit = placeholder.naturalGlobal;
+    if (selectedPreview.width <= 1.0 || selectedPreview.height <= 1.0 || selectedExit.width <= 1.0 || selectedExit.height <= 1.0)
+        return false;
+
+    const double scaleX = selectedExit.width / selectedPreview.width;
+    const double scaleY = selectedExit.height / selectedPreview.height;
+    if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
+        return false;
+
+    for (auto& managed : m_state.windows) {
+        if (!managed.window || !managed.window->m_isMapped)
+            continue;
+
+        const Rect preview = currentPreviewRect(managed);
+        managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                                      selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                                      preview.width * scaleX, preview.height * scaleY);
+    }
+
+    for (auto& current : m_state.emptyWorkspacePlaceholders) {
+        const Rect preview = currentPlaceholderRect(current);
+        current.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                                      selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                                      preview.width * scaleX, preview.height * scaleY);
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] niri scrolling camera exit placeholder=" << debugWorkspaceLabel(placeholder.workspace)
+            << " selectedPreview=" << rectToString(selectedPreview)
+            << " selectedExit=" << rectToString(selectedExit)
+            << " scale=(" << scaleX << "," << scaleY << ")";
+        debugLog(out.str());
+    }
+
+    return true;
+}
+
 bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& window) {
     if (!window || !window->m_workspace || !isScrollingWorkspace(window->m_workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
         !usesDirectNiriScrollingOverview(m_state))
@@ -7745,8 +7795,10 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
 }
 
 void OverviewController::prepareGestureCloseExitGeometry() {
+    const auto predictedPlaceholderWorkspace = resolveExitWorkspace(CloseMode::Normal);
+    const auto* predictedPlaceholder = centeredEmptyWorkspacePlaceholder(m_state);
     const auto predictedExitFocus = resolveExitFocus(CloseMode::Normal);
-    const auto predictedExitWorkspace = predictedExitFocus ? predictedExitFocus->m_workspace : PHLWORKSPACE{};
+    const auto predictedExitWorkspace = predictedPlaceholderWorkspace ? predictedPlaceholderWorkspace : (predictedExitFocus ? predictedExitFocus->m_workspace : PHLWORKSPACE{});
     const auto predictedExitMonitor =
         predictedExitWorkspace && predictedExitWorkspace->m_monitor.lock() ? predictedExitWorkspace->m_monitor.lock() :
         (predictedExitFocus ? predictedExitFocus->m_monitor.lock() : PHLMONITOR{});
@@ -7771,6 +7823,8 @@ void OverviewController::prepareGestureCloseExitGeometry() {
         out << "[hymission] prepare gesture close exit";
         if (predictedExitFocus)
             out << " target=" << debugWindowLabel(predictedExitFocus);
+        else if (predictedPlaceholderWorkspace)
+            out << " targetWorkspace=" << debugWorkspaceLabel(predictedPlaceholderWorkspace);
         else
             out << " target=<null>";
         out << " workspaceSwitch=" << (workspaceSwitchOnExit ? 1 : 0);
@@ -7817,8 +7871,12 @@ void OverviewController::prepareGestureCloseExitGeometry() {
         managed.exitGlobal = translateRect(managed.exitGlobal, scrollingTranslation->x, scrollingTranslation->y);
     }
 
-    if (preferGoalGeometry)
-        (void)applyNiriScrollingCameraExitGeometry(predictedExitFocus);
+    if (preferGoalGeometry) {
+        if (predictedPlaceholder && predictedPlaceholder->workspace == predictedPlaceholderWorkspace)
+            (void)applyNiriScrollingCameraExitGeometry(*predictedPlaceholder);
+        else
+            (void)applyNiriScrollingCameraExitGeometry(predictedExitFocus);
+    }
 }
 
 std::optional<OverviewController::WindowTransform> OverviewController::windowTransformFor(const PHLWINDOW& window, const PHLMONITOR& monitor) const {
@@ -8585,6 +8643,15 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
     }
 
     return best && bestDistance2 <= 4.0 ? best : nullptr;
+}
+
+OverviewController::EmptyWorkspacePlaceholder* OverviewController::pendingExitWorkspacePlaceholder() {
+    if (!m_state.pendingExitWorkspace)
+        return nullptr;
+
+    const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
+                                 [&](const EmptyWorkspacePlaceholder& placeholder) { return placeholder.workspace == m_state.pendingExitWorkspace; });
+    return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
 }
 
 bool OverviewController::exitFocusChangedWorkspace(const PHLWINDOW& window) const {
@@ -10149,6 +10216,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         if (debugLogsEnabled())
             debugLog("[hymission] beginClose settle start");
     } else {
+        bool appliedPlaceholderCameraExit = false;
+        if (auto* placeholder = pendingExitWorkspacePlaceholder())
+            appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
+
         if (mode != CloseMode::Abort) {
             if (m_state.pendingExitWorkspace)
                 (void)activateWorkspaceForExit(m_state.pendingExitWorkspace);
@@ -10160,8 +10231,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         m_state.animationFromVisual = fromVisual;
         m_state.animationToVisual = 0.0;
         m_state.animationStart = {};
-        for (auto& managed : m_state.windows)
-            managed.exitGlobal = liveGlobalRectForWindow(managed.window);
+        if (!appliedPlaceholderCameraExit) {
+            for (auto& managed : m_state.windows)
+                managed.exitGlobal = liveGlobalRectForWindow(managed.window);
+        }
         if (debugLogsEnabled() && m_state.pendingExitFocus) {
             if (const auto* pendingManaged = managedWindowFor(m_state.pendingExitFocus)) {
                 std::ostringstream out;
