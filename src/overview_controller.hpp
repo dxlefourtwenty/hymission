@@ -202,6 +202,13 @@ class OverviewController {
         bool                     active = false;
     };
 
+    struct EmptyWorkspacePlaceholder {
+        PHLMONITOR  monitor;
+        PHLWORKSPACE workspace;
+        WORKSPACEID workspaceId = WORKSPACE_INVALID;
+        Rect        targetGlobal;
+    };
+
     struct State {
         Phase                                  phase = Phase::Inactive;
         PHLMONITOR                             ownerMonitor;
@@ -211,6 +218,7 @@ class OverviewController {
         std::vector<PHLMONITOR>                participatingMonitors;
         std::vector<PHLWORKSPACE>              managedWorkspaces;
         std::vector<WorkspaceStripEntry>       stripEntries;
+        std::vector<EmptyWorkspacePlaceholder> emptyWorkspacePlaceholders;
         std::vector<FullscreenWorkspaceBackup> fullscreenBackups;
         PHLWINDOW                              focusBeforeOpen;
         PHLWINDOW                              focusDuringOverview;
@@ -696,6 +704,7 @@ class OverviewController {
     [[nodiscard]] bool shouldHideLayerSurface(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool shouldHideLayerSurfaceNamespace(const PHLLS& layer, const std::string& namespaces) const;
     void renderBackdrop() const;
+    [[nodiscard]] Rect emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const;
     void renderEmptyOverviewPlaceholder() const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;

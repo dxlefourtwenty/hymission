@@ -11464,9 +11464,54 @@ void OverviewController::renderBackdrop() const {
         {});
 }
 
+Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const {
+    if (!monitor || content.width <= 0.0 || content.height <= 0.0)
+        return {};
+
+    double cardWidth = content.width * 0.62;
+    double cardHeight = content.height * 0.62;
+
+    if (niriModeAppliesToState(state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
+        const CBox workAreaBox = workspace->m_space->workArea();
+        const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
+            const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
+            const LayoutConfig config = layoutConfigForState(state);
+            double niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+            const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
+            niriScale = std::max(config.minSlotScale, std::min({niriScale, niriMultiWorkspaceScale(), viewportScale}));
+            niriScale *= niriLayoutScale();
+            cardWidth = baseGlobal.width * niriScale;
+            cardHeight = baseGlobal.height * niriScale;
+        }
+    }
+
+    return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
+}
+
 void OverviewController::renderEmptyOverviewPlaceholder() const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
+        return;
+
+    const double progress = visualProgress();
+    if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
+        return;
+
+    bool renderedStatePlaceholder = false;
+    for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (!placeholder.monitor || placeholder.monitor != renderMonitor)
+            continue;
+
+        const Rect targetLocal = rectToMonitorLocal(placeholder.targetGlobal, renderMonitor);
+        const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
+        if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
+            continue;
+
+        g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+        renderedStatePlaceholder = true;
+    }
+    if (renderedStatePlaceholder)
         return;
 
     const bool hasWindowOnRenderMonitor = std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
@@ -11475,16 +11520,10 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     if (hasWindowOnRenderMonitor)
         return;
 
-    const double progress = visualProgress();
-    if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
-        return;
-
     const Rect content = overviewContentRectForMonitor(renderMonitor, m_state);
     if (content.width <= 0.0 || content.height <= 0.0)
         return;
 
-    double cardWidth = content.width * 0.62;
-    double cardHeight = content.height * 0.62;
     Rect   sourceLocal = makeRect(0.0, 0.0, renderMonitor->m_size.x, renderMonitor->m_size.y);
 
     const auto workspace = m_state.ownerWorkspace ? m_state.ownerWorkspace : renderMonitor->m_activeWorkspace;
@@ -11493,19 +11532,10 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
         const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
             sourceLocal = rectToMonitorLocal(baseGlobal, renderMonitor);
-            const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
-            const LayoutConfig config = layoutConfigForState(m_state);
-            const double layoutScale = niriLayoutScale();
-            double niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
-            const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
-            niriScale = std::max(config.minSlotScale, std::min({niriScale, niriMultiWorkspaceScale(), viewportScale}));
-            niriScale *= layoutScale;
-            cardWidth = baseGlobal.width * niriScale;
-            cardHeight = baseGlobal.height * niriScale;
         }
     }
 
-    const Rect placeholderLocal = makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
+    const Rect placeholderLocal = emptyOverviewPlaceholderLocalRect(renderMonitor, workspace, content, m_state);
     Rect       currentLocal = placeholderLocal;
     if (m_gestureSession.active) {
         currentLocal = lerpRect(sourceLocal, placeholderLocal, progress);
@@ -11739,6 +11769,9 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
 
         renderWorkspaceContents = !previewState.windows.empty();
     }
+
+    if (!renderWorkspaceContents)
+        return;
 
     if (renderWorkspaceContents && !renderWindowFn)
         return;
@@ -12619,14 +12652,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 continue;
 
             PHLWORKSPACE centerWorkspace = candidateMonitor->m_activeWorkspace;
-            if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
-                state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
-                centerWorkspace = state.focusDuringOverview->m_workspace;
-            } else if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
-                const auto selectedWindow = state.windows[*state.selectedIndex].window;
-                if (selectedWindow && selectedWindow->m_workspace && selectedWindow->m_workspace->m_monitor.lock() == candidateMonitor)
-                    centerWorkspace = selectedWindow->m_workspace;
-            }
+            if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspace)
+                centerWorkspace = override->workspace;
 
             std::size_t activeIndex = 0;
             if (centerWorkspace) {
@@ -12952,6 +12979,42 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
     }
 
+    if (allowDirectNiriOverviewLayout) {
+        for (const auto& workspace : state.managedWorkspaces) {
+            if (!workspace || workspace->m_isSpecialWorkspace)
+                continue;
+
+            const auto targetMonitor = workspace->m_monitor.lock();
+            if (!targetMonitor)
+                continue;
+
+            const bool hasManagedWindow = std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
+                if (!managed.window || managed.targetMonitor != targetMonitor)
+                    return false;
+                if (managed.window->m_workspace == workspace)
+                    return true;
+                return managed.window->m_pinned && targetMonitor->m_activeWorkspace == workspace;
+            });
+            if (hasManagedWindow)
+                continue;
+
+            Rect content = overviewContentRectForMonitor(targetMonitor, state);
+            if (const auto laneIt = niriWorkspaceLaneById.find(workspace->m_id); laneIt != niriWorkspaceLaneById.end())
+                content = laneIt->second;
+
+            const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, workspace, content, state);
+            if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
+                continue;
+
+            state.emptyWorkspacePlaceholders.push_back({
+                .monitor = targetMonitor,
+                .workspace = workspace,
+                .workspaceId = workspace->m_id,
+                .targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width, targetLocal.height),
+            });
+        }
+    }
+
     const auto settleNiriFloatingOverlayOverlaps = [&]() {
         const double gap = std::max(2.0, std::min(12.0, std::min(config.columnSpacing, config.rowSpacing) * 0.25));
         for (const auto& candidateMonitor : activeParticipatingMonitors) {
@@ -13201,7 +13264,19 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     buildWorkspaceStripEntries(state);
 
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
-    if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty()) {
+    const bool centeredEmptyPlaceholder = std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+        const auto placeholderMonitor = placeholder.monitor;
+        if (!placeholderMonitor || placeholderMonitor != state.ownerMonitor)
+            return false;
+
+        const Rect content = overviewContentRectForMonitor(placeholderMonitor, state);
+        if (content.width <= 0.0 || content.height <= 0.0)
+            return false;
+
+        return std::abs(placeholder.targetGlobal.centerX() - (placeholderMonitor->m_position.x + content.centerX())) <= 1.0 &&
+            std::abs(placeholder.targetGlobal.centerY() - (placeholderMonitor->m_position.y + content.centerY())) <= 1.0;
+    });
+    if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() && !centeredEmptyPlaceholder) {
         state.selectedIndex = 0;
         state.focusDuringOverview = state.windows[*state.selectedIndex].window;
     }
