@@ -505,6 +505,8 @@ class OverviewController {
     bool                       renderThemeWorkspaceFeedbackFrame();
     void                       clearThemeSurfaceFeedbackTimer();
     [[nodiscard]] bool         stripThemeWorkspaceActivationRefreshEnabled() const;
+    [[nodiscard]] std::string  stripThemeWorkspaceActivationRefreshClasses() const;
+    [[nodiscard]] bool         workspaceNeedsThemeActivationRefresh(const PHLWORKSPACE& workspace) const;
     void                       armThemeWorkspaceActivationRefresh();
     void                       stepThemeWorkspaceActivationRefresh();
     void                       clearThemeWorkspaceActivationRefresh();

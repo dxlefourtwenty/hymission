@@ -2443,6 +2443,8 @@ void OverviewController::armThemeWorkspaceActivationRefresh() {
             continue;
         if (entry.monitor->m_activeWorkspace == entry.workspace)
             continue;
+        if (!workspaceNeedsThemeActivationRefresh(entry.workspace))
+            continue;
         if (std::ranges::any_of(m_themeWorkspaceActivationRefreshTargets,
                                 [&](const ThemeWorkspaceActivationTarget& target) { return target.workspace == entry.workspace; }))
             continue;
@@ -4089,6 +4091,40 @@ int OverviewController::stripThemeSurfaceFeedbackFrames() const {
 
 bool OverviewController::stripThemeWorkspaceActivationRefreshEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:strip_theme_workspace_activation_refresh", 1) != 0;
+}
+
+std::string OverviewController::stripThemeWorkspaceActivationRefreshClasses() const {
+    return getConfigString(m_handle, "plugin:hymission:strip_theme_workspace_activation_refresh_classes", "kitty");
+}
+
+bool OverviewController::workspaceNeedsThemeActivationRefresh(const PHLWORKSPACE& workspace) const {
+    if (!workspace)
+        return false;
+
+    const auto configuredClasses = splitCommaTokens(stripThemeWorkspaceActivationRefreshClasses());
+    std::vector<std::string> normalizedClasses;
+    normalizedClasses.reserve(configuredClasses.size());
+    for (const auto& configuredClass : configuredClasses) {
+        const auto normalizedClass = asciiLowerCopy(trimCopy(configuredClass));
+        if (!normalizedClass.empty())
+            normalizedClasses.push_back(normalizedClass);
+    }
+
+    if (normalizedClasses.empty())
+        return false;
+    if (std::ranges::find(normalizedClasses, "*") != normalizedClasses.end())
+        return true;
+
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (!window || !window->m_isMapped || window->isHidden() || window->m_workspace != workspace)
+            continue;
+
+        const auto windowClass = asciiLowerCopy(window->m_class);
+        if (std::ranges::find(normalizedClasses, windowClass) != normalizedClasses.end())
+            return true;
+    }
+
+    return false;
 }
 
 bool OverviewController::multiWorkspaceSortRecentFirstEnabled() const {

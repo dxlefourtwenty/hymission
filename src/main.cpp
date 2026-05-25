@@ -312,6 +312,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     INT_CONF("refresh_previews_on_config_reload", 1);
     INT_CONF("strip_theme_surface_feedback_frames", 300);
     INT_CONF("strip_theme_workspace_activation_refresh", 1);
+    STRING_CONF("strip_theme_workspace_activation_refresh_classes", "kitty");
     INT_CONF("multi_workspace_sort_recent_first", 1);
     INT_CONF("niri_mode", 0);
     FLOAT_CONF("niri_scroll_pixels_per_delta", 1.0F);
