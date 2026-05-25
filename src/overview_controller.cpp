@@ -3104,6 +3104,9 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
     if (effectiveHoveredIndex) {
         const auto clickedIndex = *effectiveHoveredIndex;
         const auto clickedWindow = clickedIndex < m_state.windows.size() ? m_state.windows[clickedIndex].window : PHLWINDOW{};
+        const bool directNiriSingleWorkspaceScrollClick =
+            usesDirectNiriScrollingOverview(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && clickedWindow && clickedWindow->m_workspace &&
+            isScrollingWorkspace(clickedWindow->m_workspace);
 
         if (niriModeAppliesToState(m_state) && m_state.selectedIndex && clickedIndex != *m_state.selectedIndex) {
             const auto previousSelectedWindow = selectedWindow();
@@ -3139,6 +3142,10 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
         latchHoverSelectionAnchor(m_pressedWindowPointer);
         updateSelectedWindowLayout(previousSelectedWindow);
+        if (directNiriSingleWorkspaceScrollClick) {
+            (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center");
+        }
         damageOwnedMonitors();
         return true;
     }
@@ -12652,8 +12659,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const bool allowDirectNiriOverviewLayout = niriDirectSingleWorkspaceOverview;
     const double niriActiveWorkspaceLayoutScale =
         niriModeAppliesToState(state) && !g_niriStripSnapshotSingleWorkspaceOnly ? niriLayoutScale() : 1.0;
+    std::unordered_map<MONITORID, std::pair<WORKSPACEID, WORKSPACEID>> placeholderRangeByMonitor;
 
     if (allowDirectNiriOverviewLayout) {
+        std::unordered_set<WORKSPACEID> directNiriWorkspacesWithWindows;
+        for (const auto& managed : state.windows) {
+            if (!managed.window || !managed.window->m_workspace || !managed.window->m_isMapped)
+                continue;
+
+            directNiriWorkspacesWithWindows.insert(managed.window->m_workspace->m_id);
+        }
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
                 continue;
@@ -12680,11 +12695,38 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             PHLWORKSPACE centerWorkspace = candidateMonitor->m_activeWorkspace;
             if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspace)
                 centerWorkspace = override->workspace;
+            else if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
+                     state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
+                centerWorkspace = state.focusDuringOverview->m_workspace;
+            }
 
             std::size_t activeIndex = 0;
             if (centerWorkspace) {
                 if (const auto it = std::find(monitorWorkspaces.begin(), monitorWorkspaces.end(), centerWorkspace); it != monitorWorkspaces.end())
                     activeIndex = static_cast<std::size_t>(std::distance(monitorWorkspaces.begin(), it));
+            }
+
+            std::size_t firstPlaceholderIndex = monitorWorkspaces.size();
+            std::size_t lastPlaceholderIndex = monitorWorkspaces.size();
+            for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
+                const auto& workspace = monitorWorkspaces[index];
+                if (!workspace)
+                    continue;
+
+                const bool hasWindows = directNiriWorkspacesWithWindows.contains(workspace->m_id);
+                const bool keepAsAnchor = centerWorkspace && workspace == centerWorkspace;
+                if (!hasWindows && !keepAsAnchor)
+                    continue;
+
+                firstPlaceholderIndex = std::min(firstPlaceholderIndex, index);
+                lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
+            }
+
+            if (firstPlaceholderIndex != monitorWorkspaces.size() && lastPlaceholderIndex != monitorWorkspaces.size()) {
+                placeholderRangeByMonitor[candidateMonitor->m_id] = {
+                    monitorWorkspaces[firstPlaceholderIndex]->m_id,
+                    monitorWorkspaces[lastPlaceholderIndex]->m_id,
+                };
             }
 
             const Rect content = overviewContentRectForMonitor(candidateMonitor, state);
@@ -13013,6 +13055,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const auto targetMonitor = workspace->m_monitor.lock();
             if (!targetMonitor)
                 continue;
+
+            if (const auto rangeIt = placeholderRangeByMonitor.find(targetMonitor->m_id); rangeIt != placeholderRangeByMonitor.end()) {
+                const auto [minPlaceholderId, maxPlaceholderId] = rangeIt->second;
+                if (workspace->m_id < minPlaceholderId || workspace->m_id > maxPlaceholderId)
+                    continue;
+            }
 
             const bool hasManagedWindow = std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
                 if (!managed.window || managed.targetMonitor != targetMonitor)
