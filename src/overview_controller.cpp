@@ -6714,10 +6714,14 @@ std::vector<PHLMONITOR> OverviewController::ownedMonitors() const {
         monitors.push_back(monitor);
     };
 
+    append(m_state.ownerMonitor);
+
     for (const auto& monitor : m_state.participatingMonitors)
         append(monitor);
 
     if (m_workspaceTransition.active) {
+        append(m_workspaceTransition.sourceState.ownerMonitor);
+        append(m_workspaceTransition.targetState.ownerMonitor);
         for (const auto& monitor : m_workspaceTransition.sourceState.participatingMonitors)
             append(monitor);
         for (const auto& monitor : m_workspaceTransition.targetState.participatingMonitors)
