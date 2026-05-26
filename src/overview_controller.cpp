@@ -11226,6 +11226,14 @@ void OverviewController::moveSelection(Direction direction) {
             const Rect& candidate = rects[index];
             const double dx = candidate.centerX() - current.centerX();
             const double dy = candidate.centerY() - current.centerY();
+            const bool verticalSearch = searchDirection == Direction::Up || searchDirection == Direction::Down;
+            if (verticalSearch) {
+                const double overlapLeft = std::max(current.x, candidate.x);
+                const double overlapRight = std::min(current.x + current.width, candidate.x + candidate.width);
+                const double overlapWidth = std::max(0.0, overlapRight - overlapLeft);
+                if (overlapWidth < std::min(current.width, candidate.width) * 0.15)
+                    continue;
+            }
 
             double primary = 0.0;
             double secondary = 0.0;
