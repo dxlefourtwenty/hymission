@@ -4753,47 +4753,46 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
         return false;
 
     if (niriModeAppliesToState(m_state) && !m_state.managedWorkspaces.empty()) {
-        PHLWORKSPACE currentWorkspace = monitor->m_activeWorkspace;
-        if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, monitor); centeredEmptyWorkspace) {
-            currentWorkspace = centeredEmptyWorkspace;
+        WORKSPACEID currentWorkspaceId = monitor->m_activeWorkspace->m_id;
+        if (const auto* centeredPlaceholder = centeredEmptyWorkspacePlaceholder(m_state); centeredPlaceholder && centeredPlaceholder->monitor == monitor &&
+            centeredPlaceholder->workspaceId != WORKSPACE_INVALID) {
+            currentWorkspaceId = centeredPlaceholder->workspaceId;
         } else if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
             m_state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor) {
-            currentWorkspace = m_state.focusDuringOverview->m_workspace;
+            currentWorkspaceId = m_state.focusDuringOverview->m_workspace->m_id;
         } else if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
             const auto selected = m_state.windows[*m_state.selectedIndex].window;
             if (selected && selected->m_workspace && selected->m_workspace->m_monitor.lock() == monitor)
-                currentWorkspace = selected->m_workspace;
+                currentWorkspaceId = selected->m_workspace->m_id;
         }
 
-        std::vector<PHLWORKSPACE> monitorWorkspaces;
+        std::unordered_map<WORKSPACEID, PHLWORKSPACE> workspaceById;
+        std::vector<int64_t> workspaceIds;
         for (const auto& candidate : m_state.managedWorkspaces) {
             if (!candidate || candidate->m_isSpecialWorkspace || candidate->m_id < 0 || candidate->m_monitor.lock() != monitor)
                 continue;
-            monitorWorkspaces.push_back(candidate);
+
+            workspaceById.emplace(candidate->m_id, candidate);
+            workspaceIds.push_back(candidate->m_id);
         }
 
-        std::stable_sort(monitorWorkspaces.begin(), monitorWorkspaces.end(), [](const PHLWORKSPACE& lhs, const PHLWORKSPACE& rhs) {
-            if (!lhs || !rhs)
-                return static_cast<bool>(lhs);
-            return lhs->m_id < rhs->m_id;
-        });
-
-        const auto it = std::find(monitorWorkspaces.begin(), monitorWorkspaces.end(), currentWorkspace);
-        if (it == monitorWorkspaces.end())
+        const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
+            workspaceIds,
+            niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
+        const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(currentWorkspaceId));
+        if (it == laneWorkspaceIds.end())
             return false;
 
-        const long long currentIndex = static_cast<long long>(std::distance(monitorWorkspaces.begin(), it));
+        const long long currentIndex = static_cast<long long>(std::distance(laneWorkspaceIds.begin(), it));
         const long long targetIndex = currentIndex + (step < 0 ? -1 : 1);
-        if (targetIndex < 0 || targetIndex >= static_cast<long long>(monitorWorkspaces.size()))
+        if (targetIndex < 0 || targetIndex >= static_cast<long long>(laneWorkspaceIds.size()))
             return false;
 
-        workspace = monitorWorkspaces[static_cast<std::size_t>(targetIndex)];
-        if (!workspace)
-            return false;
-
-        workspaceId = workspace->m_id;
-        workspaceName = workspace->m_name;
-        syntheticEmpty = false;
+        workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[static_cast<std::size_t>(targetIndex)]);
+        const auto workspaceIt = workspaceById.find(workspaceId);
+        workspace = workspaceIt == workspaceById.end() ? PHLWORKSPACE{} : workspaceIt->second;
+        workspaceName = workspace ? workspace->m_name : std::to_string(workspaceId);
+        syntheticEmpty = !workspace;
         return true;
     }
 
@@ -8723,8 +8722,9 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
     double bestDistance2 = std::numeric_limits<double>::max();
 
     for (const auto& placeholder : state.emptyWorkspacePlaceholders) {
-        if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != state.ownerMonitor || !placeholder.workspace ||
-            !isScrollingWorkspace(placeholder.workspace))
+        if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != state.ownerMonitor || placeholder.workspaceId == WORKSPACE_INVALID)
+            continue;
+        if (placeholder.workspace && !isScrollingWorkspace(placeholder.workspace))
             continue;
 
         const double dx = placeholder.targetGlobal.centerX() - centerX;
@@ -11279,7 +11279,7 @@ void OverviewController::moveSelection(Direction direction) {
         return;
     }
 
-    if (niriModeAppliesToState(m_state) && centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor)) {
+    if (niriModeAppliesToState(m_state) && centeredEmptyWorkspacePlaceholder(m_state)) {
         if ((direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
             (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
         return;
@@ -13203,17 +13203,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     syntheticLaneWorkspaceIds.push_back(workspaceId);
             }
 
-            PHLWORKSPACE centerWorkspace = candidateMonitor->m_activeWorkspace;
-            if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspace)
-                centerWorkspace = override->workspace;
-            else if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
-                     state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
-                centerWorkspace = state.focusDuringOverview->m_workspace;
+            WORKSPACEID centerWorkspaceId = candidateMonitor->m_activeWorkspace ? candidateMonitor->m_activeWorkspace->m_id : WORKSPACE_INVALID;
+            if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspaceId != WORKSPACE_INVALID) {
+                centerWorkspaceId = override->workspaceId;
+            } else if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
+                       state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
+                centerWorkspaceId = state.focusDuringOverview->m_workspace->m_id;
             }
 
             std::size_t activeIndex = 0;
-            if (centerWorkspace) {
-                const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(centerWorkspace->m_id));
+            if (centerWorkspaceId != WORKSPACE_INVALID) {
+                const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(centerWorkspaceId));
                 if (it != laneWorkspaceIds.end())
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
@@ -13227,7 +13227,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
                 const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
                 const bool hasWindows = hasWindowOnWorkspace(workspaceId);
-                const bool keepAsAnchor = centerWorkspace && workspaceId == centerWorkspace->m_id;
+                const bool keepAsAnchor = centerWorkspaceId != WORKSPACE_INVALID && workspaceId == centerWorkspaceId;
                 if (!hasWindows && !keepAsAnchor)
                     continue;
 
@@ -13975,8 +13975,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     buildWorkspaceStripEntries(state);
 
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
-    const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(state, state.ownerMonitor);
-    const bool centeredEmptyPlaceholder = static_cast<bool>(centeredEmptyWorkspace);
+    const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
+    const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
     if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() && !centeredEmptyPlaceholder) {
         state.selectedIndex = 0;
         state.focusDuringOverview = state.windows[*state.selectedIndex].window;
