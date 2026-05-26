@@ -13182,7 +13182,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
     std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
     std::unordered_map<MONITORID, std::vector<WORKSPACEID>> niriSyntheticLaneWorkspaceIdsByMonitor;
-    std::unordered_map<MONITORID, std::unordered_map<WORKSPACEID, int>> niriWorkspaceOrdinalByMonitor;
+    std::unordered_map<MONITORID, WORKSPACEID> niriFocusWorkspaceByMonitor;
     std::unordered_set<WORKSPACEID> niriFitBackingPlaceholderWorkspaces;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
@@ -13274,6 +13274,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (it != laneWorkspaceIds.end())
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
+            niriFocusWorkspaceByMonitor[candidateMonitor->m_id] = centerWorkspaceId;
 
             const auto monitorWindowsIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
             const auto hasWindowOnWorkspace = [&](WORKSPACEID workspaceId) {
@@ -13309,7 +13310,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
                 const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
                 const double rowOffset = static_cast<double>(index) - static_cast<double>(activeIndex);
-                niriWorkspaceOrdinalByMonitor[candidateMonitor->m_id][workspaceId] = static_cast<int>(index) - static_cast<int>(activeIndex);
                 niriWorkspaceLaneById[workspaceId] = makeRect(content.x, centerY + rowOffset * laneStep - laneHeight * 0.5, content.width, laneHeight);
             }
         }
@@ -13417,30 +13417,18 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-        if (fitModeViewport) {
+        bool fitModeFocusedWorkspace = false;
+        if (fitModeViewport && window->m_workspace) {
+            const auto focusWorkspaceIt = niriFocusWorkspaceByMonitor.find(targetMonitor->m_id);
+            if (focusWorkspaceIt != niriFocusWorkspaceByMonitor.end() && focusWorkspaceIt->second != WORKSPACE_INVALID)
+                fitModeFocusedWorkspace = focusWorkspaceIt->second == window->m_workspace->m_id;
+        }
+        if (fitModeFocusedWorkspace) {
             const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
                                           baseGlobal.height * viewportScale);
-            double workspaceStripOffset = 0.0;
-            if (overflowAxis && window->m_workspace) {
-                const auto monitorOrdinalsIt = niriWorkspaceOrdinalByMonitor.find(targetMonitor->m_id);
-                if (monitorOrdinalsIt != niriWorkspaceOrdinalByMonitor.end()) {
-                    const auto workspaceOrdinalIt = monitorOrdinalsIt->second.find(window->m_workspace->m_id);
-                    if (workspaceOrdinalIt != monitorOrdinalsIt->second.end()) {
-                        const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
-                        const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
-                                                                                  getConfigInt(m_handle, "general:gaps_out", 0)));
-                        const double previewGap = std::max(configuredGap * scale * (gapMultiplier - 1.0),
-                                                           niriSingleWorkspaceGapPixels());
-                        workspaceStripOffset = static_cast<double>(workspaceOrdinalIt->second) * previewGap;
-                    }
-                }
-            }
-            if (workspaceStripOffset != 0.0)
-                viewportLocal = *overflowAxis == GestureAxis::Horizontal ? translateRect(viewportLocal, workspaceStripOffset, 0.0) :
-                                                                            translateRect(viewportLocal, 0.0, workspaceStripOffset);
             targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
                                    viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
                                    targetWidth,
