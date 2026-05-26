@@ -13182,7 +13182,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
     std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
     std::unordered_map<MONITORID, std::vector<WORKSPACEID>> niriSyntheticLaneWorkspaceIdsByMonitor;
-    std::unordered_map<MONITORID, WORKSPACEID> niriFocusWorkspaceByMonitor;
     std::unordered_set<WORKSPACEID> niriFitBackingPlaceholderWorkspaces;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
@@ -13274,8 +13273,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (it != laneWorkspaceIds.end())
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
-            niriFocusWorkspaceByMonitor[candidateMonitor->m_id] = centerWorkspaceId;
-
             const auto monitorWindowsIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
             const auto hasWindowOnWorkspace = [&](WORKSPACEID workspaceId) {
                 return monitorWindowsIt != directNiriWorkspacesWithWindowsByMonitor.end() && monitorWindowsIt->second.contains(workspaceId);
@@ -13303,7 +13300,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const Rect content = overviewContentRectForMonitor(candidateMonitor, state);
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
-            const double gap = niriMultiWorkspaceGap();
+            const bool fitFocusMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
+            const double baseGap = niriMultiWorkspaceGap();
+            const double gap = fitFocusMethod ? std::max(baseGap, niriSingleWorkspaceGapPixels()) : baseGap;
             const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
             const double laneStep = std::max(1.0, zoomedLaneHeight + gap);
             const double centerY = content.centerY();
@@ -13417,13 +13416,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-        bool fitModeFocusedWorkspace = false;
-        if (fitModeViewport && window->m_workspace) {
-            const auto focusWorkspaceIt = niriFocusWorkspaceByMonitor.find(targetMonitor->m_id);
-            if (focusWorkspaceIt != niriFocusWorkspaceByMonitor.end() && focusWorkspaceIt->second != WORKSPACE_INVALID)
-                fitModeFocusedWorkspace = focusWorkspaceIt->second == window->m_workspace->m_id;
-        }
-        if (fitModeFocusedWorkspace) {
+        if (fitModeViewport) {
             const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
