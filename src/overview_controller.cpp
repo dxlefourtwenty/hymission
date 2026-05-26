@@ -4296,6 +4296,9 @@ bool OverviewController::debugSurfaceLogsEnabled() const {
 
 PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
     if (isVisible() && niriModeAppliesToState(m_state)) {
+        if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor); centeredEmptyWorkspace)
+            return centeredEmptyWorkspace;
+
         if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace)
             return m_state.focusDuringOverview->m_workspace;
 
@@ -4651,6 +4654,26 @@ bool OverviewController::shouldRenderEmptyOverviewPlaceholder(const State& state
     return workspace && isScrollingWorkspace(workspace);
 }
 
+PHLWORKSPACE OverviewController::centeredEmptyPlaceholderWorkspace(const State& state, const PHLMONITOR& monitor) const {
+    if (!monitor)
+        return {};
+
+    const Rect content = overviewContentRectForMonitor(monitor, state);
+    if (content.width <= 0.0 || content.height <= 0.0)
+        return {};
+
+    const double centerX = monitor->m_position.x + content.centerX();
+    const double centerY = monitor->m_position.y + content.centerY();
+    const auto   placeholderIt = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
+                                              [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                                  return !placeholder.backingOnly && placeholder.monitor == monitor && placeholder.workspace &&
+                                                      std::abs(placeholder.targetGlobal.centerX() - centerX) <= 1.0 &&
+                                                      std::abs(placeholder.targetGlobal.centerY() - centerY) <= 1.0;
+                                              });
+
+    return placeholderIt == state.emptyWorkspacePlaceholders.end() ? PHLWORKSPACE{} : placeholderIt->workspace;
+}
+
 bool OverviewController::workspaceStripEnabled(const State& state) const {
     return state.collectionPolicy.onlyActiveWorkspace && !state.suppressWorkspaceStrip && !shouldDisableWorkspaceStripForNiriPreview(state);
 }
@@ -4727,7 +4750,9 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
 
     if (niriModeAppliesToState(m_state) && !m_state.managedWorkspaces.empty()) {
         PHLWORKSPACE currentWorkspace = monitor->m_activeWorkspace;
-        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
+        if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, monitor); centeredEmptyWorkspace) {
+            currentWorkspace = centeredEmptyWorkspace;
+        } else if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace &&
             m_state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor) {
             currentWorkspace = m_state.focusDuringOverview->m_workspace;
         } else if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
@@ -11189,8 +11214,18 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 }
 
 void OverviewController::moveSelection(Direction direction) {
-    if (m_state.windows.empty())
+    if (m_state.windows.empty()) {
+        if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace()) &&
+            (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
+            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
         return;
+    }
+
+    if (niriModeAppliesToState(m_state) && centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor)) {
+        if ((direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
+            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        return;
+    }
 
     if (!m_state.selectedIndex) {
         m_state.selectedIndex = 0;
@@ -13776,21 +13811,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     buildWorkspaceStripEntries(state);
 
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
-    const bool centeredEmptyPlaceholder = std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
-        const auto placeholderMonitor = placeholder.monitor;
-        if (!placeholderMonitor || placeholderMonitor != state.ownerMonitor)
-            return false;
-
-        const Rect content = overviewContentRectForMonitor(placeholderMonitor, state);
-        if (content.width <= 0.0 || content.height <= 0.0)
-            return false;
-
-        return std::abs(placeholder.targetGlobal.centerX() - (placeholderMonitor->m_position.x + content.centerX())) <= 1.0 &&
-            std::abs(placeholder.targetGlobal.centerY() - (placeholderMonitor->m_position.y + content.centerY())) <= 1.0;
-    });
+    const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(state, state.ownerMonitor);
+    const bool centeredEmptyPlaceholder = static_cast<bool>(centeredEmptyWorkspace);
     if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() && !centeredEmptyPlaceholder) {
         state.selectedIndex = 0;
         state.focusDuringOverview = state.windows[*state.selectedIndex].window;
+    }
+    if (centeredEmptyPlaceholder && (!state.focusDuringOverview || state.focusDuringOverview->m_workspace != centeredEmptyWorkspace)) {
+        state.selectedIndex.reset();
+        state.focusDuringOverview.reset();
     }
 
     return state;

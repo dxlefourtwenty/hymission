@@ -497,6 +497,7 @@ class OverviewController {
     [[nodiscard]] double       workspaceStripLabelOpacity() const;
     [[nodiscard]] bool         shouldDisableWorkspaceStripForNiriPreview(const State& state) const;
     [[nodiscard]] bool         shouldRenderEmptyOverviewPlaceholder(const State& state, const PHLMONITOR& monitor) const;
+    [[nodiscard]] PHLWORKSPACE centeredEmptyPlaceholderWorkspace(const State& state, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         workspaceStripEnabled(const State& state) const;
     [[nodiscard]] bool         isStripOnlyOverviewState(const State& state) const;
     [[nodiscard]] bool         shouldContinuouslyRefreshWorkspaceStripSnapshots() const;
