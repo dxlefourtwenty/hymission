@@ -7668,6 +7668,14 @@ bool OverviewController::shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& 
     if (!window)
         return false;
 
+    if (isVisible() && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible() &&
+        !isScrollingWorkspace(window->m_workspace)) {
+        const Rect live = stateSnapshotGlobalRectForWindow(window);
+        const Rect goal = stateSnapshotGlobalRectForWindow(window, true);
+        if (!rectApproxEqual(live, goal, 0.5))
+            return true;
+    }
+
     if (window->m_workspace && !window->m_workspace->isVisible())
         return true;
 
