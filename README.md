@@ -148,6 +148,7 @@ hl.bind("SUPER + A", function()
 end)
 hl.bind("SUPER + S", hl.plugin.hymission.open("onlycurrentworkspace"))
 hl.bind("SUPER + Escape", hl.plugin.hymission.close())
+hl.bind("SUPER + 1", hl.plugin.hymission.workspace("1"))
 ```
 
 Available functions:
@@ -156,6 +157,7 @@ Available functions:
 - `hl.plugin.hymission.open(args?)` returns an `HL.Dispatcher`
 - `hl.plugin.hymission.close()` returns an `HL.Dispatcher`
 - `hl.plugin.hymission.debug_current_layout()` returns an `HL.Dispatcher`
+- `hl.plugin.hymission.workspace(args)` returns an `HL.Dispatcher` that routes through Hymission's workspace-transition interception while overview is visible
 - `hl.plugin.hymission.dispatch(name, args?)` returns an `HL.Dispatcher`
 - `hl.plugin.hymission.gesture(table|string, disable_inhibit?)`
 

@@ -61,6 +61,11 @@ SDispatchResult dispatchDebugCurrentLayout(const std::string&) {
     return g_overviewController ? g_overviewController->debugCurrentLayout() : SDispatchResult{.success = false, .error = "overview controller unavailable"};
 }
 
+SDispatchResult dispatchWorkspace(const std::string& args) {
+    return g_overviewController ? g_overviewController->changeWorkspaceDispatcherHook(args) :
+                                  SDispatchResult{.success = false, .error = "overview controller unavailable"};
+}
+
 int luaDispatchResult(lua_State* L, const SDispatchResult& result) {
     if (result.success)
         return 0;
@@ -163,6 +168,10 @@ int runLuaDebugCurrentLayout(lua_State* L) {
     return luaDispatchResult(L, dispatchDebugCurrentLayout(""));
 }
 
+int runLuaWorkspace(lua_State* L) {
+    return luaDispatchResult(L, dispatchWorkspace(luaOptionalUpvalueString(L, 1)));
+}
+
 int pushLuaDispatcher(lua_State* L, lua_CFunction fn, const std::string& args = {}) {
     if (args.empty())
         lua_pushnil(L);
@@ -189,6 +198,10 @@ int luaDebugCurrentLayout(lua_State* L) {
     return pushLuaDispatcher(L, runLuaDebugCurrentLayout);
 }
 
+int luaWorkspace(lua_State* L) {
+    return pushLuaDispatcher(L, runLuaWorkspace, luaOptionalString(L, 1));
+}
+
 int luaDispatch(lua_State* L) {
     const std::string dispatcher = normalizeHymissionDispatcher(luaL_checkstring(L, 1));
     const std::string args       = luaOptionalString(L, 2);
@@ -201,6 +214,8 @@ int luaDispatch(lua_State* L) {
         return pushLuaDispatcher(L, runLuaClose, args);
     if (dispatcher == "hymission:debug_current_layout")
         return pushLuaDispatcher(L, runLuaDebugCurrentLayout, args);
+    if (dispatcher == "workspace")
+        return pushLuaDispatcher(L, runLuaWorkspace, args);
 
     lua_pushstring(L, ("unknown hymission dispatcher: " + dispatcher).c_str());
     return lua_error(L);
@@ -394,6 +409,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         registerLuaFunction("open", luaOpen);
         registerLuaFunction("close", luaClose);
         registerLuaFunction("debug_current_layout", luaDebugCurrentLayout);
+        registerLuaFunction("workspace", luaWorkspace);
         registerLuaFunction("dispatch", luaDispatch);
         registerLuaFunction("gesture", luaGesture);
     }
