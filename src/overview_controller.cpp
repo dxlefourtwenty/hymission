@@ -2834,6 +2834,7 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         renderBackdrop();
+        renderEmptyOverviewPlaceholder(true);
         if (m_state.emptyWorkspacePlaceholders.empty())
             renderEmptyOverviewPlaceholder();
         if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
@@ -8638,7 +8639,8 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
     double bestDistance2 = std::numeric_limits<double>::max();
 
     for (const auto& placeholder : state.emptyWorkspacePlaceholders) {
-        if (!placeholder.monitor || placeholder.monitor != state.ownerMonitor || !placeholder.workspace || !isScrollingWorkspace(placeholder.workspace))
+        if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != state.ownerMonitor || !placeholder.workspace ||
+            !isScrollingWorkspace(placeholder.workspace))
             continue;
 
         const double dx = placeholder.targetGlobal.centerX() - centerX;
@@ -11750,7 +11752,7 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 
-void OverviewController::renderEmptyOverviewPlaceholder() const {
+void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
         return;
@@ -11785,7 +11787,7 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
     };
 
     bool renderedStatePlaceholder = false;
-    if (m_workspaceTransition.active) {
+    if (!backingOnlyPass && m_workspaceTransition.active) {
         const auto monitor = m_workspaceTransition.monitor;
         if (monitor && monitor == renderMonitor) {
             const auto clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
@@ -11799,18 +11801,19 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
             const auto placeholderForWorkspace = [&](const State& state, WORKSPACEID workspaceId) -> const EmptyWorkspacePlaceholder* {
                 const auto it = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
                                              [&](const EmptyWorkspacePlaceholder& placeholder) {
-                                                 return placeholder.monitor && placeholder.monitor == renderMonitor && placeholder.workspaceId == workspaceId;
+                                                 return !placeholder.backingOnly && placeholder.monitor && placeholder.monitor == renderMonitor &&
+                                                     placeholder.workspaceId == workspaceId;
                                              });
                 return it == state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
             };
 
             std::unordered_set<WORKSPACEID> placeholderWorkspaceIds;
             for (const auto& placeholder : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders) {
-                if (placeholder.monitor && placeholder.monitor == renderMonitor)
+                if (!placeholder.backingOnly && placeholder.monitor && placeholder.monitor == renderMonitor)
                     placeholderWorkspaceIds.insert(placeholder.workspaceId);
             }
             for (const auto& placeholder : m_workspaceTransition.targetState.emptyWorkspacePlaceholders) {
-                if (placeholder.monitor && placeholder.monitor == renderMonitor)
+                if (!placeholder.backingOnly && placeholder.monitor && placeholder.monitor == renderMonitor)
                     placeholderWorkspaceIds.insert(placeholder.workspaceId);
             }
 
@@ -11842,7 +11845,7 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
         }
     } else {
         for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-            if (!placeholder.monitor || placeholder.monitor != renderMonitor)
+            if (placeholder.backingOnly != backingOnlyPass || !placeholder.monitor || placeholder.monitor != renderMonitor)
                 continue;
 
             const Rect targetLocal = rectToMonitorLocal(currentPlaceholderRect(placeholder), renderMonitor);
@@ -11855,6 +11858,9 @@ void OverviewController::renderEmptyOverviewPlaceholder() const {
         }
     }
     if (renderedStatePlaceholder)
+        return;
+
+    if (backingOnlyPass)
         return;
 
     const bool hasWindowOnRenderMonitor = std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
@@ -12987,6 +12993,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::vector<WindowInput>> inputsByMonitor;
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
     std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
+    std::unordered_set<WORKSPACEID> niriFitBackingPlaceholderWorkspaces;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
     config.preserveInputOrder = preserveExistingOrder || orderByRecentUse;
@@ -13124,6 +13131,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (baseGlobal.width <= 1.0 || baseGlobal.height <= 1.0)
             return std::nullopt;
 
+        const bool fitModeViewport = !g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
         if (overflowAxis) {
             if (g_niriStripSnapshotSingleWorkspaceOnly) {
@@ -13133,6 +13141,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const double baseLength = *overflowAxis == GestureAxis::Vertical ? baseGlobal.height : baseGlobal.width;
                 const double viewportScale = previewLength / std::max(1.0, baseLength * visibleViewportCount);
                 scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
+            } else if (fitModeViewport) {
+                const double fitScale = *overflowAxis == GestureAxis::Horizontal ? previewArea.height / baseGlobal.height : previewArea.width / baseGlobal.width;
+                scale = std::max(config.minSlotScale, std::min(fitScale * niriOverviewScale(), config.maxPreviewScale));
             } else {
                 const double maxNiriScale = niriMultiWorkspaceScale();
                 const double visibleViewportCount = 4.0;
@@ -13179,7 +13190,33 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-        if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
+        if (fitModeViewport) {
+            const Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * scale * 0.5,
+                                                previewArea.centerY() - baseGlobal.height * scale * 0.5,
+                                                baseGlobal.width * scale,
+                                                baseGlobal.height * scale);
+            targetLocal = makeRect(viewportLocal.x + (sourceGlobal.x - baseGlobal.x) * scale,
+                                   viewportLocal.y + (sourceGlobal.y - baseGlobal.y) * scale,
+                                   targetWidth,
+                                   targetHeight);
+
+            if (niriFitBackingPlaceholderWorkspaces.insert(window->m_workspace->m_id).second) {
+                const Rect targetGlobal = makeRect(targetMonitor->m_position.x + viewportLocal.x,
+                                                   targetMonitor->m_position.y + viewportLocal.y,
+                                                   viewportLocal.width,
+                                                   viewportLocal.height);
+                state.emptyWorkspacePlaceholders.push_back({
+                    .monitor = targetMonitor,
+                    .workspace = window->m_workspace,
+                    .workspaceId = window->m_workspace->m_id,
+                    .naturalGlobal = baseGlobal,
+                    .exitGlobal = baseGlobal,
+                    .targetGlobal = targetGlobal,
+                    .relayoutFromGlobal = targetGlobal,
+                    .backingOnly = true,
+                });
+            }
+        } else if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
             const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
                                                                       getConfigInt(m_handle, "general:gaps_out", 0)));

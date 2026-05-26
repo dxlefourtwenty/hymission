@@ -210,6 +210,7 @@ class OverviewController {
         Rect        exitGlobal;
         Rect        targetGlobal;
         Rect        relayoutFromGlobal;
+        bool        backingOnly = false;
     };
 
     struct State {
@@ -715,7 +716,7 @@ class OverviewController {
     [[nodiscard]] bool shouldHideLayerSurfaceNamespace(const PHLLS& layer, const std::string& namespaces) const;
     void renderBackdrop() const;
     [[nodiscard]] Rect emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const;
-    void renderEmptyOverviewPlaceholder() const;
+    void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
     void activateStripTarget(std::size_t index);
