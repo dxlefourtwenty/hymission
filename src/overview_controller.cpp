@@ -3040,7 +3040,20 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
                 }
 
                 if (targetWorkspace && window->m_workspace != targetWorkspace) {
+                    const auto sourceWorkspace = window->m_workspace;
                     g_pCompositor->moveWindowToWorkspaceSafe(window, targetWorkspace);
+
+                    const auto refreshWorkspaceLayout = [&](const PHLWORKSPACE& workspace) {
+                        if (!workspace || !workspace->m_space)
+                            return;
+
+                        workspace->m_space->recalculate();
+                        if (const auto monitor = workspace->m_monitor.lock(); monitor)
+                            g_layoutManager->recalculateMonitor(monitor);
+                    };
+                    refreshWorkspaceLayout(sourceWorkspace);
+                    if (targetWorkspace != sourceWorkspace)
+                        refreshWorkspaceLayout(targetWorkspace);
 
                     // Keep the dragged window as the overview target and force a full rebuild.
                     // Without the forced rebuild, niri-mode can keep the old lane targets when
