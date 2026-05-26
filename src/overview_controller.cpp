@@ -6037,6 +6037,42 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
     const bool targetWorkspaceSyntheticEmpty = m_workspaceTransition.targetWorkspaceSyntheticEmpty;
     const auto targetWorkspaceName = m_workspaceTransition.targetWorkspaceName;
     State      next = m_workspaceTransition.targetState;
+    std::vector<std::tuple<MONITORID, WORKSPACEID, bool, Rect>> transitionPlaceholderRects;
+    {
+        const auto clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
+        const double sourceOffset = -clampedDelta;
+        const int targetDirection = clampedDelta < -0.0001 ? -1 : clampedDelta > 0.0001 ? 1 : (m_workspaceTransition.step < 0 ? -1 : 1);
+        const double targetOffset = sourceOffset + static_cast<double>(targetDirection) * m_workspaceTransition.distance;
+        const double t = m_workspaceTransition.distance > 0.0 ? clampUnit(std::abs(clampedDelta) / m_workspaceTransition.distance) : 1.0;
+        const auto translated = [&](const Rect& rect, double offset) {
+            return m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? translateRect(rect, 0.0, offset) : translateRect(rect, offset, 0.0);
+        };
+        const auto sourcePlaceholderFor = [&](const EmptyWorkspacePlaceholder& targetPlaceholder) -> const EmptyWorkspacePlaceholder* {
+            const auto it = std::find_if(m_workspaceTransition.sourceState.emptyWorkspacePlaceholders.begin(),
+                                         m_workspaceTransition.sourceState.emptyWorkspacePlaceholders.end(),
+                                         [&](const EmptyWorkspacePlaceholder& sourcePlaceholder) {
+                                             return sourcePlaceholder.monitor && targetPlaceholder.monitor &&
+                                                 sourcePlaceholder.monitor == targetPlaceholder.monitor &&
+                                                 sourcePlaceholder.workspaceId == targetPlaceholder.workspaceId &&
+                                                 sourcePlaceholder.backingOnly == targetPlaceholder.backingOnly;
+                                         });
+            return it == m_workspaceTransition.sourceState.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+        };
+
+        transitionPlaceholderRects.reserve(m_workspaceTransition.targetState.emptyWorkspacePlaceholders.size());
+        for (const auto& targetPlaceholder : m_workspaceTransition.targetState.emptyWorkspacePlaceholders) {
+            if (!targetPlaceholder.monitor || targetPlaceholder.workspaceId == WORKSPACE_INVALID)
+                continue;
+
+            Rect rect = translated(targetPlaceholder.targetGlobal, targetOffset);
+            if (const auto* sourcePlaceholder = sourcePlaceholderFor(targetPlaceholder)) {
+                const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
+                rect = lerpRect(sourceRect, rect, t);
+            }
+
+            transitionPlaceholderRects.emplace_back(targetPlaceholder.monitor->m_id, targetPlaceholder.workspaceId, targetPlaceholder.backingOnly, rect);
+        }
+    }
 
     auto targetWorkspace = g_pCompositor->getWorkspaceByID(targetWorkspaceId);
     if (!targetWorkspace && targetWorkspaceSyntheticEmpty) {
@@ -6110,10 +6146,28 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         next.relayoutProgress = 1.0;
         next.relayoutStart = {};
 
+        bool placeholderRelayoutChanged = false;
+        for (auto& placeholder : next.emptyWorkspacePlaceholders) {
+            if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
+                continue;
+
+            const auto previousIt = std::find_if(transitionPlaceholderRects.begin(), transitionPlaceholderRects.end(), [&](const auto& previous) {
+                return std::get<0>(previous) == placeholder.monitor->m_id && std::get<1>(previous) == placeholder.workspaceId &&
+                    std::get<2>(previous) == placeholder.backingOnly;
+            });
+            if (previousIt == transitionPlaceholderRects.end())
+                continue;
+
+            const Rect previousRect = std::get<3>(*previousIt);
+            placeholder.relayoutFromGlobal = previousRect;
+            if (!rectApproxEqual(previousRect, placeholder.targetGlobal, 0.5))
+                placeholderRelayoutChanged = true;
+        }
+
         clearOverviewWorkspaceTransition(targetWorkspace);
         const bool stripRelayoutChanged = carryOverWorkspaceStripRelayout(next, m_state);
         carryOverWorkspaceStripSnapshots(next, m_state);
-        if (stripRelayoutChanged) {
+        if (stripRelayoutChanged || placeholderRelayoutChanged) {
             next.relayoutActive = true;
             next.relayoutProgress = 0.0;
             next.relayoutStart = {};
