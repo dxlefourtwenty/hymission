@@ -11965,22 +11965,25 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                     continue;
 
                 Rect transitionGlobal;
+                double alpha = 0.24;
                 if (sourcePlaceholder && targetPlaceholder) {
                     const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                     const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
                     transitionGlobal = lerpRect(sourceRect, targetRect, t);
                 } else if (sourcePlaceholder) {
-                    transitionGlobal = translated(sourcePlaceholder->targetGlobal, sourceOffset);
+                    transitionGlobal = sourcePlaceholder->targetGlobal;
+                    alpha *= 1.0 - t;
                 } else {
-                    transitionGlobal = translated(targetPlaceholder->targetGlobal, targetOffset);
+                    transitionGlobal = targetPlaceholder->targetGlobal;
+                    alpha *= t;
                 }
 
                 const Rect targetLocal = rectToMonitorLocal(transitionGlobal, renderMonitor);
                 const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
-                if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
+                if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0 || alpha <= 0.001)
                     continue;
 
-                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha), {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / 0.24))});
                 renderedStatePlaceholder = true;
             }
         }
