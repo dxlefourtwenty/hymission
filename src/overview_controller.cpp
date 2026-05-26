@@ -3043,17 +3043,9 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
                     const auto sourceWorkspace = window->m_workspace;
                     g_pCompositor->moveWindowToWorkspaceSafe(window, targetWorkspace);
 
-                    const auto refreshWorkspaceLayout = [&](const PHLWORKSPACE& workspace) {
-                        if (!workspace || !workspace->m_space)
-                            return;
-
-                        workspace->m_space->recalculate();
-                        if (const auto monitor = workspace->m_monitor.lock(); monitor)
-                            g_layoutManager->recalculateMonitor(monitor);
-                    };
-                    refreshWorkspaceLayout(sourceWorkspace);
+                    commitNonScrollingWorkspaceLayout(sourceWorkspace);
                     if (targetWorkspace != sourceWorkspace)
-                        refreshWorkspaceLayout(targetWorkspace);
+                        commitNonScrollingWorkspaceLayout(targetWorkspace);
 
                     // Keep the dragged window as the overview target and force a full rebuild.
                     // Without the forced rebuild, niri-mode can keep the old lane targets when
@@ -7713,6 +7705,30 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
     }
 
     workspace->m_space->recalculate();
+}
+
+void OverviewController::commitNonScrollingWorkspaceLayout(const PHLWORKSPACE& workspace) const {
+    if (!workspace || !workspace->m_space || isScrollingWorkspace(workspace))
+        return;
+
+    workspace->m_space->recalculate();
+    if (const auto monitor = workspace->m_monitor.lock(); monitor && g_layoutManager)
+        g_layoutManager->recalculateMonitor(monitor);
+    workspace->m_space->recalculate();
+
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_workspace != workspace)
+            continue;
+
+        const auto target = window->layoutTarget();
+        if (!target || target->floating())
+            continue;
+
+        target->recalc();
+        target->warpPositionSize();
+        target->damageEntire();
+        window->updateWindowDecos();
+    }
 }
 
 std::optional<Vector2D> OverviewController::predictedScrollingExitTranslation(const PHLWINDOW& window) const {

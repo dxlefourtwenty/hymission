@@ -579,6 +579,7 @@ class OverviewController {
     [[nodiscard]] Rect         goalGlobalRectForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& window) const;
     void                       refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& workspace) const;
+    void                       commitNonScrollingWorkspaceLayout(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] std::optional<Vector2D> predictedScrollingExitTranslation(const PHLWINDOW& window) const;
     [[nodiscard]] bool         applyNiriScrollingCameraExitGeometry(const PHLWINDOW& window);
     [[nodiscard]] bool         applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder);
