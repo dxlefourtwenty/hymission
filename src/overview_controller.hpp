@@ -469,7 +469,7 @@ class OverviewController {
     [[nodiscard]] double       niriSingleWorkspaceGapMultiplier() const;
     [[nodiscard]] double       niriSingleWorkspaceGapPixels() const;
     [[nodiscard]] double       niriMultiWorkspaceScale() const;
-    [[nodiscard]] double       niriMultiWorkspaceGap() const;
+    [[nodiscard]] double       niriWorkspaceGap() const;
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriPreviewDisabled() const;

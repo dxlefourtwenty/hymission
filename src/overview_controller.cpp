@@ -4248,9 +4248,11 @@ double OverviewController::niriMultiWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.18), 0.05, 0.24);
 }
 
-double OverviewController::niriMultiWorkspaceGap() const {
+double OverviewController::niriWorkspaceGap() const {
     const double fallback = static_cast<double>(getConfigInt(m_handle, "general:gaps_out", 0));
-    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", -1.0);
+    double configured = getConfigFloat(m_handle, "plugin:hymission:niri_workspace_gap", -1.0);
+    if (configured < 0.0)
+        configured = getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_gap", -1.0);
     return configured < 0.0 ? std::max(0.0, fallback) : std::max(0.0, configured);
 }
 
@@ -13301,7 +13303,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
             const bool fitFocusMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
-            const double baseGap = niriMultiWorkspaceGap();
+            const double baseGap = niriWorkspaceGap();
             const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
             double gap = baseGap;
             if (fitFocusMethod) {
