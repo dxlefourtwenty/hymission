@@ -11863,7 +11863,10 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
 
     if (niriModeAppliesToState(state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
         const CBox workAreaBox = workspace->m_space->workArea();
-        const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        Rect       baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        if (state.collectionPolicy.onlyActiveWorkspace && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0) {
+            baseGlobal = makeRect(monitor->m_position.x, monitor->m_position.y, monitor->m_size.x, monitor->m_size.y);
+        }
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
             const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
             const LayoutConfig config = layoutConfigForState(state);
