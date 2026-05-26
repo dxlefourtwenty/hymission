@@ -12231,9 +12231,7 @@ void OverviewController::renderOutline(const Rect& rect, const Config::CGradient
         return;
 
     const int scaledThickness = std::max(1, static_cast<int>(std::lround(scaleLengthForRender(renderMonitor, thickness))));
-    const Rect expanded = makeRect(local.x - scaledThickness, local.y - scaledThickness, local.width + scaledThickness * 2.0, local.height + scaledThickness * 2.0);
-
-    g_pHyprOpenGL->renderBorder(toBox(expanded), gradient,
+    g_pHyprOpenGL->renderBorder(toBox(local), gradient,
                                 {.borderSize = scaledThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
 }
 
