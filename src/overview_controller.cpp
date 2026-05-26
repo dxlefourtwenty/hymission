@@ -11741,10 +11741,16 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
             const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
             const LayoutConfig config = layoutConfigForState(state);
-            double niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
-            const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
-            niriScale = std::max(config.minSlotScale, std::min({niriScale, niriMultiWorkspaceScale(), viewportScale}));
-            niriScale *= niriLayoutScale();
+            double niriScale = 1.0;
+            if (state.collectionPolicy.onlyActiveWorkspace) {
+                niriScale = std::min(content.width / baseGlobal.width, content.height / baseGlobal.height);
+            } else {
+                niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+                const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
+                niriScale = std::min({niriScale, niriMultiWorkspaceScale(), viewportScale});
+                niriScale *= niriLayoutScale();
+            }
+            niriScale = std::max(config.minSlotScale, niriScale);
             cardWidth = baseGlobal.width * niriScale;
             cardHeight = baseGlobal.height * niriScale;
         }
@@ -13144,7 +13150,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
             } else if (fitModeViewport) {
                 const double fitScale = std::min(previewArea.width / baseGlobal.width, previewArea.height / baseGlobal.height);
-                scale = std::max(config.minSlotScale, std::min(fitScale, config.maxPreviewScale));
+                scale = std::max(config.minSlotScale, fitScale);
             } else {
                 const double maxNiriScale = niriMultiWorkspaceScale();
                 const double visibleViewportCount = 4.0;
@@ -13159,7 +13165,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
         if (scale <= 0.0)
             return std::nullopt;
-        if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001)
+        if (!fitModeViewport && std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001)
             scale *= niriActiveWorkspaceLayoutScale;
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
