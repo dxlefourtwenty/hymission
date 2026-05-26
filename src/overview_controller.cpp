@@ -3538,7 +3538,11 @@ void OverviewController::calculateUVForSurfaceHook(const PHLWINDOW& window, SP<C
 
     if (isVisible() && window && surface && monitor && ownsMonitor(monitor) && hasManagedWindow(window) && previewMonitorForWindow(window) == monitor && !window->m_isX11) {
         const auto expected = expectedSurfaceSizeForUV(window, surface, monitor, main);
-        if (expected && (projSize.x + 1.0 < expected->x || projSize.y + 1.0 < expected->y)) {
+        const bool windowSizeMisalign = main && window->wlSurface() && window->wlSurface()->resource() &&
+            window->getReportedSize() != window->wlSurface()->resource()->m_current.size;
+        const bool projTooSmall = expected && (projSize.x + 1.0 < expected->x || projSize.y + 1.0 < expected->y);
+        const bool projTooLargeWhileMisaligned = expected && windowSizeMisalign && (projSize.x > expected->x + 1.0 || projSize.y > expected->y + 1.0);
+        if (projTooSmall || projTooLargeWhileMisaligned) {
             adjustedProjSize = *expected;
             if (monitor->m_scale > 0.0)
                 adjustedProjSizeUnscaled = *expected / monitor->m_scale;
