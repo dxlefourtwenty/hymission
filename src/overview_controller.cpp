@@ -11903,6 +11903,8 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
         return;
 
     const double progress = visualProgress();
+    const double phaseAlpha = clampUnit(progress);
+    constexpr double PLACEHOLDER_BASE_ALPHA = 0.24;
     if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
         return;
 
@@ -11966,7 +11968,7 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                     continue;
 
                 Rect transitionGlobal;
-                double alpha = 0.24;
+                double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
                 if (sourcePlaceholder && targetPlaceholder) {
                     const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                     const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
@@ -11984,7 +11986,8 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                 if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0 || alpha <= 0.001)
                     continue;
 
-                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha), {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / 0.24))});
+                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
+                                          {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
                 renderedStatePlaceholder = true;
             }
         }
@@ -11998,7 +12001,12 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
             if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
                 continue;
 
-            g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+            const double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
+            if (alpha <= 0.001)
+                continue;
+
+            g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
+                                      {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
             renderedStatePlaceholder = true;
         }
     }
@@ -12052,7 +12060,12 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
     }
     const Rect placeholderRender = scaleRectForRender(currentLocal, renderMonitor);
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, 0.24), {.blur = true, .blurA = 1.0F});
+    const double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
+    if (alpha <= 0.001)
+        return;
+
+    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
+                              {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
 }
 
 void OverviewController::renderSelectionChrome() const {
