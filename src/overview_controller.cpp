@@ -4278,6 +4278,10 @@ double OverviewController::niriWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_workspace_scale", 1.0), 0.05, 1.0);
 }
 
+bool OverviewController::niriModeShowEmptyWorkspacesBetweenEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:niri_mode_show_empty_workspaces_btwn", 1) != 0;
+}
+
 bool OverviewController::niriPreviewDisabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_preview_disabled", 0) != 0;
 }
@@ -13130,6 +13134,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::vector<WindowInput>> inputsByMonitor;
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
     std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
+    std::unordered_map<MONITORID, std::vector<WORKSPACEID>> niriSyntheticLaneWorkspaceIdsByMonitor;
     std::unordered_set<WORKSPACEID> niriFitBackingPlaceholderWorkspaces;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
@@ -13142,12 +13147,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::pair<WORKSPACEID, WORKSPACEID>> placeholderRangeByMonitor;
 
     if (allowDirectNiriOverviewLayout) {
-        std::unordered_set<WORKSPACEID> directNiriWorkspacesWithWindows;
-        for (const auto& managed : state.windows) {
-            if (!managed.window || !managed.window->m_workspace || !managed.window->m_isMapped)
+        std::unordered_map<MONITORID, std::unordered_set<WORKSPACEID>> directNiriWorkspacesWithWindowsByMonitor;
+        for (const auto& window : candidates) {
+            if (!shouldManageWindow(window, state) || !window->m_workspace || !window->m_isMapped)
                 continue;
 
-            directNiriWorkspacesWithWindows.insert(managed.window->m_workspace->m_id);
+            const auto targetMonitor = preferredMonitorForWindow(window, state);
+            if (!targetMonitor)
+                continue;
+
+            directNiriWorkspacesWithWindowsByMonitor[targetMonitor->m_id].insert(window->m_workspace->m_id);
         }
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
@@ -13172,6 +13181,28 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (monitorWorkspaces.empty())
                 continue;
 
+            std::unordered_map<WORKSPACEID, PHLWORKSPACE> workspaceById;
+            std::vector<int64_t> realWorkspaceIds;
+            workspaceById.reserve(monitorWorkspaces.size());
+            realWorkspaceIds.reserve(monitorWorkspaces.size());
+            for (const auto& workspace : monitorWorkspaces) {
+                if (!workspace)
+                    continue;
+
+                workspaceById.emplace(workspace->m_id, workspace);
+                realWorkspaceIds.push_back(workspace->m_id);
+            }
+
+            const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
+                realWorkspaceIds,
+                niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
+            auto& syntheticLaneWorkspaceIds = niriSyntheticLaneWorkspaceIdsByMonitor[candidateMonitor->m_id];
+            for (const auto rawWorkspaceId : laneWorkspaceIds) {
+                const auto workspaceId = static_cast<WORKSPACEID>(rawWorkspaceId);
+                if (!workspaceById.contains(workspaceId))
+                    syntheticLaneWorkspaceIds.push_back(workspaceId);
+            }
+
             PHLWORKSPACE centerWorkspace = candidateMonitor->m_activeWorkspace;
             if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspace)
                 centerWorkspace = override->workspace;
@@ -13182,19 +13213,21 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             std::size_t activeIndex = 0;
             if (centerWorkspace) {
-                if (const auto it = std::find(monitorWorkspaces.begin(), monitorWorkspaces.end(), centerWorkspace); it != monitorWorkspaces.end())
-                    activeIndex = static_cast<std::size_t>(std::distance(monitorWorkspaces.begin(), it));
+                const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(centerWorkspace->m_id));
+                if (it != laneWorkspaceIds.end())
+                    activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
 
-            std::size_t firstPlaceholderIndex = monitorWorkspaces.size();
-            std::size_t lastPlaceholderIndex = monitorWorkspaces.size();
-            for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
-                const auto& workspace = monitorWorkspaces[index];
-                if (!workspace)
-                    continue;
-
-                const bool hasWindows = directNiriWorkspacesWithWindows.contains(workspace->m_id);
-                const bool keepAsAnchor = centerWorkspace && workspace == centerWorkspace;
+            const auto monitorWindowsIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
+            const auto hasWindowOnWorkspace = [&](WORKSPACEID workspaceId) {
+                return monitorWindowsIt != directNiriWorkspacesWithWindowsByMonitor.end() && monitorWindowsIt->second.contains(workspaceId);
+            };
+            std::size_t firstPlaceholderIndex = laneWorkspaceIds.size();
+            std::size_t lastPlaceholderIndex = laneWorkspaceIds.size();
+            for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
+                const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
+                const bool hasWindows = hasWindowOnWorkspace(workspaceId);
+                const bool keepAsAnchor = centerWorkspace && workspaceId == centerWorkspace->m_id;
                 if (!hasWindows && !keepAsAnchor)
                     continue;
 
@@ -13202,10 +13235,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
             }
 
-            if (firstPlaceholderIndex != monitorWorkspaces.size() && lastPlaceholderIndex != monitorWorkspaces.size()) {
+            if (firstPlaceholderIndex != laneWorkspaceIds.size() && lastPlaceholderIndex != laneWorkspaceIds.size()) {
                 placeholderRangeByMonitor[candidateMonitor->m_id] = {
-                    monitorWorkspaces[firstPlaceholderIndex]->m_id,
-                    monitorWorkspaces[lastPlaceholderIndex]->m_id,
+                    static_cast<WORKSPACEID>(laneWorkspaceIds[firstPlaceholderIndex]),
+                    static_cast<WORKSPACEID>(laneWorkspaceIds[lastPlaceholderIndex]),
                 };
             }
 
@@ -13216,13 +13249,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
             const double laneStep = std::max(1.0, zoomedLaneHeight + gap);
             const double centerY = content.centerY();
-            for (std::size_t index = 0; index < monitorWorkspaces.size(); ++index) {
-                const auto& workspace = monitorWorkspaces[index];
-                if (!workspace)
-                    continue;
-
+            for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
+                const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
                 const double rowOffset = static_cast<double>(index) - static_cast<double>(activeIndex);
-                niriWorkspaceLaneById[workspace->m_id] = makeRect(content.x, centerY + rowOffset * laneStep - laneHeight * 0.5, content.width, laneHeight);
+                niriWorkspaceLaneById[workspaceId] = makeRect(content.x, centerY + rowOffset * laneStep - laneHeight * 0.5, content.width, laneHeight);
             }
         }
     }
@@ -13616,6 +13646,49 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 .targetGlobal = targetGlobal,
                 .relayoutFromGlobal = targetGlobal,
             });
+        }
+
+        for (const auto& [monitorId, workspaceIds] : niriSyntheticLaneWorkspaceIdsByMonitor) {
+            const auto targetMonitorIt = std::find_if(state.participatingMonitors.begin(), state.participatingMonitors.end(),
+                                                      [&](const PHLMONITOR& candidate) { return candidate && candidate->m_id == monitorId; });
+            if (targetMonitorIt == state.participatingMonitors.end() || !*targetMonitorIt)
+                continue;
+
+            const auto targetMonitor = *targetMonitorIt;
+            for (const auto workspaceId : workspaceIds) {
+                if (const auto rangeIt = placeholderRangeByMonitor.find(targetMonitor->m_id); rangeIt != placeholderRangeByMonitor.end()) {
+                    const auto [minPlaceholderId, maxPlaceholderId] = rangeIt->second;
+                    if (workspaceId < minPlaceholderId || workspaceId > maxPlaceholderId)
+                        continue;
+                }
+
+                const bool alreadyHasPlaceholder = std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+                    return placeholder.monitor == targetMonitor && placeholder.workspaceId == workspaceId;
+                });
+                if (alreadyHasPlaceholder)
+                    continue;
+
+                Rect content = overviewContentRectForMonitor(targetMonitor, state);
+                if (const auto laneIt = niriWorkspaceLaneById.find(workspaceId); laneIt != niriWorkspaceLaneById.end())
+                    content = laneIt->second;
+
+                const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, state.ownerWorkspace, content, state);
+                if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
+                    continue;
+
+                const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
+                                                   targetLocal.height);
+                const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
+                state.emptyWorkspacePlaceholders.push_back({
+                    .monitor = targetMonitor,
+                    .workspace = {},
+                    .workspaceId = workspaceId,
+                    .naturalGlobal = sourceGlobal,
+                    .exitGlobal = sourceGlobal,
+                    .targetGlobal = targetGlobal,
+                    .relayoutFromGlobal = targetGlobal,
+                });
+            }
         }
 
         for (const auto& override : workspaceOverrides) {
