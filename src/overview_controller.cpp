@@ -11744,6 +11744,7 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
             double niriScale = 1.0;
             if (state.collectionPolicy.onlyActiveWorkspace) {
                 niriScale = std::min(content.width / baseGlobal.width, content.height / baseGlobal.height);
+                niriScale *= niriLayoutScale();
             } else {
                 niriScale = niriOverviewPreviewScale(content, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
                 const double viewportScale = content.width / std::max(1.0, baseGlobal.width * 4.0);
@@ -13200,7 +13201,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
         if (fitModeViewport) {
-            const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale : scale;
+            const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             const Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                                 previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                                 baseGlobal.width * viewportScale,
