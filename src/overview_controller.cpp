@@ -12230,9 +12230,9 @@ void OverviewController::renderOutline(const Rect& rect, const Config::CGradient
     if (local.width <= 0.0 || local.height <= 0.0)
         return;
 
-    const int scaledThickness = std::max(1, static_cast<int>(std::lround(scaleLengthForRender(renderMonitor, thickness))));
+    const int borderThickness = std::max(1, static_cast<int>(std::lround(thickness)));
     g_pHyprOpenGL->renderBorder(toBox(local), gradient,
-                                {.borderSize = scaledThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
+                                {.borderSize = borderThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
 }
 
 Rect OverviewController::workspaceStripThumbRect(const WorkspaceStripEntry& entry, const PHLMONITOR& monitor) const {
