@@ -13302,8 +13302,35 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double laneHeight = std::max(1.0, content.height * visibleScale);
             const bool fitFocusMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
             const double baseGap = niriMultiWorkspaceGap();
-            const double gap = fitFocusMethod ? std::max(baseGap, niriSingleWorkspaceGapPixels()) : baseGap;
             const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
+            double gap = baseGap;
+            if (fitFocusMethod) {
+                PHLWORKSPACE baseWorkspace;
+                if (const auto workspaceIt = workspaceById.find(centerWorkspaceId); workspaceIt != workspaceById.end())
+                    baseWorkspace = workspaceIt->second;
+                if (!baseWorkspace && !monitorWorkspaces.empty())
+                    baseWorkspace = monitorWorkspaces.front();
+
+                if (baseWorkspace && baseWorkspace->m_space) {
+                    const CBox workAreaBox = baseWorkspace->m_space->workArea();
+                    const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+                    const Rect lanePreview = makeRect(content.x, content.y, content.width, laneHeight);
+                    if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
+                        const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
+                        double centerScale = niriOverviewPreviewScale(lanePreview, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+                        const double viewportScale = lanePreview.width / std::max(1.0, baseGlobal.width * 4.0);
+                        centerScale = std::max(config.minSlotScale, std::min({centerScale, visibleScale, viewportScale}));
+                        centerScale *= niriActiveWorkspaceLayoutScale;
+
+                        const double fitScale =
+                            std::max(config.minSlotScale, std::min(lanePreview.width / baseGlobal.width, lanePreview.height / baseGlobal.height)) *
+                            niriActiveWorkspaceLayoutScale;
+                        const double centerViewportHeight = baseGlobal.height * centerScale;
+                        const double fitViewportHeight = baseGlobal.height * fitScale;
+                        gap = std::max(baseGap, baseGap + fitViewportHeight - centerViewportHeight);
+                    }
+                }
+            }
             const double laneStep = std::max(1.0, zoomedLaneHeight + gap);
             const double centerY = content.centerY();
             for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
