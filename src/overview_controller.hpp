@@ -36,6 +36,9 @@
 #include "overview_logic.hpp"
 
 class CEventLoopTimer;
+namespace Config {
+    class CGradientValueData;
+}
 
 namespace hymission {
 
@@ -722,6 +725,7 @@ class OverviewController {
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
+    void renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha = 1.0) const;
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
     void applyWorkspaceStripCursorShape() const;
@@ -886,7 +890,7 @@ class OverviewController {
     bool                     m_surfaceFeedbackOverrideActive = false;
     bool                     m_surfaceFeedbackOverrideBackup = false;
     bool                     m_lastStripThemeColorValid = false;
-    uint32_t                 m_lastStripThemeColor = 0;
+    uint64_t                 m_lastStripThemeColor = 0;
     bool                     m_primaryButtonPressed = false;
     bool                     m_clickedWindowWasAlreadySelected = false;
     std::optional<std::size_t> m_pressedStripIndex;

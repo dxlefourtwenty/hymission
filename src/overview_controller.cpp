@@ -244,16 +244,41 @@ std::string getConfigString(HANDLE handle, const char* name, std::string fallbac
     return fallback;
 }
 
-CHyprColor activeBorderColorWithAlpha(double alpha) {
+Config::CGradientValueData activeBorderGradient() {
     static auto PACTIVEBORDER = CConfigValue<Config::IComplexConfigValue>("general:col.active_border");
 
     if (const auto* const gradient = dynamic_cast<Config::CGradientValueData*>(PACTIVEBORDER.ptr()); gradient && !gradient->m_colors.empty()) {
-        CHyprColor color = gradient->m_colors.front();
-        color.a = alpha;
+        return *gradient;
+    }
+
+    return Config::CGradientValueData(CHyprColor(0.97, 0.985, 1.0, 1.0));
+}
+
+CHyprColor activeBorderColorWithAlpha(double alpha) {
+    auto gradient = activeBorderGradient();
+    if (!gradient.m_colors.empty()) {
+        CHyprColor color = gradient.m_colors.front();
+        color.a *= static_cast<float>(std::clamp(alpha, 0.0, 1.0));
         return color;
     }
 
-    return CHyprColor(0.97, 0.985, 1.0, alpha);
+    return CHyprColor(0.97, 0.985, 1.0, std::clamp(alpha, 0.0, 1.0));
+}
+
+uint64_t activeBorderGradientSignature() {
+    const auto gradient = activeBorderGradient();
+    uint64_t   hash = 1469598103934665603ULL;
+    const auto mix = [&](uint64_t value) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    };
+
+    mix(static_cast<uint64_t>(gradient.m_colors.size()));
+    mix(static_cast<uint64_t>(std::llround(static_cast<double>(gradient.m_angle) * 1000000.0)));
+    for (const auto& color : gradient.m_colors)
+        mix(static_cast<uint64_t>(color.getAsHex()));
+
+    return hash;
 }
 
 std::string luaStringLiteral(const std::string& value) {
@@ -2852,7 +2877,7 @@ void OverviewController::renderStage(eRenderStage stage) {
 
         g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewOverlayPassElement>(this, monitor));
         if (workspaceStripEnabled(m_state)) {
-            const uint32_t currentStripThemeColor = activeBorderColorWithAlpha(1.0).getAsHex();
+            const uint64_t currentStripThemeColor = activeBorderGradientSignature();
             if (!m_lastStripThemeColorValid) {
                 m_lastStripThemeColorValid = true;
                 m_lastStripThemeColor = currentStripThemeColor;
@@ -12175,7 +12200,7 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
         return;
 
     const Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
-    renderOutline(rect, activeBorderColorWithAlpha(0.95 * progress), thickness);
+    renderOutline(rect, activeBorderGradient(), thickness, 0.95 * progress);
 }
 
 void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const {
@@ -12194,6 +12219,22 @@ void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color
     g_pHyprOpenGL->renderRect(toBox(bottom), color, {});
     g_pHyprOpenGL->renderRect(toBox(left), color, {});
     g_pHyprOpenGL->renderRect(toBox(right), color, {});
+}
+
+void OverviewController::renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha) const {
+    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!renderMonitor || gradient.m_colors.empty())
+        return;
+
+    const Rect local = rectToMonitorRenderLocal(rect, renderMonitor);
+    if (local.width <= 0.0 || local.height <= 0.0)
+        return;
+
+    const int scaledThickness = std::max(1, static_cast<int>(std::lround(scaleLengthForRender(renderMonitor, thickness))));
+    const Rect expanded = makeRect(local.x - scaledThickness, local.y - scaledThickness, local.width + scaledThickness * 2.0, local.height + scaledThickness * 2.0);
+
+    g_pHyprOpenGL->renderBorder(toBox(expanded), gradient,
+                                {.borderSize = scaledThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
 }
 
 Rect OverviewController::workspaceStripThumbRect(const WorkspaceStripEntry& entry, const PHLMONITOR& monitor) const {
@@ -12670,7 +12711,7 @@ void OverviewController::renderWorkspaceStrip() const {
         }
 
         if (entry.active && !entry.newWorkspaceSlot) {
-            renderOutline(outerGlobal, activeBorderColorWithAlpha(0.92 * progress), 2.0);
+            renderOutline(outerGlobal, activeBorderGradient(), 2.0, 0.92 * progress);
         }
 
         if (!entry.newWorkspaceSlot) {
