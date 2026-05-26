@@ -4512,6 +4512,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     if (updated == 0)
         return;
 
+    m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
     m_state.relayoutActive = animateRefresh && targetChanged;
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
@@ -13142,8 +13143,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const double viewportScale = previewLength / std::max(1.0, baseLength * visibleViewportCount);
                 scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
             } else if (fitModeViewport) {
-                const double fitScale = *overflowAxis == GestureAxis::Horizontal ? previewArea.height / baseGlobal.height : previewArea.width / baseGlobal.width;
-                scale = std::max(config.minSlotScale, std::min(fitScale * niriOverviewScale(), config.maxPreviewScale));
+                const double fitScale = std::min(previewArea.width / baseGlobal.width, previewArea.height / baseGlobal.height);
+                scale = std::max(config.minSlotScale, std::min(fitScale, config.maxPreviewScale));
             } else {
                 const double maxNiriScale = niriMultiWorkspaceScale();
                 const double visibleViewportCount = 4.0;
