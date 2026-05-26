@@ -4641,13 +4641,7 @@ bool OverviewController::shouldDisableWorkspaceStripForNiriPreview(const State& 
     if (!niriPreviewDisabled() || !niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
         return false;
 
-    if (state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace))
-        return true;
-
-    if (state.focusDuringOverview && state.focusDuringOverview->m_workspace && isScrollingWorkspace(state.focusDuringOverview->m_workspace))
-        return true;
-
-    return std::ranges::any_of(state.managedWorkspaces, [this](const PHLWORKSPACE& workspace) { return isScrollingWorkspace(workspace); });
+    return state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace);
 }
 
 bool OverviewController::shouldRenderEmptyOverviewPlaceholder(const State& state, const PHLMONITOR& monitor) const {
@@ -12787,7 +12781,7 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
             continue;
 
         const Rect band = workspaceStripBandRectForMonitor(monitor, state);
-        if (niriModeEnabled()) {
+        if (singleWorkspaceScrollingNiri) {
             std::optional<std::size_t> activeIndex;
             for (std::size_t index = 0; index < monitorEntries.size(); ++index) {
                 if (monitorEntries[index].active) {
