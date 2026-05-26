@@ -13139,6 +13139,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return std::nullopt;
 
         const bool fitModeViewport = !g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
+        double fitModeViewportScale = 0.0;
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
         if (overflowAxis) {
             if (g_niriStripSnapshotSingleWorkspaceOnly) {
@@ -13150,6 +13151,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
             } else if (fitModeViewport) {
                 const double fitScale = std::min(previewArea.width / baseGlobal.width, previewArea.height / baseGlobal.height);
+                fitModeViewportScale = fitScale;
                 scale = std::max(config.minSlotScale, fitScale);
             } else {
                 const double maxNiriScale = niriMultiWorkspaceScale();
@@ -13165,7 +13167,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
         if (scale <= 0.0)
             return std::nullopt;
-        if (!fitModeViewport && std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001)
+        if (std::abs(niriActiveWorkspaceLayoutScale - 1.0) > 0.001)
             scale *= niriActiveWorkspaceLayoutScale;
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
@@ -13198,12 +13200,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
         if (fitModeViewport) {
-            const Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * scale * 0.5,
-                                                previewArea.centerY() - baseGlobal.height * scale * 0.5,
-                                                baseGlobal.width * scale,
-                                                baseGlobal.height * scale);
-            targetLocal = makeRect(viewportLocal.x + (sourceGlobal.x - baseGlobal.x) * scale,
-                                   viewportLocal.y + (sourceGlobal.y - baseGlobal.y) * scale,
+            const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale : scale;
+            const Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
+                                                previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
+                                                baseGlobal.width * viewportScale,
+                                                baseGlobal.height * viewportScale);
+            targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
+                                   viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
                                    targetWidth,
                                    targetHeight);
 
