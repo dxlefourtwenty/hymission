@@ -6429,7 +6429,7 @@ SDispatchResult OverviewController::startOverviewWorkspaceTransitionForDispatche
                                                                        Desktop::History::workspaceTracker()->previousWorkspaceIDName(currentWorkspace);
         const bool targetCurrent = resolved.id == currentWorkspace->m_id;
         if (targetCurrent && ((!*PBACKANDFORTH && !explicitPrevious) || previousWorkspace.id == -1))
-            return {.success = false, .error = "Previous workspace doesn't exist"};
+            return {};
 
         targetId = targetCurrent ? previousWorkspace.id : resolved.id;
         targetName = targetCurrent ? (previousWorkspace.name.empty() ? std::to_string(previousWorkspace.id) : previousWorkspace.name) : resolved.name;
@@ -13638,13 +13638,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
                                                targetLocal.height);
-            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
             state.emptyWorkspacePlaceholders.push_back({
                 .monitor = targetMonitor,
                 .workspace = {},
                 .workspaceId = override.workspaceId,
-                .naturalGlobal = sourceGlobal,
-                .exitGlobal = sourceGlobal,
+                .naturalGlobal = targetGlobal,
+                .exitGlobal = targetGlobal,
                 .targetGlobal = targetGlobal,
                 .relayoutFromGlobal = targetGlobal,
             });
