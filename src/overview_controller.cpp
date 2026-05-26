@@ -12230,8 +12230,16 @@ void OverviewController::renderOutline(const Rect& rect, const Config::CGradient
     if (local.width <= 0.0 || local.height <= 0.0)
         return;
 
+    const double x1 = std::floor(local.x);
+    const double y1 = std::floor(local.y);
+    const double x2 = std::ceil(local.x + local.width);
+    const double y2 = std::ceil(local.y + local.height);
+    const Rect   aligned = makeRect(x1, y1, x2 - x1, y2 - y1);
+    if (aligned.width <= 0.0 || aligned.height <= 0.0)
+        return;
+
     const int borderThickness = std::max(1, static_cast<int>(std::lround(thickness)));
-    g_pHyprOpenGL->renderBorder(toBox(local), gradient,
+    g_pHyprOpenGL->renderBorder(toBox(aligned), gradient,
                                 {.borderSize = borderThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
 }
 
