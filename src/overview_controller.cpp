@@ -6067,10 +6067,11 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
             if (!targetPlaceholder.monitor || targetPlaceholder.workspaceId == WORKSPACE_INVALID)
                 continue;
 
-            Rect rect = translated(targetPlaceholder.targetGlobal, targetOffset);
+            Rect rect = targetPlaceholder.targetGlobal;
             if (const auto* sourcePlaceholder = sourcePlaceholderFor(targetPlaceholder)) {
                 const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
-                rect = lerpRect(sourceRect, rect, t);
+                const Rect targetRect = translated(targetPlaceholder.targetGlobal, targetOffset);
+                rect = lerpRect(sourceRect, targetRect, t);
             }
 
             transitionPlaceholderRects.emplace_back(targetPlaceholder.monitor->m_id, targetPlaceholder.workspaceId, targetPlaceholder.backingOnly, rect);
@@ -13194,6 +13195,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
                 workspaceById.emplace(workspace->m_id, workspace);
                 realWorkspaceIds.push_back(workspace->m_id);
+            }
+
+            for (const auto& override : workspaceOverrides) {
+                if (override.monitorId != candidateMonitor->m_id || !override.syntheticEmpty || override.workspaceId == WORKSPACE_INVALID)
+                    continue;
+
+                const auto overrideId = static_cast<int64_t>(override.workspaceId);
+                if (std::find(realWorkspaceIds.begin(), realWorkspaceIds.end(), overrideId) == realWorkspaceIds.end())
+                    realWorkspaceIds.push_back(overrideId);
             }
 
             const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
