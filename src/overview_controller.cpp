@@ -1416,60 +1416,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     };
 }
 
-std::optional<int> scrollingOverviewPrimaryOrdinalForWindow(const PHLWINDOW& window) {
-    if (!window || !window->m_workspace || !window->m_workspace->m_space)
-        return std::nullopt;
-
-    const auto target = window->layoutTarget();
-    if (!target || target->floating())
-        return std::nullopt;
-
-    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
-    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return std::nullopt;
-
-    const auto targetData = scrolling->dataFor(target);
-    if (!targetData)
-        return std::nullopt;
-
-    const auto targetColumn = targetData->column.lock();
-    if (!targetColumn)
-        return std::nullopt;
-
-    struct ColumnEntry {
-        SP<Layout::Tiled::SColumnData> column;
-        double                         primary = 0.0;
-    };
-
-    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
-    std::vector<ColumnEntry> columns;
-    columns.reserve(scrolling->m_scrollingData->columns.size());
-    for (const auto& column : scrolling->m_scrollingData->columns) {
-        if (!column || column->targetDatas.empty())
-            continue;
-
-        const auto firstTarget = std::ranges::find_if(column->targetDatas, [](const auto& candidate) {
-            return candidate && candidate->target && candidate->layoutBox.width > 1.0 && candidate->layoutBox.height > 1.0;
-        });
-        if (firstTarget == column->targetDatas.end())
-            continue;
-
-        const CBox& box = (*firstTarget)->layoutBox;
-        columns.push_back({
-            .column = column,
-            .primary = horizontal ? box.x : box.y,
-        });
-    }
-
-    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
-    for (std::size_t index = 0; index < columns.size(); ++index) {
-        if (columns[index].column == targetColumn)
-            return static_cast<int>(index);
-    }
-
-    return std::nullopt;
-}
-
 Rect floatingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -13236,6 +13182,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::size_t> directNiriOverviewWindowsByMonitor;
     std::unordered_map<WORKSPACEID, Rect> niriWorkspaceLaneById;
     std::unordered_map<MONITORID, std::vector<WORKSPACEID>> niriSyntheticLaneWorkspaceIdsByMonitor;
+    std::unordered_map<MONITORID, std::unordered_map<WORKSPACEID, int>> niriWorkspaceOrdinalByMonitor;
     std::unordered_set<WORKSPACEID> niriFitBackingPlaceholderWorkspaces;
     const bool useWorkspaceRows = workspaceRowsEnabled(m_handle);
     LayoutConfig config = layoutConfigForState(state);
@@ -13362,6 +13309,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
                 const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
                 const double rowOffset = static_cast<double>(index) - static_cast<double>(activeIndex);
+                niriWorkspaceOrdinalByMonitor[candidateMonitor->m_id][workspaceId] = static_cast<int>(index) - static_cast<int>(activeIndex);
                 niriWorkspaceLaneById[workspaceId] = makeRect(content.x, centerY + rowOffset * laneStep - laneHeight * 0.5, content.width, laneHeight);
             }
         }
@@ -13469,27 +13417,30 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-        double workspaceGapOffset = 0.0;
-        if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
-            const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
-            const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
-                                                                      getConfigInt(m_handle, "general:gaps_out", 0)));
-            const double previewGap = std::max(configuredGap * scale * (gapMultiplier - 1.0),
-                                               niriSingleWorkspaceGapPixels());
-            const auto anchorOrdinal = scrollingOverviewPrimaryOrdinalForWindow(anchorWindow);
-            const auto windowOrdinal = scrollingOverviewPrimaryOrdinalForWindow(window);
-            if (previewGap > 0.0 && anchorOrdinal && windowOrdinal)
-                workspaceGapOffset = static_cast<double>(*windowOrdinal - *anchorOrdinal) * previewGap;
-        }
         if (fitModeViewport) {
             const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
                                           baseGlobal.height * viewportScale);
-            if (workspaceGapOffset != 0.0)
-                viewportLocal = *overflowAxis == GestureAxis::Horizontal ? translateRect(viewportLocal, workspaceGapOffset, 0.0) :
-                                                                      translateRect(viewportLocal, 0.0, workspaceGapOffset);
+            double workspaceStripOffset = 0.0;
+            if (overflowAxis && window->m_workspace) {
+                const auto monitorOrdinalsIt = niriWorkspaceOrdinalByMonitor.find(targetMonitor->m_id);
+                if (monitorOrdinalsIt != niriWorkspaceOrdinalByMonitor.end()) {
+                    const auto workspaceOrdinalIt = monitorOrdinalsIt->second.find(window->m_workspace->m_id);
+                    if (workspaceOrdinalIt != monitorOrdinalsIt->second.end()) {
+                        const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
+                        const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
+                                                                                  getConfigInt(m_handle, "general:gaps_out", 0)));
+                        const double previewGap = std::max(configuredGap * scale * (gapMultiplier - 1.0),
+                                                           niriSingleWorkspaceGapPixels());
+                        workspaceStripOffset = static_cast<double>(workspaceOrdinalIt->second) * previewGap;
+                    }
+                }
+            }
+            if (workspaceStripOffset != 0.0)
+                viewportLocal = *overflowAxis == GestureAxis::Horizontal ? translateRect(viewportLocal, workspaceStripOffset, 0.0) :
+                                                                            translateRect(viewportLocal, 0.0, workspaceStripOffset);
             targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
                                    viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
                                    targetWidth,
@@ -13512,9 +13463,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 });
             }
         }
-        if (workspaceGapOffset != 0.0 && overflowAxis)
-            targetLocal = *overflowAxis == GestureAxis::Horizontal ? translateRect(targetLocal, workspaceGapOffset, 0.0) :
-                                                                     translateRect(targetLocal, 0.0, workspaceGapOffset);
         if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double configuredGap = std::min(config.columnSpacing, config.rowSpacing);
             const double previewGap = std::max(2.0, std::min(18.0, configuredGap * 0.35));
