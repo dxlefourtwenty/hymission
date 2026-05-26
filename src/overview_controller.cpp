@@ -8013,19 +8013,6 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     const Rect   actual = surfaceRenderGlobalRectForWindow(window);
     const double actualWidth = std::max(1.0, actual.width);
     const double actualHeight = std::max(1.0, actual.height);
-    const bool   shouldStretchStaleLiveGeometry =
-        !m_stripPreviewContext.active && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible() &&
-        !isScrollingWorkspace(window->m_workspace) && !rectApproxEqual(stateSnapshotGlobalRectForWindow(window), stateSnapshotGlobalRectForWindow(window, true), 0.5);
-
-    if (shouldStretchStaleLiveGeometry) {
-        return WindowTransform{
-            .actualGlobal = actual,
-            .targetGlobal = current,
-            .scaleX = std::max(0.0, current.width / actualWidth),
-            .scaleY = std::max(0.0, current.height / actualHeight),
-        };
-    }
-
     const double uniformScale = std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
     const Rect   fitted = makeRect(current.centerX() - actualWidth * uniformScale * 0.5, current.centerY() - actualHeight * uniformScale * 0.5,
                                    actualWidth * uniformScale, actualHeight * uniformScale);
@@ -11129,10 +11116,11 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     const bool sameMonitorSet = next.participatingMonitors.size() == m_state.participatingMonitors.size() &&
         std::ranges::all_of(next.participatingMonitors, [&](const PHLMONITOR& monitor) { return containsHandle(m_state.participatingMonitors, monitor); });
     const bool selectionRelayoutForced = forceRelayout && expandSelectedWindowEnabled();
+    const bool layoutRelayoutForced = forceRelayout;
 
     bool shouldAnimateRelayout = false;
     bool placeholderRelayoutChanged = false;
-    if (sameWindowSet && sameMonitorSet && !selectionRelayoutForced) {
+    if (sameWindowSet && sameMonitorSet && !layoutRelayoutForced && !selectionRelayoutForced) {
         for (auto& window : next.windows) {
             const auto* previousManaged = previousManagedForWindow(window.window);
             if (!previousManaged)
@@ -11230,7 +11218,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     for (const auto& window : m_state.transientClosingWindows)
         appendTransientClosingWindow(window);
 
-    if (sameWindowSet && sameMonitorSet && !selectionRelayoutForced) {
+    if (sameWindowSet && sameMonitorSet && !layoutRelayoutForced && !selectionRelayoutForced) {
         next.relayoutActive = false;
         next.relayoutProgress = 1.0;
         next.relayoutStart = {};
@@ -11271,6 +11259,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         out << " relayout=" << (shouldAnimateRelayout ? 1 : 0);
         out << " frozenLayout=" << ((sameWindowSet && sameMonitorSet) ? 1 : 0);
         out << " forcedSelectionRelayout=" << (selectionRelayoutForced ? 1 : 0);
+        out << " forcedLayoutRelayout=" << (layoutRelayoutForced ? 1 : 0);
         debugLog(out.str());
         if (forceRelayout || selectionRelayoutForced) {
             logOverviewLayoutState("rebuild-before", m_state);
