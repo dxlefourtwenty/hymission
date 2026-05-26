@@ -13560,6 +13560,41 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 .relayoutFromGlobal = targetGlobal,
             });
         }
+
+        for (const auto& override : workspaceOverrides) {
+            if (!override.syntheticEmpty || override.workspace || override.workspaceId == WORKSPACE_INVALID)
+                continue;
+
+            const auto targetMonitorIt = std::find_if(state.participatingMonitors.begin(), state.participatingMonitors.end(),
+                                                      [&](const PHLMONITOR& candidate) { return candidate && candidate->m_id == override.monitorId; });
+            if (targetMonitorIt == state.participatingMonitors.end() || !*targetMonitorIt)
+                continue;
+
+            const auto targetMonitor = *targetMonitorIt;
+            const bool alreadyHasPlaceholder = std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+                return placeholder.monitor == targetMonitor && placeholder.workspaceId == override.workspaceId;
+            });
+            if (alreadyHasPlaceholder)
+                continue;
+
+            Rect content = overviewContentRectForMonitor(targetMonitor, state);
+            const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, state.ownerWorkspace, content, state);
+            if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
+                continue;
+
+            const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
+                                               targetLocal.height);
+            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
+            state.emptyWorkspacePlaceholders.push_back({
+                .monitor = targetMonitor,
+                .workspace = {},
+                .workspaceId = override.workspaceId,
+                .naturalGlobal = sourceGlobal,
+                .exitGlobal = sourceGlobal,
+                .targetGlobal = targetGlobal,
+                .relayoutFromGlobal = targetGlobal,
+            });
+        }
     }
 
     const auto settleNiriFloatingOverlayOverlaps = [&]() {
