@@ -13496,7 +13496,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     .backingOnly = true,
                 });
             }
-        } else if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
+        }
+        if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
             const double gapMultiplier = niriSingleWorkspaceGapMultiplier();
             const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
                                                                       getConfigInt(m_handle, "general:gaps_out", 0)));
