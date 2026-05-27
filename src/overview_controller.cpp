@@ -12413,8 +12413,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     if (renderWorkspaceContents && !renderWindowFn)
         return;
 
-    const bool targetIsCurrentWorkspace = isCurrentActiveWorkspaceStripEntry(entry);
-
     const auto previousWorkspace = monitor->m_activeWorkspace;
     const auto previousSpecialWorkspace = monitor->m_activeSpecialWorkspace;
     const bool previousBlockSurfaceFeedback = g_pHyprRenderer->m_bBlockSurfaceFeedback;
@@ -12538,10 +12536,10 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         applyFullscreenOverrideForState(m_stripPreviewContext.state, true);
     }
 
-    if (renderWorkspaceContents && targetWorkspace && !targetIsCurrentWorkspace)
+    if (renderWorkspaceContents && targetWorkspace)
         monitor->m_activeSpecialWorkspace.reset();
 
-    if (renderWorkspaceContents && targetWorkspace && !targetIsCurrentWorkspace) {
+    if (renderWorkspaceContents && targetWorkspace) {
         monitor->m_activeWorkspace = targetWorkspace;
         if (!targetWorkspace->m_visible) {
             targetWorkspace->m_visible = true;
@@ -12621,7 +12619,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     if (targetVisibilityChanged && targetWorkspace)
         targetWorkspace->m_visible = false;
 
-    if (renderWorkspaceContents && !targetIsCurrentWorkspace) {
+    if (renderWorkspaceContents && targetWorkspace) {
         monitor->m_activeSpecialWorkspace = previousSpecialWorkspace;
         monitor->m_activeWorkspace = previousWorkspace;
     }
@@ -13572,19 +13570,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 });
             }
         }
-        if (!g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
+        if (overflowAxis) {
             const double previewGap = niriWindowGaps();
-            if (*overflowAxis == GestureAxis::Horizontal) {
-                const double width = std::max(1.0, targetLocal.width - previewGap);
-                targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
-            } else {
-                const double height = std::max(1.0, targetLocal.height - previewGap);
-                targetLocal = makeRect(targetLocal.x, targetLocal.centerY() - height * 0.5, targetLocal.width, height);
-            }
-        }
-        if (g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis) {
-            const double configuredGap = std::min(config.columnSpacing, config.rowSpacing);
-            const double previewGap = std::max(2.0, std::min(18.0, configuredGap * 0.35));
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
                 targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
