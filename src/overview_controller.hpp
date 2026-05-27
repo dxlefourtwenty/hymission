@@ -622,7 +622,7 @@ class OverviewController {
     [[nodiscard]] const ManagedWindow*          focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const;
     [[nodiscard]] bool                          borderUsesTransformedGeometry(const State& state) const;
     [[nodiscard]] Rect                          managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state,
-                                                                        bool useTargetGeometry) const;
+                                                                        bool useTargetGeometry, bool forceTransformedGeometry = false) const;
     void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
     void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
     [[nodiscard]] bool                          shouldSuppressSurfaceBlur(void* surfacePassThisptr) const;

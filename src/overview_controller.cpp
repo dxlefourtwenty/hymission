@@ -12191,10 +12191,11 @@ bool OverviewController::borderUsesTransformedGeometry(const State& state) const
     return true;
 }
 
-Rect OverviewController::managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state, bool useTargetGeometry) const {
+Rect OverviewController::managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state, bool useTargetGeometry,
+                                                 bool forceTransformedGeometry) const {
     Rect rect = useTargetGeometry ? managed.targetGlobal : currentPreviewRect(managed);
 
-    if (borderUsesTransformedGeometry(state)) {
+    if (forceTransformedGeometry || borderUsesTransformedGeometry(state)) {
         if (const auto transform = windowTransformFor(managed.window, renderMonitor))
             rect = transform->targetGlobal;
     }
@@ -12222,7 +12223,7 @@ void OverviewController::renderInactiveWindowBorders(const State& state, double 
         if (focusedManaged && managed.window == focusedManaged->window)
             continue;
 
-        renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry), inactiveGradient, thickness, 0.95 * progress);
+        renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry, true), inactiveGradient, thickness, 0.95 * progress);
     }
 }
 
