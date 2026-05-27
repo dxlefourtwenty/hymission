@@ -6117,6 +6117,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
                 const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                 const Rect targetRect = translated(targetPlaceholder.targetGlobal, targetOffset);
                 rect = lerpRect(sourceRect, targetRect, t);
+            } else {
+                rect = translated(targetPlaceholder.targetGlobal, targetOffset);
             }
 
             transitionPlaceholderRects.emplace_back(targetPlaceholder.monitor->m_id, targetPlaceholder.workspaceId, targetPlaceholder.backingOnly, rect);
@@ -12053,10 +12055,10 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                     const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
                     transitionGlobal = lerpRect(sourceRect, targetRect, t);
                 } else if (sourcePlaceholder) {
-                    transitionGlobal = sourcePlaceholder->targetGlobal;
+                    transitionGlobal = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                     alpha *= 1.0 - t;
                 } else {
-                    transitionGlobal = targetPlaceholder->targetGlobal;
+                    transitionGlobal = translated(targetPlaceholder->targetGlobal, targetOffset);
                     alpha *= t;
                 }
 
@@ -13923,12 +13925,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
                                                targetLocal.height);
+            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
             state.emptyWorkspacePlaceholders.push_back({
                 .monitor = targetMonitor,
                 .workspace = {},
                 .workspaceId = override.workspaceId,
-                .naturalGlobal = targetGlobal,
-                .exitGlobal = targetGlobal,
+                .naturalGlobal = sourceGlobal,
+                .exitGlobal = sourceGlobal,
                 .targetGlobal = targetGlobal,
                 .relayoutFromGlobal = targetGlobal,
             });
