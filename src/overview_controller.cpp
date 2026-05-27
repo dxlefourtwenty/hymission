@@ -13518,26 +13518,28 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             scale *= niriActiveWorkspaceLayoutScale;
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
-        Rect focusedAnchorSourceGlobal = anchorSourceGlobal;
-        PHLWINDOW anchorWindow;
-        if (!anchorOverride && window->m_workspace) {
-            if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
-                anchorWindow = state.focusDuringOverview;
-            else
-                anchorWindow = focusCandidateForWorkspace(window->m_workspace);
+        if (g_niriStripSnapshotSingleWorkspaceOnly) {
+            const Rect centeredBaseAnchor =
+                makeRect(baseGlobal.centerX() - anchorSourceGlobal.width * 0.5, baseGlobal.centerY() - anchorSourceGlobal.height * 0.5,
+                         anchorSourceGlobal.width, anchorSourceGlobal.height);
+            anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
+        } else {
+            PHLWINDOW anchorWindow;
+            if (!anchorOverride && window->m_workspace) {
+                if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
+                    anchorWindow = state.focusDuringOverview;
+                else
+                    anchorWindow = focusCandidateForWorkspace(window->m_workspace);
 
-            if (anchorWindow && anchorWindow->m_workspace == window->m_workspace) {
-                const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
-                const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
-                anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
-                focusedAnchorSourceGlobal = anchorSourceGlobal;
-                if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
-                    anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
+                if (anchorWindow && anchorWindow->m_workspace == window->m_workspace) {
+                    const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
+                    const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
+                    anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
+                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
+                        anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
+                }
             }
         }
-        if (g_niriStripSnapshotSingleWorkspaceOnly)
-            anchorSourceGlobal =
-                centerAnchorOnWorkspaceStripAxis(anchorSourceGlobal, focusedAnchorSourceGlobal, parseWorkspaceStripAnchor(workspaceStripAnchor()));
 
         const double viewportX = previewArea.centerX() - (anchorSourceGlobal.centerX() - baseGlobal.x) * scale;
         const double viewportY = previewArea.centerY() - (anchorSourceGlobal.centerY() - baseGlobal.y) * scale;
