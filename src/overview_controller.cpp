@@ -13574,8 +13574,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 });
             }
         }
+        const double stripPreviewGapBoost = g_niriStripSnapshotSingleWorkspaceOnly ? 2.0 : 0.0;
         if (overflowAxis) {
-            const double previewGap = niriWindowGaps() + (g_niriStripSnapshotSingleWorkspaceOnly ? 1.0 : 0.0);
+            const double previewGap = niriWindowGaps() + stripPreviewGapBoost;
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
                 targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
@@ -13583,6 +13584,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const double height = std::max(1.0, targetLocal.height - previewGap);
                 targetLocal = makeRect(targetLocal.x, targetLocal.centerY() - height * 0.5, targetLocal.width, height);
             }
+        }
+        if (stripPreviewGapBoost > 0.0) {
+            const double width = std::max(1.0, targetLocal.width - stripPreviewGapBoost);
+            const double height = std::max(1.0, targetLocal.height - stripPreviewGapBoost);
+            targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.centerY() - height * 0.5, width, height);
         }
 
         return WindowSlot{
