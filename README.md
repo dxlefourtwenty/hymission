@@ -269,8 +269,7 @@ plugin {
         niri_scroll_pixels_per_delta = 1.0
         niri_layout_scale = 1.0
         niri_overview_scale = 0.65
-        niri_single_ws_gap_multiplier = 2.0
-        niri_single_ws_gap_pixels = 24.0
+        niri_window_gaps = 24.0
         niri_workspace_gap = -1.0
         niri_workspace_scale = 1.0
         niri_strip_workspace_zoom = 2.0
@@ -371,8 +370,7 @@ hl.config({
 | `niri_scroll_pixels_per_delta` | float | `1.0` | Multiplier for `hymission:scroll,layout` movement outside overview. A value of `1.0` maps roughly one `gestures:workspace_swipe_distance` of finger travel to one viewport of scrolling-layout movement. Native `scrollMove` ignores this option. |
 | `niri_layout_scale` | float | `1.0` | Extra scale applied to niri-mode active-workspace overview window targets, including direct scrolling-layout previews. Values are clamped to `0.50` - `2.0`. |
 | `niri_overview_scale` | float | `0.65` | Extra zoom factor for scrolling-layout windows in niri overview. Lower values reveal more neighboring windows in the scroll order; values are clamped to `0.05` - `1.0`. |
-| `niri_single_ws_gap_multiplier` | float | `2.0` | Multiplier for the visible gap between direct niri scrolling-layout previews in single-workspace overview. Values are clamped to `1.0` - `8.0`. |
-| `niri_single_ws_gap_pixels` | float | `24.0` | Minimum overview-space gap added between direct niri scrolling-layout previews in single-workspace overview. Values are clamped to `0.0` - `160.0`. |
+| `niri_window_gaps` | float | `24.0` | Visible gap between direct niri scrolling-layout previews in single-workspace overview. Values are clamped to `0.0` - `160.0`; legacy `niri_single_ws_gap_pixels` and `niri_single_ws_gap_multiplier` remain as fallback inputs. |
 | `niri_workspace_gap` | float | `-1.0` | Visible gap between niri-mode workspace scroll strips in single-workspace overview. Values below `0.0` fall back to `general:gaps_out`; `niri_multi_ws_gap` remains supported as a legacy fallback. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `niri_strip_workspace_zoom` | float | `2.0` | Extra zoom for scrolling-layout windows inside niri mode's active-workspace strip thumbnails only. Values are clamped to `0.05` - `4.0`; this does not affect the main overview, multi-workspace overview, non-niri strip thumbnails, or non-scrolling layouts. |
