@@ -13575,7 +13575,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
         }
         if (overflowAxis) {
-            const double previewGap = niriWindowGaps();
+            const double previewGap = niriWindowGaps() + (g_niriStripSnapshotSingleWorkspaceOnly ? 1.0 : 0.0);
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
                 targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
