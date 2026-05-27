@@ -334,8 +334,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     FLOAT_CONF("niri_layout_scale", 1.0F);
     FLOAT_CONF("niri_overview_scale", 0.65F);
     FLOAT_CONF("niri_window_gaps", -1.0F);
-    FLOAT_CONF("niri_single_ws_gap_multiplier", 2.0F);
-    FLOAT_CONF("niri_single_ws_gap_pixels", 24.0F);
+    FLOAT_CONF("niri_single_ws_gap_multiplier", -1.0F);
+    FLOAT_CONF("niri_single_ws_gap_pixels", -1.0F);
     FLOAT_CONF("niri_multi_ws_scale", 0.18F);
     FLOAT_CONF("niri_workspace_gap", -1.0F);
     FLOAT_CONF("niri_multi_ws_gap", -1.0F);

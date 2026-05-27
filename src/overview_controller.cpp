@@ -4235,6 +4235,7 @@ double OverviewController::niriOverviewScale() const {
 }
 
 double OverviewController::niriWindowGaps() const {
+    const double gapsIn = static_cast<double>(std::max(0L, getConfigInt(m_handle, "general:gaps_in", 0)));
     const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_window_gaps", -1.0);
     if (configured >= 0.0)
         return std::clamp(configured, 0.0, 160.0);
@@ -4243,10 +4244,11 @@ double OverviewController::niriWindowGaps() const {
     if (legacyPixels >= 0.0)
         return std::clamp(legacyPixels, 0.0, 160.0);
 
-    const double legacyMultiplier = std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_single_ws_gap_multiplier", 2.0), 1.0, 8.0);
-    const double configuredGap = static_cast<double>(std::max(getConfigInt(m_handle, "general:gaps_in", 0),
-                                                              getConfigInt(m_handle, "general:gaps_out", 0)));
-    return std::clamp(configuredGap * std::max(0.0, legacyMultiplier - 1.0), 0.0, 160.0);
+    const double legacyMultiplier = getConfigFloat(m_handle, "plugin:hymission:niri_single_ws_gap_multiplier", -1.0);
+    if (legacyMultiplier >= 0.0)
+        return std::clamp(gapsIn * std::max(0.0, std::clamp(legacyMultiplier, 1.0, 8.0) - 1.0), 0.0, 160.0);
+
+    return std::clamp(gapsIn, 0.0, 160.0);
 }
 
 double OverviewController::niriMultiWorkspaceScale() const {
