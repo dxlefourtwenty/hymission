@@ -468,6 +468,7 @@ class OverviewController {
     [[nodiscard]] double       niriLayoutScale() const;
     [[nodiscard]] double       niriOverviewScale() const;
     [[nodiscard]] double       niriWindowGaps() const;
+    [[nodiscard]] double       niriWindowGapsForWorkspace(const PHLWORKSPACE& workspace, GestureAxis axis) const;
     [[nodiscard]] double       niriMultiWorkspaceScale() const;
     [[nodiscard]] double       niriWorkspaceGap() const;
     [[nodiscard]] double       niriWorkspaceScale() const;

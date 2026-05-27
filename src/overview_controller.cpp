@@ -4286,6 +4286,33 @@ double OverviewController::niriWindowGaps() const {
     return std::clamp(gapsIn, 0.0, 160.0);
 }
 
+double OverviewController::niriWindowGapsForWorkspace(const PHLWORKSPACE& workspace, GestureAxis axis) const {
+    const double configured = getConfigFloat(m_handle, "plugin:hymission:niri_window_gaps", -1.0);
+    if (configured >= 0.0)
+        return std::clamp(configured, 0.0, 160.0);
+
+    const double legacyPixels = getConfigFloat(m_handle, "plugin:hymission:niri_single_ws_gap_pixels", -1.0);
+    if (legacyPixels >= 0.0)
+        return std::clamp(legacyPixels, 0.0, 160.0);
+
+    const double legacyMultiplier = getConfigFloat(m_handle, "plugin:hymission:niri_single_ws_gap_multiplier", -1.0);
+    if (legacyMultiplier >= 0.0)
+        return niriWindowGaps();
+
+    if (workspace) {
+        const auto workspaceRule = Config::workspaceRuleMgr()->getWorkspaceRuleFor(workspace).value_or(Config::CWorkspaceRule{});
+        if (workspaceRule.m_gapsIn) {
+            const auto& gaps = *workspaceRule.m_gapsIn;
+            const double axisGap =
+                axis == GestureAxis::Horizontal ? (static_cast<double>(gaps.m_left) + static_cast<double>(gaps.m_right)) * 0.5 :
+                                                  (static_cast<double>(gaps.m_top) + static_cast<double>(gaps.m_bottom)) * 0.5;
+            return std::clamp(axisGap, 0.0, 160.0);
+        }
+    }
+
+    return niriWindowGaps();
+}
+
 double OverviewController::niriMultiWorkspaceScale() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_multi_ws_scale", 0.18), 0.05, 0.24);
 }
@@ -13578,7 +13605,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
         const double stripPreviewGapBoost = g_niriStripSnapshotSingleWorkspaceOnly ? 2.0 : 0.0;
         if (overflowAxis) {
-            const double previewGap = niriWindowGaps() + stripPreviewGapBoost;
+            const double previewGap = niriWindowGapsForWorkspace(window->m_workspace, *overflowAxis) + stripPreviewGapBoost;
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
                 targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
