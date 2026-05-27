@@ -1249,6 +1249,27 @@ Rect surfaceRenderGlobalRectForWindow(const PHLWINDOW& window) {
     return renderGlobalRectForWindow(window);
 }
 
+Rect snapRectToRenderPixelGrid(const Rect& rect, const PHLMONITOR& monitor) {
+    if (!monitor)
+        return rect;
+
+    const double renderScale = std::max(0.0001, renderScaleForMonitor(monitor));
+    const double minLogicalStep = 1.0 / renderScale;
+    const Rect   local = rectToMonitorLocal(rect, monitor);
+
+    const auto snap = [renderScale](double value) {
+        return std::round(value * renderScale) / renderScale;
+    };
+
+    const double snappedCenterX = snap(local.centerX());
+    const double snappedCenterY = snap(local.centerY());
+    const double snappedWidth = std::max(minLogicalStep, snap(local.width));
+    const double snappedHeight = std::max(minLogicalStep, snap(local.height));
+
+    return makeRect(monitor->m_position.x + snappedCenterX - snappedWidth * 0.5, monitor->m_position.y + snappedCenterY - snappedHeight * 0.5, snappedWidth,
+                    snappedHeight);
+}
+
 Layout::Tiled::CScrollingAlgorithm* scrollingAlgorithmForWorkspace(const PHLWORKSPACE& workspace) {
     if (!workspace || !workspace->m_space)
         return nullptr;
@@ -12157,6 +12178,7 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
     if (const auto transform = windowTransformFor(focusedManaged->window, renderMonitor))
         rect = transform->targetGlobal;
+    rect = snapRectToRenderPixelGrid(rect, renderMonitor);
     renderOutline(rect, activeBorderGradient(), thickness, 0.95 * progress);
 }
 
