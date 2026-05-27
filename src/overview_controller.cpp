@@ -12182,7 +12182,10 @@ void OverviewController::renderOutline(const Rect& rect, const Config::CGradient
     const double y1 = std::floor(local.y);
     const double x2 = std::ceil(local.x + local.width);
     const double y2 = std::ceil(local.y + local.height);
-    const Rect   aligned = makeRect(x1, y1, x2 - x1, y2 - y1);
+    constexpr double BORDER_INSET_PX = 1.0;
+    const Rect       aligned = makeRect(x1 + BORDER_INSET_PX, y1 + BORDER_INSET_PX,
+                                  std::max(0.0, (x2 - x1) - BORDER_INSET_PX * 2.0),
+                                  std::max(0.0, (y2 - y1) - BORDER_INSET_PX * 2.0));
     if (aligned.width <= 0.0 || aligned.height <= 0.0)
         return;
 
