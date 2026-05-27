@@ -12350,7 +12350,12 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (!renderMonitor)
         return;
 
-    const double thickness = std::max(0.0, activeBorderWidth() - 2.0);
+    const double configuredWidth = activeBorderWidth();
+    if (configuredWidth <= 0.0)
+        return;
+
+    // Keep focused border visible for small Hyprland border sizes while still reducing thickness when possible.
+    const double thickness = std::max(1.0, configuredWidth - 2.0);
     if (thickness <= 0.0)
         return;
 
