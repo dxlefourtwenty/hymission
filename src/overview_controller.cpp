@@ -4236,6 +4236,10 @@ double OverviewController::activeBorderWidth() const {
     return std::max(0L, getConfigInt(m_handle, "general:border_size", 2));
 }
 
+double OverviewController::inactiveBorderWidth() const {
+    return std::max(0.0, activeBorderWidth() - 1.0);
+}
+
 bool OverviewController::niriModeEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode", 0) != 0;
 }
@@ -12211,7 +12215,7 @@ void OverviewController::renderInactiveWindowBorders(const State& state, double 
     if (!renderMonitor)
         return;
 
-    const double thickness = activeBorderWidth();
+    const double thickness = inactiveBorderWidth();
     if (thickness <= 0.0)
         return;
 

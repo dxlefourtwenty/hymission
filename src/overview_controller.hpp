@@ -461,6 +461,7 @@ class OverviewController {
     [[nodiscard]] bool         barSingleMissionControlEnabled() const;
     [[nodiscard]] bool         showFocusIndicatorEnabled() const;
     [[nodiscard]] double       activeBorderWidth() const;
+    [[nodiscard]] double       inactiveBorderWidth() const;
     [[nodiscard]] bool         niriModeEnabled() const;
     [[nodiscard]] bool         niriModeAppliesToState(const State& state) const;
     [[nodiscard]] double       niriScrollPixelsPerDelta() const;
