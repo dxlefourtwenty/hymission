@@ -4241,7 +4241,7 @@ double OverviewController::inactiveBorderWidth() const {
 }
 
 double OverviewController::focusedBorderThicknessReduction() const {
-    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_focused_border_thickness_reduction", 0.5), 0.0, 32.0);
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_focused_border_thickness_reduction", 0.25), 0.0, 32.0);
 }
 
 double OverviewController::overviewBorderRoundingScale() const {
