@@ -619,6 +619,11 @@ class OverviewController {
     [[nodiscard]] Rect                          hiddenStripLayerProxyRect(const HiddenStripLayerProxy& proxy) const;
     [[nodiscard]] bool                          shouldRenderHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) const;
     void                                        renderHiddenStripLayerProxies() const;
+    [[nodiscard]] const ManagedWindow*          focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const;
+    [[nodiscard]] bool                          borderUsesTransformedGeometry(const State& state) const;
+    [[nodiscard]] Rect                          managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state,
+                                                                        bool useTargetGeometry) const;
+    void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
     void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
     [[nodiscard]] bool                          shouldSuppressSurfaceBlur(void* surfacePassThisptr) const;
     [[nodiscard]] bool                          prepareSurfaceRenderData(void* surfacePassThisptr, const char* context, CSurfacePassElement::SRenderData*& renderData,

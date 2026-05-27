@@ -254,6 +254,16 @@ Config::CGradientValueData activeBorderGradient() {
     return Config::CGradientValueData(CHyprColor(0.97, 0.985, 1.0, 1.0));
 }
 
+Config::CGradientValueData inactiveBorderGradient() {
+    static auto PINACTIVEBORDER = CConfigValue<Config::IComplexConfigValue>("general:col.inactive_border");
+
+    if (const auto* const gradient = dynamic_cast<Config::CGradientValueData*>(PINACTIVEBORDER.ptr()); gradient && !gradient->m_colors.empty()) {
+        return *gradient;
+    }
+
+    return Config::CGradientValueData(CHyprColor(0.18, 0.09, 0.09, 1.0));
+}
+
 CHyprColor activeBorderColorWithAlpha(double alpha) {
     auto gradient = activeBorderGradient();
     if (!gradient.m_colors.empty()) {
@@ -12140,6 +12150,7 @@ void OverviewController::renderSelectionChrome() const {
         }
     }
 
+    renderInactiveWindowBorders(m_state, progress, false);
     renderFocusedWindowBorder(m_state, progress, false);
 
     if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
@@ -12150,6 +12161,68 @@ void OverviewController::renderSelectionChrome() const {
         const Rect  ghost = rectToMonitorRenderLocal(ghostGlobal, renderMonitor);
         g_pHyprOpenGL->renderRect(toBox(ghost), CHyprColor(0.16, 0.20, 0.24, 0.28 * progress), {});
         renderOutline(ghostGlobal, CHyprColor(0.95, 0.97, 1.0, 0.82 * progress), 2.0);
+    }
+}
+
+const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
+    auto focusedWindow = state.focusDuringOverview;
+    auto focusedManaged = managedWindowFor(state, focusedWindow, true);
+    if (!focusedManaged) {
+        focusedWindow = Desktop::focusState()->window();
+        focusedManaged = managedWindowFor(state, focusedWindow, true);
+    }
+
+    if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)
+        return nullptr;
+
+    return focusedManaged;
+}
+
+bool OverviewController::borderUsesTransformedGeometry(const State& state) const {
+    if (m_gestureSession.active)
+        return false;
+
+    if (state.phase == Phase::Opening || state.phase == Phase::ClosingSettle || state.phase == Phase::Closing)
+        return false;
+
+    if (state.phase == Phase::Active && state.relayoutActive)
+        return false;
+
+    return true;
+}
+
+Rect OverviewController::managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state, bool useTargetGeometry) const {
+    Rect rect = useTargetGeometry ? managed.targetGlobal : currentPreviewRect(managed);
+
+    if (borderUsesTransformedGeometry(state)) {
+        if (const auto transform = windowTransformFor(managed.window, renderMonitor))
+            rect = transform->targetGlobal;
+    }
+
+    return snapRectToRenderPixelGrid(rect, renderMonitor);
+}
+
+void OverviewController::renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const {
+    if (progress <= 0.0)
+        return;
+
+    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!renderMonitor)
+        return;
+
+    const double thickness = activeBorderWidth();
+    if (thickness <= 0.0)
+        return;
+
+    const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
+    const auto inactiveGradient = inactiveBorderGradient();
+    for (const auto& managed : state.windows) {
+        if (!managed.window || managed.targetMonitor != renderMonitor)
+            continue;
+        if (focusedManaged && managed.window == focusedManaged->window)
+            continue;
+
+        renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry), inactiveGradient, thickness, 0.95 * progress);
     }
 }
 
@@ -12165,21 +12238,11 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (thickness <= 0.0)
         return;
 
-    auto focusedWindow = state.focusDuringOverview;
-    auto focusedManaged = managedWindowFor(state, focusedWindow, true);
-    if (!focusedManaged) {
-        focusedWindow = Desktop::focusState()->window();
-        focusedManaged = managedWindowFor(state, focusedWindow, true);
-    }
-
-    if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)
+    const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
+    if (!focusedManaged)
         return;
 
-    Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
-    if (const auto transform = windowTransformFor(focusedManaged->window, renderMonitor))
-        rect = transform->targetGlobal;
-    rect = snapRectToRenderPixelGrid(rect, renderMonitor);
-    renderOutline(rect, activeBorderGradient(), thickness, 0.95 * progress);
+    renderOutline(managedWindowBorderRect(*focusedManaged, renderMonitor, state, useTargetGeometry), activeBorderGradient(), thickness, 0.95 * progress);
 }
 
 void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const {
@@ -12534,6 +12597,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             };
             renderPreviewWindows(false);
             renderPreviewWindows(true);
+            renderInactiveWindowBorders(m_stripPreviewContext.state, 1.0, true);
             renderFocusedWindowBorder(m_stripPreviewContext.state, 1.0, true);
         }
         g_pHyprRenderer->m_renderData.blockScreenShader = true;
