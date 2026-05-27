@@ -138,6 +138,7 @@ constexpr std::size_t CLOSE_SETTLE_STABLE_FRAMES = 2;
 constexpr double BACKDROP_ALPHA = 0.42;
 constexpr double OUTLINE_THICKNESS = 4.0;
 constexpr double HOVER_THICKNESS = 2.0;
+constexpr double OVERVIEW_BORDER_ROUNDING_BOOST = 1.12;
 constexpr double TITLE_PADDING = 12.0;
 constexpr double STRIP_CARD_PADDING = 0.0;
 constexpr double STRIP_THUMB_PADDING = 0.0;
@@ -12306,7 +12307,7 @@ int OverviewController::managedWindowBorderRound(const ManagedWindow& managed, c
         scale *= fbScale;
     }
 
-    return std::max(0, static_cast<int>(std::lround(baseRound * scale)));
+    return std::max(0, static_cast<int>(std::lround(baseRound * scale * OVERVIEW_BORDER_ROUNDING_BOOST)));
 }
 
 float OverviewController::managedWindowBorderRoundingPower(const ManagedWindow& managed) const {
@@ -12349,7 +12350,7 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (!renderMonitor)
         return;
 
-    const double thickness = activeBorderWidth();
+    const double thickness = std::max(0.0, activeBorderWidth() - 2.0);
     if (thickness <= 0.0)
         return;
 
