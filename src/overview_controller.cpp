@@ -12286,6 +12286,36 @@ Rect OverviewController::managedWindowBorderRect(const ManagedWindow& managed, c
     return snapRectToRenderPixelGrid(rect, renderMonitor);
 }
 
+int OverviewController::managedWindowBorderRound(const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const {
+    if (!managed.window || !renderMonitor)
+        return 0;
+
+    const int baseRound = std::max(0, static_cast<int>(std::lround(managed.window->rounding())));
+    if (baseRound <= 0)
+        return 0;
+
+    double scale = 1.0;
+    if (const auto transform = windowTransformFor(managed.window, renderMonitor))
+        scale = std::max(0.0, std::min(std::abs(transform->scaleX), std::abs(transform->scaleY)));
+
+    if (m_stripPreviewContext.active) {
+        const auto   fbSize = m_stripPreviewContext.framebufferSize;
+        const double monitorPixelWidth = std::max(1.0, static_cast<double>(renderMonitor->m_size.x) * renderScaleForMonitor(renderMonitor));
+        const double monitorPixelHeight = std::max(1.0, static_cast<double>(renderMonitor->m_size.y) * renderScaleForMonitor(renderMonitor));
+        const double fbScale = std::clamp(std::min(fbSize.x / monitorPixelWidth, fbSize.y / monitorPixelHeight), 0.0, 1.0);
+        scale *= fbScale;
+    }
+
+    return std::max(0, static_cast<int>(std::lround(static_cast<double>(baseRound) * scale)));
+}
+
+float OverviewController::managedWindowBorderRoundingPower(const ManagedWindow& managed) const {
+    if (!managed.window)
+        return 2.0F;
+
+    return std::max(0.01F, managed.window->roundingPower());
+}
+
 void OverviewController::renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const {
     if (progress <= 0.0)
         return;
@@ -12306,7 +12336,8 @@ void OverviewController::renderInactiveWindowBorders(const State& state, double 
         if (focusedManaged && managed.window == focusedManaged->window)
             continue;
 
-        renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry, true), inactiveGradient, thickness, 0.95 * progress);
+        renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry, true), inactiveGradient, thickness, 0.95 * progress,
+                      managedWindowBorderRound(managed, renderMonitor), managedWindowBorderRoundingPower(managed));
     }
 }
 
@@ -12326,7 +12357,8 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (!focusedManaged)
         return;
 
-    renderOutline(managedWindowBorderRect(*focusedManaged, renderMonitor, state, useTargetGeometry), activeBorderGradient(), thickness, 0.95 * progress);
+    renderOutline(managedWindowBorderRect(*focusedManaged, renderMonitor, state, useTargetGeometry), activeBorderGradient(), thickness, 0.95 * progress,
+                  managedWindowBorderRound(*focusedManaged, renderMonitor), managedWindowBorderRoundingPower(*focusedManaged));
 }
 
 void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const {
@@ -12347,7 +12379,8 @@ void OverviewController::renderOutline(const Rect& rect, const CHyprColor& color
     g_pHyprOpenGL->renderRect(toBox(right), color, {});
 }
 
-void OverviewController::renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha) const {
+void OverviewController::renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha, int round,
+                                       float roundingPower) const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor || gradient.m_colors.empty())
         return;
@@ -12369,7 +12402,10 @@ void OverviewController::renderOutline(const Rect& rect, const Config::CGradient
 
     const int borderThickness = std::max(1, static_cast<int>(std::lround(thickness)));
     g_pHyprOpenGL->renderBorder(toBox(aligned), gradient,
-                                {.borderSize = borderThickness, .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
+                                {.round = std::max(0, round),
+                                 .roundingPower = std::max(0.01F, roundingPower),
+                                 .borderSize = borderThickness,
+                                 .a = static_cast<float>(std::clamp(alpha, 0.0, 1.0))});
 }
 
 Rect OverviewController::workspaceStripThumbRect(const WorkspaceStripEntry& entry, const PHLMONITOR& monitor) const {

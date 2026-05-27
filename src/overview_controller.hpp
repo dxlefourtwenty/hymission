@@ -626,6 +626,8 @@ class OverviewController {
     [[nodiscard]] bool                          borderUsesTransformedGeometry(const State& state) const;
     [[nodiscard]] Rect                          managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state,
                                                                         bool useTargetGeometry, bool forceTransformedGeometry = false) const;
+    [[nodiscard]] int                           managedWindowBorderRound(const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const;
+    [[nodiscard]] float                         managedWindowBorderRoundingPower(const ManagedWindow& managed) const;
     void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
     void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
     [[nodiscard]] bool                          shouldSuppressSurfaceBlur(void* surfacePassThisptr) const;
@@ -732,7 +734,8 @@ class OverviewController {
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
-    void renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha = 1.0) const;
+    void renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha = 1.0, int round = 0,
+                       float roundingPower = 2.0F) const;
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
     void applyWorkspaceStripCursorShape() const;
