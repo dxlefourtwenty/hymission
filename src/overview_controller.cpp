@@ -4241,11 +4241,11 @@ double OverviewController::inactiveBorderWidth() const {
 }
 
 double OverviewController::focusedBorderThicknessReduction() const {
-    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_focused_border_thickness_reduction", 0.0), 0.0, 32.0);
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_focused_border_thickness_reduction", 0.5), 0.0, 32.0);
 }
 
 double OverviewController::overviewBorderRoundingScale() const {
-    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_border_rounding_scale", 2.22), 0.1, 4.0);
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_border_rounding_scale", 2.35), 0.1, 4.0);
 }
 
 bool OverviewController::niriModeEnabled() const {
