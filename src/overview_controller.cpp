@@ -7966,6 +7966,52 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
     return true;
 }
 
+bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspacePlaceholder& placeholder) {
+    if (!placeholder.workspace || !isScrollingWorkspace(placeholder.workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+        !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    const Rect selectedStart = placeholder.naturalGlobal;
+    const Rect selectedTarget = placeholder.targetGlobal;
+    if (selectedStart.width <= 1.0 || selectedStart.height <= 1.0 || selectedTarget.width <= 1.0 || selectedTarget.height <= 1.0)
+        return false;
+
+    const double scaleX = selectedStart.width / selectedTarget.width;
+    const double scaleY = selectedStart.height / selectedTarget.height;
+    if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
+        return false;
+
+    for (auto& managed : m_state.windows) {
+        if (!managed.window || !managed.window->m_isMapped)
+            continue;
+
+        const Rect target = managed.targetGlobal;
+        managed.naturalGlobal = makeRect(selectedStart.centerX() + (target.centerX() - selectedTarget.centerX()) * scaleX - target.width * scaleX * 0.5,
+                                         selectedStart.centerY() + (target.centerY() - selectedTarget.centerY()) * scaleY - target.height * scaleY * 0.5,
+                                         target.width * scaleX, target.height * scaleY);
+        managed.exitGlobal = managed.naturalGlobal;
+    }
+
+    for (auto& current : m_state.emptyWorkspacePlaceholders) {
+        const Rect target = current.targetGlobal;
+        current.naturalGlobal = makeRect(selectedStart.centerX() + (target.centerX() - selectedTarget.centerX()) * scaleX - target.width * scaleX * 0.5,
+                                         selectedStart.centerY() + (target.centerY() - selectedTarget.centerY()) * scaleY - target.height * scaleY * 0.5,
+                                         target.width * scaleX, target.height * scaleY);
+        current.exitGlobal = current.naturalGlobal;
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] niri scrolling camera open placeholder=" << debugWorkspaceLabel(placeholder.workspace)
+            << " selectedStart=" << rectToString(selectedStart)
+            << " selectedTarget=" << rectToString(selectedTarget)
+            << " scale=(" << scaleX << "," << scaleY << ")";
+        debugLog(out.str());
+    }
+
+    return true;
+}
+
 void OverviewController::prepareGestureCloseExitGeometry() {
     const auto predictedPlaceholderWorkspace = resolveExitWorkspace(CloseMode::Normal);
     const auto* predictedPlaceholder = centeredEmptyWorkspacePlaceholder(m_state);
@@ -10122,7 +10168,11 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
-    (void)applyNiriScrollingCameraOpenGeometry(selectedWindow());
+    if (const auto selected = selectedWindow(); selected) {
+        (void)applyNiriScrollingCameraOpenGeometry(selected);
+    } else if (const auto* placeholder = centeredEmptyWorkspacePlaceholder(m_state)) {
+        (void)applyNiriScrollingCameraOpenGeometry(*placeholder);
+    }
     armOverviewRenderState(m_state);
     m_hoverSelectionAnchorValid = false;
     m_hoverSelectionRetargetBlockedUntil = {};

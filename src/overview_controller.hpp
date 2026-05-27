@@ -588,6 +588,7 @@ class OverviewController {
     [[nodiscard]] bool         applyNiriScrollingCameraExitGeometry(const PHLWINDOW& window);
     [[nodiscard]] bool         applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder);
     [[nodiscard]] bool         applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& window);
+    [[nodiscard]] bool         applyNiriScrollingCameraOpenGeometry(const EmptyWorkspacePlaceholder& placeholder);
     void                       prepareGestureCloseExitGeometry();
     [[nodiscard]] bool         workspaceSwipeUsesVerticalAxis(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] double       workspaceSwipeViewportDistance(const PHLMONITOR& monitor, WorkspaceTransitionAxis axis) const;
