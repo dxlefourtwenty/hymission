@@ -462,6 +462,8 @@ class OverviewController {
     [[nodiscard]] bool         showFocusIndicatorEnabled() const;
     [[nodiscard]] double       activeBorderWidth() const;
     [[nodiscard]] double       inactiveBorderWidth() const;
+    [[nodiscard]] double       focusedBorderThicknessReduction() const;
+    [[nodiscard]] double       overviewBorderRoundingScale() const;
     [[nodiscard]] bool         niriModeEnabled() const;
     [[nodiscard]] bool         niriModeAppliesToState(const State& state) const;
     [[nodiscard]] double       niriScrollPixelsPerDelta() const;

@@ -138,7 +138,6 @@ constexpr std::size_t CLOSE_SETTLE_STABLE_FRAMES = 2;
 constexpr double BACKDROP_ALPHA = 0.42;
 constexpr double OUTLINE_THICKNESS = 4.0;
 constexpr double HOVER_THICKNESS = 2.0;
-constexpr double OVERVIEW_BORDER_ROUNDING_BOOST = 1.12;
 constexpr double TITLE_PADDING = 12.0;
 constexpr double STRIP_CARD_PADDING = 0.0;
 constexpr double STRIP_THUMB_PADDING = 0.0;
@@ -4239,6 +4238,14 @@ double OverviewController::activeBorderWidth() const {
 
 double OverviewController::inactiveBorderWidth() const {
     return std::max(0.0, activeBorderWidth() - 1.0);
+}
+
+double OverviewController::focusedBorderThicknessReduction() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_focused_border_thickness_reduction", 1.0), 0.0, 32.0);
+}
+
+double OverviewController::overviewBorderRoundingScale() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_border_rounding_scale", 1.22), 0.1, 4.0);
 }
 
 bool OverviewController::niriModeEnabled() const {
@@ -12307,7 +12314,7 @@ int OverviewController::managedWindowBorderRound(const ManagedWindow& managed, c
         scale *= fbScale;
     }
 
-    return std::max(0, static_cast<int>(std::lround(baseRound * scale * OVERVIEW_BORDER_ROUNDING_BOOST)));
+    return std::max(0, static_cast<int>(std::lround(baseRound * scale * overviewBorderRoundingScale())));
 }
 
 float OverviewController::managedWindowBorderRoundingPower(const ManagedWindow& managed) const {
@@ -12354,10 +12361,7 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (configuredWidth <= 0.0)
         return;
 
-    // Keep focused border visible for small Hyprland border sizes while still reducing thickness when possible.
-    const double thickness = std::max(1.0, configuredWidth - 2.0);
-    if (thickness <= 0.0)
-        return;
+    const double thickness = std::max(1.0, configuredWidth - focusedBorderThicknessReduction());
 
     const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
     if (!focusedManaged)
