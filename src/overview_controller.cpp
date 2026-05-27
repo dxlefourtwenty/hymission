@@ -4245,7 +4245,7 @@ double OverviewController::focusedBorderThicknessReduction() const {
 }
 
 double OverviewController::overviewBorderRoundingScale() const {
-    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_border_rounding_scale", 1.5), 0.1, 4.0);
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:overview_border_rounding_scale", 2.0), 0.1, 4.0);
 }
 
 bool OverviewController::niriModeEnabled() const {
