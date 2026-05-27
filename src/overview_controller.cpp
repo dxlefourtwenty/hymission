@@ -12152,7 +12152,9 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
     if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)
         return;
 
-    const Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
+    Rect rect = useTargetGeometry ? focusedManaged->targetGlobal : currentPreviewRect(*focusedManaged);
+    if (const auto transform = windowTransformFor(focusedManaged->window, renderMonitor))
+        rect = transform->targetGlobal;
     renderOutline(rect, activeBorderGradient(), thickness, 0.95 * progress);
 }
 
