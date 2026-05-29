@@ -9475,13 +9475,27 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (scale <= 0.0)
             return std::nullopt;
 
-        const double anchorPreviewCenterX = activeBaseRect().centerX() + (anchorManaged->targetGlobal.centerX() - window.targetGlobal.centerX());
-        const double anchorPreviewCenterY = activeBaseRect().centerY() + (anchorManaged->targetGlobal.centerY() - window.targetGlobal.centerY());
-        const double viewportX = anchorPreviewCenterX - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double viewportY = anchorPreviewCenterY - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+        const Rect ownPreviewBase = activeBaseRect();
+        const Rect anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
+            (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
 
         const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
         const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
+        const double anchorTargetWidth = std::max(1.0, anchorSourceGlobal.width * scale);
+        const double anchorTargetHeight = std::max(1.0, anchorSourceGlobal.height * scale);
+        const bool ownSizeChanged = std::abs(targetWidth - ownPreviewBase.width) > 1.0 || std::abs(targetHeight - ownPreviewBase.height) > 1.0;
+        const bool anchorSizeChanged = std::abs(anchorTargetWidth - anchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - anchorPreviewBase.height) > 1.0;
+
+        // Only take over the render path while a real live resize/colresize is changing
+        // the scrolling tape geometry. Normal scrolling/focus movement should keep using
+        // the stored relayout animation targets; otherwise the live tape correction fights
+        // the regular animation and the column can visually detach for a frame.
+        if (!ownSizeChanged && !anchorSizeChanged)
+            return std::nullopt;
+
+        const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+
         const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
         Rect dynamicRect = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
@@ -9496,6 +9510,9 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 dynamicRect = makeRect(dynamicRect.x, dynamicRect.centerY() - height * 0.5, dynamicRect.width, height);
             }
         }
+
+        if (m_state.relayoutActive)
+            return lerpRect(window.relayoutFromGlobal, dynamicRect, relayoutVisualProgress());
 
         return dynamicRect;
     };
