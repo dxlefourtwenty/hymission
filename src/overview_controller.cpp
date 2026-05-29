@@ -7330,6 +7330,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
+    const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
     const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
     const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "pin" ||
         dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("pin") ||
@@ -7462,6 +7463,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const auto result = (*original)(std::move(args));
+
+    if (overviewActive && selectedWasPinnedBefore && selectedBefore && !selectedBefore->m_pinned && selectedBefore->m_isMapped && usesDirectNiriScrollingOverview(m_state)) {
+        if (const auto workspace = activeLayoutWorkspace(); workspace && workspace->m_space) {
+            if (const auto target = selectedBefore->layoutTarget(); target)
+                target->assignToSpace(workspace->m_space);
+            refreshWorkspaceLayoutSnapshot(workspace);
+            if (const auto monitor = workspace->m_monitor.lock())
+                g_layoutManager->recalculateMonitor(monitor);
+        }
+    }
 
     if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
         PHLWINDOW forcedGeometryAnchor;
@@ -9263,20 +9274,30 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return std::nullopt;
 
         PHLWINDOW floatingWindow = selectedWindow();
-        if ((!floatingWindow || (!floatingWindow->m_pinned && !isFloatingOverviewWindow(floatingWindow))) && m_state.focusDuringOverview)
+        const auto isPinnedOrWasPinnedFloating = [&](const PHLWINDOW& candidate) {
+            const auto* managed = managedWindowFor(m_state, candidate, true);
+            return candidate && (candidate->m_pinned || (managed && managed->isPinned));
+        };
+        const auto isFloatingOrPinnedCandidate = [&](const PHLWINDOW& candidate) {
+            return candidate && (isFloatingOverviewWindow(candidate) || isPinnedOrWasPinnedFloating(candidate));
+        };
+
+        if ((!floatingWindow || !isFloatingOrPinnedCandidate(floatingWindow)) && m_state.focusDuringOverview)
             floatingWindow = m_state.focusDuringOverview;
-        if (!floatingWindow || (!floatingWindow->m_pinned && !isFloatingOverviewWindow(floatingWindow)))
+        if (!isFloatingOrPinnedCandidate(floatingWindow))
             return std::nullopt;
 
         const auto* floatingManaged = managedWindowFor(m_state, floatingWindow, true);
         if (!floatingManaged || !floatingManaged->targetMonitor)
             return std::nullopt;
 
-        const auto floatingWorkspace = floatingWindow->m_pinned ? focusedStripWorkspaceForPreviewMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
+        const bool floatingUsesFocusedWorkspace = floatingWindow->m_pinned || floatingManaged->isPinned;
+        const auto floatingWorkspace = floatingUsesFocusedWorkspace ? focusedStripWorkspaceForPreviewMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
         if (!floatingWorkspace || !isScrollingWorkspace(floatingWorkspace))
             return std::nullopt;
 
-        const auto currentWorkspace = window.window->m_pinned ? focusedStripWorkspaceForPreviewMonitor(window.targetMonitor) : window.window->m_workspace;
+        const bool windowUsesFocusedWorkspace = window.window->m_pinned || window.isPinned;
+        const auto currentWorkspace = windowUsesFocusedWorkspace ? focusedStripWorkspaceForPreviewMonitor(window.targetMonitor) : window.window->m_workspace;
         if (currentWorkspace != floatingWorkspace)
             return std::nullopt;
 
