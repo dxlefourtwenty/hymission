@@ -9239,6 +9239,25 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         return window.targetGlobal;
     };
 
+    const auto focusedStripWorkspaceForPreviewMonitor = [&](const PHLMONITOR& candidateMonitor) -> PHLWORKSPACE {
+        if (!candidateMonitor)
+            return {};
+
+        if (m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace) {
+            const auto focusedWorkspaceMonitor = m_state.focusDuringOverview->m_workspace->m_monitor.lock();
+            if (focusedWorkspaceMonitor == candidateMonitor)
+                return m_state.focusDuringOverview->m_workspace;
+        }
+
+        if (candidateMonitor->m_activeWorkspace)
+            return candidateMonitor->m_activeWorkspace;
+
+        if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == candidateMonitor)
+            return m_state.ownerWorkspace;
+
+        return {};
+    };
+
     const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
         if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped)
             return std::nullopt;
@@ -9253,11 +9272,11 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (!floatingManaged || !floatingManaged->targetMonitor)
             return std::nullopt;
 
-        const auto floatingWorkspace = floatingWindow->m_pinned ? focusedStripWorkspaceForMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
+        const auto floatingWorkspace = floatingWindow->m_pinned ? focusedStripWorkspaceForPreviewMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
         if (!floatingWorkspace || !isScrollingWorkspace(floatingWorkspace))
             return std::nullopt;
 
-        const auto currentWorkspace = window.window->m_pinned ? focusedStripWorkspaceForMonitor(window.targetMonitor) : window.window->m_workspace;
+        const auto currentWorkspace = window.window->m_pinned ? focusedStripWorkspaceForPreviewMonitor(window.targetMonitor) : window.window->m_workspace;
         if (currentWorkspace != floatingWorkspace)
             return std::nullopt;
 
