@@ -7347,42 +7347,65 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!workspace || !isScrollingWorkspace(workspace))
             return window;
 
-        const auto* sourceManaged = managedWindowFor(m_state, window, true);
-        const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(window);
+        const Rect sourceRect = liveGlobalRectForWindow(window);
 
-        PHLWINDOW bestTiled;
-        double    bestTiledDistance = std::numeric_limits<double>::infinity();
-        PHLWINDOW bestAny;
-        double    bestAnyDistance = std::numeric_limits<double>::infinity();
+        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
+            const double x1 = std::max(lhs.x, rhs.x);
+            const double y1 = std::max(lhs.y, rhs.y);
+            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
+            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
+            if (x2 <= x1 || y2 <= y1)
+                return 0.0;
+            return (x2 - x1) * (y2 - y1);
+        };
+
+        struct CandidateScore {
+            PHLWINDOW window;
+            double    overlap = 0.0;
+            double    distance = std::numeric_limits<double>::infinity();
+        };
+
+        std::optional<CandidateScore> bestTiled;
+        std::optional<CandidateScore> bestAny;
+
+        const auto better = [](const CandidateScore& candidate, const std::optional<CandidateScore>& current) {
+            if (!current)
+                return true;
+            if (candidate.overlap > current->overlap + 1.0)
+                return true;
+            if (candidate.overlap + 1.0 < current->overlap)
+                return false;
+            return candidate.distance < current->distance;
+        };
 
         for (const auto& managed : m_state.windows) {
             const auto candidate = managed.window;
             if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
                 continue;
 
-            const Rect candidateRect = currentPreviewRect(managed);
+            const Rect candidateRect = liveGlobalRectForWindow(candidate);
             const double dx = candidateRect.centerX() - sourceRect.centerX();
             const double dy = candidateRect.centerY() - sourceRect.centerY();
-            const double distance = dx * dx + dy * dy;
+            CandidateScore score{
+                .window = candidate,
+                .overlap = overlapArea(sourceRect, candidateRect),
+                .distance = dx * dx + dy * dy,
+            };
 
             const auto target = candidate->layoutTarget();
             const bool candidateIsTiled = target && !target->floating() && !isFloatingOverviewWindow(candidate);
 
-            if (candidateIsTiled && (!bestTiled || distance < bestTiledDistance)) {
-                bestTiled = candidate;
-                bestTiledDistance = distance;
-            }
+            if (candidateIsTiled && better(score, bestTiled))
+                bestTiled = score;
 
-            if (!bestAny || distance < bestAnyDistance) {
-                bestAny = candidate;
-                bestAnyDistance = distance;
-            }
+            if (better(score, bestAny))
+                bestAny = score;
         }
 
         if (bestTiled)
-            return bestTiled;
+            return bestTiled->window;
         if (bestAny)
-            return bestAny;
+            return bestAny->window;
         return window;
     };
 
@@ -14147,10 +14170,42 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (!window || !layoutWorkspace || !isScrollingWorkspace(layoutWorkspace))
             return std::nullopt;
 
-        std::optional<Rect> bestTiledAnchor;
-        double              bestTiledDistance = std::numeric_limits<double>::infinity();
-        std::optional<Rect> bestAnyAnchor;
-        double              bestAnyDistance = std::numeric_limits<double>::infinity();
+        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
+            const double x1 = std::max(lhs.x, rhs.x);
+            const double y1 = std::max(lhs.y, rhs.y);
+            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
+            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
+            if (x2 <= x1 || y2 <= y1)
+                return 0.0;
+            return (x2 - x1) * (y2 - y1);
+        };
+
+        struct AnchorCandidate {
+            Rect   rect;
+            bool   tiled = false;
+            double overlap = 0.0;
+            double distance = std::numeric_limits<double>::infinity();
+        };
+
+        std::optional<AnchorCandidate> bestTiled;
+        std::optional<AnchorCandidate> bestAny;
+
+        const auto betterAnchor = [](const AnchorCandidate& candidate, const std::optional<AnchorCandidate>& current) {
+            if (!current)
+                return true;
+
+            // Resize is the important case here.  A floating window can keep the
+            // same center while its edges move across a different column/window.
+            // Center-distance alone then keeps picking the old anchor, so the
+            // overview card only changes size in-place.  Prefer the window/column
+            // with the largest live overlap; use distance only as the fallback.
+            if (candidate.overlap > current->overlap + 1.0)
+                return true;
+            if (candidate.overlap + 1.0 < current->overlap)
+                return false;
+
+            return candidate.distance < current->distance;
+        };
 
         for (const auto& candidate : candidates) {
             if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_fadingOut || candidate->isHidden() || candidate->m_pinned ||
@@ -14173,20 +14228,25 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             const double dx = candidateAnchorGlobal.centerX() - floatingSourceGlobal.centerX();
             const double dy = candidateAnchorGlobal.centerY() - floatingSourceGlobal.centerY();
-            const double distance = dx * dx + dy * dy;
+            AnchorCandidate anchor{
+                .rect = candidateAnchorGlobal,
+                .tiled = candidateIsTiledScrolling,
+                .overlap = overlapArea(floatingSourceGlobal, candidateAnchorGlobal),
+                .distance = dx * dx + dy * dy,
+            };
 
-            if (candidateIsTiledScrolling && (!bestTiledAnchor || distance < bestTiledDistance)) {
-                bestTiledAnchor = candidateAnchorGlobal;
-                bestTiledDistance = distance;
-            }
+            if (candidateIsTiledScrolling && betterAnchor(anchor, bestTiled))
+                bestTiled = anchor;
 
-            if (!bestAnyAnchor || distance < bestAnyDistance) {
-                bestAnyAnchor = candidateAnchorGlobal;
-                bestAnyDistance = distance;
-            }
+            if (betterAnchor(anchor, bestAny))
+                bestAny = anchor;
         }
 
-        return bestTiledAnchor ? bestTiledAnchor : bestAnyAnchor;
+        if (bestTiled)
+            return bestTiled->rect;
+        if (bestAny)
+            return bestAny->rect;
+        return std::nullopt;
     };
 
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
