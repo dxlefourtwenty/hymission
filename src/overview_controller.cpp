@@ -639,6 +639,23 @@ Rect clampRectInside(const Rect& rect, const Rect& bounds) {
     return makeRect(x, y, width, height);
 }
 
+Rect clampRectInsidePreservingAspect(const Rect& rect, const Rect& bounds, double& scale) {
+    if (bounds.width <= 1.0 || bounds.height <= 1.0)
+        return rect;
+
+    Rect result = rect;
+    if (result.width > bounds.width || result.height > bounds.height) {
+        const double fitScale = std::min(bounds.width / std::max(1.0, result.width), bounds.height / std::max(1.0, result.height));
+        const double clampedFitScale = std::clamp(fitScale, 0.0, 1.0);
+        const double width = std::max(1.0, result.width * clampedFitScale);
+        const double height = std::max(1.0, result.height * clampedFitScale);
+        result = makeRect(result.centerX() - width * 0.5, result.centerY() - height * 0.5, width, height);
+        scale *= clampedFitScale;
+    }
+
+    return clampRectInside(result, bounds);
+}
+
 bool rectFitsInsideBounds(const Rect& rect, const Rect& bounds, double epsilon = 0.5) {
     return rect.x >= bounds.x - epsilon && rect.y >= bounds.y - epsilon && rect.x + rect.width <= bounds.x + bounds.width + epsilon &&
         rect.y + rect.height <= bounds.y + bounds.height + epsilon;
@@ -13586,6 +13603,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         return state.managedWorkspaces.size();
     };
+    std::unordered_map<std::size_t, Rect> niriWorkspaceViewportGlobalByWindowIndex;
+
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
                                                std::size_t windowIndex, bool allowPinned,
                                                std::optional<GestureAxis> overflowAxis,
@@ -13673,12 +13692,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+        Rect workspaceViewportLocal = makeRect(viewportX, viewportY, baseGlobal.width * scale, baseGlobal.height * scale);
         if (fitModeViewport) {
             const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
                                           baseGlobal.height * viewportScale);
+            workspaceViewportLocal = viewportLocal;
             targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
                                    viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
                                    targetWidth,
@@ -13716,6 +13737,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double width = std::max(1.0, targetLocal.width - stripPreviewGapBoost);
             const double height = std::max(1.0, targetLocal.height - stripPreviewGapBoost);
             targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.centerY() - height * 0.5, width, height);
+        }
+
+        if (isFloatingOverviewWindow(window)) {
+            // Floating windows can live outside the scrolling tape. Keep their
+            // overview cards inside the mapped 1.0 workspace viewport so they
+            // do not spill into neighboring Niri overview lanes.
+            targetLocal = clampRectInsidePreservingAspect(targetLocal, workspaceViewportLocal, scale);
+            niriWorkspaceViewportGlobalByWindowIndex[windowIndex] = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
+                                                                            targetMonitor->m_position.y + workspaceViewportLocal.y,
+                                                                            workspaceViewportLocal.width,
+                                                                            workspaceViewportLocal.height);
         }
 
         return WindowSlot{
@@ -14050,10 +14082,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (floatingIndexes.empty())
                 continue;
 
-            const Rect boundsLocal = overviewContentRectForMonitor(candidateMonitor, state);
-            const Rect boundsGlobal =
-                makeRect(candidateMonitor->m_position.x + boundsLocal.x, candidateMonitor->m_position.y + boundsLocal.y, boundsLocal.width, boundsLocal.height);
-            if (boundsGlobal.width <= 1.0 || boundsGlobal.height <= 1.0)
+            const Rect contentBoundsLocal = overviewContentRectForMonitor(candidateMonitor, state);
+            const Rect contentBoundsGlobal = makeRect(candidateMonitor->m_position.x + contentBoundsLocal.x,
+                                                      candidateMonitor->m_position.y + contentBoundsLocal.y,
+                                                      contentBoundsLocal.width,
+                                                      contentBoundsLocal.height);
+            if (contentBoundsGlobal.width <= 1.0 || contentBoundsGlobal.height <= 1.0)
                 continue;
 
             std::size_t staticObstacleCount = 0;
@@ -14069,8 +14103,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const Rect& rhsRect = state.windows[rhs].targetGlobal;
                 const double lhsArea = lhsRect.width * lhsRect.height;
                 const double rhsArea = rhsRect.width * rhsRect.height;
-                const auto   lhsAffinity = edgeMotionAffinityForRect(lhsRect, boundsGlobal);
-                const auto   rhsAffinity = edgeMotionAffinityForRect(rhsRect, boundsGlobal);
+                const auto   lhsAffinity = edgeMotionAffinityForRect(lhsRect, contentBoundsGlobal);
+                const auto   rhsAffinity = edgeMotionAffinityForRect(rhsRect, contentBoundsGlobal);
                 const double lhsAnchor = lhsAffinity.corner * 4.0 + std::max(lhsAffinity.verticalEdge, lhsAffinity.horizontalEdge) * 2.0;
                 const double rhsAnchor = rhsAffinity.corner * 4.0 + std::max(rhsAffinity.verticalEdge, rhsAffinity.horizontalEdge) * 2.0;
                 if (std::abs(lhsAnchor - rhsAnchor) > 0.01)
@@ -14103,10 +14137,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 double overlap = 0.0;
             };
 
-            const auto resolveFloatingTarget = [&](const Rect& desired, const std::vector<Rect>& obstacles, double currentSlotScale) -> FloatingResolveResult {
-                const Rect clampedDesired = clampRectInside(desired, boundsGlobal);
+            const auto resolveFloatingTarget = [&](const Rect& desired, const std::vector<Rect>& obstacles, double currentSlotScale,
+                                                       const Rect& boundsGlobal) -> FloatingResolveResult {
+                double initialScale = 1.0;
+                const Rect clampedDesired = clampRectInsidePreservingAspect(desired, boundsGlobal, initialScale);
                 if (obstacles.empty())
-                    return {.target = clampedDesired, .scale = 1.0, .overlap = 0.0};
+                    return {.target = clampedDesired, .scale = initialScale, .overlap = 0.0};
 
                 std::vector<Rect> candidates;
                 std::vector<double> candidateScales;
@@ -14117,7 +14153,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     if (std::ranges::any_of(candidates, [&](const Rect& existing) { return rectApproxEqual(existing, clamped, 0.5); }))
                         return;
                     candidates.push_back(clamped);
-                    candidateScales.push_back(scale);
+                    candidateScales.push_back(initialScale * scale);
                 };
 
                 const double absoluteScaleFloor = std::max(0.30, config.minSlotScale);
@@ -14216,7 +14252,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
                 FloatingResolveResult best{
                     .target = clampedDesired,
-                    .scale = 1.0,
+                    .scale = initialScale,
                     .overlap = totalOverlapArea(clampedDesired, obstacles),
                 };
                 double bestScore = std::numeric_limits<double>::max();
@@ -14244,7 +14280,21 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             for (const auto index : floatingIndexes) {
                 const Rect desired = state.windows[index].targetGlobal;
-                const auto resolved = resolveFloatingTarget(desired, placedFloatingRects, state.windows[index].slot.scale);
+                Rect workspaceBounds = contentBoundsGlobal;
+                if (const auto viewportIt = niriWorkspaceViewportGlobalByWindowIndex.find(index); viewportIt != niriWorkspaceViewportGlobalByWindowIndex.end() &&
+                    viewportIt->second.width > 1.0 && viewportIt->second.height > 1.0) {
+                    workspaceBounds = viewportIt->second;
+                }
+
+                const Rect obstacleBounds = inflateRect(workspaceBounds, gap, gap);
+                std::vector<Rect> relevantObstacles;
+                relevantObstacles.reserve(placedFloatingRects.size());
+                for (const auto& obstacle : placedFloatingRects) {
+                    if (rectsOverlap(obstacle, obstacleBounds))
+                        relevantObstacles.push_back(obstacle);
+                }
+
+                const auto resolved = resolveFloatingTarget(desired, relevantObstacles, state.windows[index].slot.scale, workspaceBounds);
                 const Rect target = resolved.target;
 
                 if (!rectApproxEqual(target, desired, 0.5) || std::abs(resolved.scale - 1.0) > 0.001) {
@@ -14268,7 +14318,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                             << " scaleAdjust=" << resolved.scale
                             << " remainingOverlap=" << resolved.overlap
                             << " staticObstaclesIgnored=" << staticObstacleCount
-                            << " floatingObstacles=" << placedFloatingRects.size();
+                            << " floatingObstacles=" << relevantObstacles.size();
                         debugLog(out.str());
                     }
                 }
