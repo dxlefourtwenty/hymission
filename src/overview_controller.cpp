@@ -9233,13 +9233,95 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
     }
 
+    const auto activeBaseRect = [&]() {
+        if (m_state.relayoutActive)
+            return lerpRect(window.relayoutFromGlobal, window.targetGlobal, relayoutVisualProgress());
+        return window.targetGlobal;
+    };
+
+    const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
+        if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped)
+            return std::nullopt;
+
+        PHLWINDOW floatingWindow = selectedWindow();
+        if ((!floatingWindow || (!floatingWindow->m_pinned && !isFloatingOverviewWindow(floatingWindow))) && m_state.focusDuringOverview)
+            floatingWindow = m_state.focusDuringOverview;
+        if (!floatingWindow || (!floatingWindow->m_pinned && !isFloatingOverviewWindow(floatingWindow)))
+            return std::nullopt;
+
+        const auto* floatingManaged = managedWindowFor(m_state, floatingWindow, true);
+        if (!floatingManaged || !floatingManaged->targetMonitor)
+            return std::nullopt;
+
+        const auto floatingWorkspace = floatingWindow->m_pinned ? focusedStripWorkspaceForMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
+        if (!floatingWorkspace || !isScrollingWorkspace(floatingWorkspace))
+            return std::nullopt;
+
+        const auto currentWorkspace = window.window->m_pinned ? focusedStripWorkspaceForMonitor(window.targetMonitor) : window.window->m_workspace;
+        if (currentWorkspace != floatingWorkspace)
+            return std::nullopt;
+
+        const Rect floatingLive = renderGlobalRectForWindow(floatingWindow);
+        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
+            const double x1 = std::max(lhs.x, rhs.x);
+            const double y1 = std::max(lhs.y, rhs.y);
+            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
+            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
+            if (x2 <= x1 || y2 <= y1)
+                return 0.0;
+            return (x2 - x1) * (y2 - y1);
+        };
+
+        const ManagedWindow* anchorManaged = nullptr;
+        double               bestOverlap = -1.0;
+        double               bestDistance = std::numeric_limits<double>::infinity();
+        for (const auto& candidateManaged : m_state.windows) {
+            const auto candidate = candidateManaged.window;
+            if (!candidate || candidate == floatingWindow || !candidate->m_isMapped || candidate->m_workspace != floatingWorkspace || candidate->m_pinned)
+                continue;
+
+            const auto target = candidate->layoutTarget();
+            if (!target || target->floating() || isFloatingOverviewWindow(candidate))
+                continue;
+
+            const Rect candidateLive = renderGlobalRectForWindow(candidate);
+            const double overlap = overlapArea(floatingLive, candidateLive);
+            const double dx = candidateLive.centerX() - floatingLive.centerX();
+            const double dy = candidateLive.centerY() - floatingLive.centerY();
+            const double distance = dx * dx + dy * dy;
+            if (!anchorManaged || overlap > bestOverlap + 1.0 || (std::abs(overlap - bestOverlap) <= 1.0 && distance < bestDistance)) {
+                anchorManaged = &candidateManaged;
+                bestOverlap = overlap;
+                bestDistance = distance;
+            }
+        }
+
+        if (!anchorManaged)
+            return std::nullopt;
+
+        const Rect anchorPreview = m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal;
+        const Rect floatingPreview = m_state.relayoutActive ? lerpRect(floatingManaged->relayoutFromGlobal, floatingManaged->targetGlobal, relayoutVisualProgress()) : floatingManaged->targetGlobal;
+        const double shiftX = floatingPreview.centerX() - anchorPreview.centerX();
+        const double shiftY = floatingPreview.centerY() - anchorPreview.centerY();
+
+        if (window.window == floatingWindow) {
+            const double scaleX = floatingManaged->naturalGlobal.width > 1.0 ? floatingManaged->targetGlobal.width / floatingManaged->naturalGlobal.width : 1.0;
+            const double scaleY = floatingManaged->naturalGlobal.height > 1.0 ? floatingManaged->targetGlobal.height / floatingManaged->naturalGlobal.height : 1.0;
+            const double width = std::max(1.0, floatingLive.width * scaleX);
+            const double height = std::max(1.0, floatingLive.height * scaleY);
+            return makeRect(floatingPreview.centerX() - width * 0.5, floatingPreview.centerY() - height * 0.5, width, height);
+        }
+
+        return translateRect(activeBaseRect(), shiftX, shiftY);
+    };
+
     switch (m_state.phase) {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
-            if (m_state.relayoutActive)
-                return lerpRect(window.relayoutFromGlobal, window.targetGlobal, relayoutVisualProgress());
-            return window.targetGlobal;
+            if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
+                return *dynamicRect;
+            return activeBaseRect();
         case Phase::ClosingSettle:
             return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
         case Phase::Closing:
