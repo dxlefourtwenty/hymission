@@ -2851,10 +2851,12 @@ void OverviewController::renderStage(eRenderStage stage) {
         };
 
         bool needsForcedRelayout = false;
+        PHLWINDOW relayoutTriggerWindow;
         for (const auto& managed : m_state.windows) {
             const auto window = managed.window;
             if (!window || !window->m_isMapped || window->m_fadingOut || window->isHidden()) {
                 needsForcedRelayout = true;
+                relayoutTriggerWindow = window;
                 break;
             }
 
@@ -2863,12 +2865,14 @@ void OverviewController::renderStage(eRenderStage stage) {
             if (nextMonitor != managed.targetMonitor || managed.isFloating != window->m_isFloating || managed.isPinned != window->m_pinned ||
                 managed.isNiriFloatingOverlay != expectedNiriFloatingOverlay) {
                 needsForcedRelayout = true;
+                relayoutTriggerWindow = window;
                 break;
             }
 
             const Rect currentSource = currentOverviewSourceFor(managed);
             if (!rectApproxEqual(currentSource, managed.naturalGlobal, 0.5)) {
                 needsForcedRelayout = true;
+                relayoutTriggerWindow = window;
                 break;
             }
         }
@@ -2910,7 +2914,7 @@ void OverviewController::renderStage(eRenderStage stage) {
                 return best ? best : window;
             };
 
-            auto preferredSelected = resolveRelayoutAnchor(selectedWindow());
+            auto preferredSelected = resolveRelayoutAnchor(relayoutTriggerWindow ? relayoutTriggerWindow : selectedWindow());
             if (preferredSelected && preferredSelected->m_workspace)
                 refreshWorkspaceLayoutSnapshot(preferredSelected->m_workspace);
             if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && (!preferredSelected || activeWorkspace != preferredSelected->m_workspace))
