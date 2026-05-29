@@ -169,9 +169,11 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
-        lowered.starts_with("resizewindow") || lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
-        lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos;
+        lowered == "togglefloating" || lowered == "pin" || lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") ||
+        lowered.starts_with("movetoworkspace") || lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("pin") ||
+        lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
+        lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
+        lowered.find("window.float") != std::string::npos || lowered.find("window.pin") != std::string::npos;
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2832,6 +2834,64 @@ void OverviewController::renderStage(eRenderStage stage) {
     if (!m_workspaceTransition.active && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) &&
         std::any_of(m_state.windows.begin(), m_state.windows.end(), [](const ManagedWindow& managed) { return managed.window && managed.window->m_fadingOut; })) {
         scheduleVisibleStateRebuild();
+    }
+
+    if (stage == RENDER_PRE_WINDOWS && !m_workspaceTransition.active && m_state.phase == Phase::Active && workspaceStripEnabled(m_state) && !m_state.windows.empty()) {
+        const bool niriOverview = niriModeAppliesToState(m_state);
+        const bool directNiriOverview = usesDirectNiriScrollingOverview(m_state);
+        const auto currentOverviewSourceFor = [&](const ManagedWindow& managed) {
+            const auto window = managed.window;
+            const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window);
+            const Rect stateGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry);
+            if (managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window) || (window && window->m_pinned))
+                return floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
+            if (directNiriOverview)
+                return scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
+            return layoutAnchorGlobalRectForWindow(window, useGoalGeometry);
+        };
+
+        bool needsForcedRelayout = false;
+        for (const auto& managed : m_state.windows) {
+            const auto window = managed.window;
+            if (!window || !window->m_isMapped || window->m_fadingOut || window->isHidden()) {
+                needsForcedRelayout = true;
+                break;
+            }
+
+            const auto nextMonitor = preferredMonitorForWindow(window, m_state);
+            const bool expectedNiriFloatingOverlay = niriOverview && (isFloatingOverviewWindow(window) || window->m_pinned);
+            if (nextMonitor != managed.targetMonitor || managed.isFloating != window->m_isFloating || managed.isPinned != window->m_pinned ||
+                managed.isNiriFloatingOverlay != expectedNiriFloatingOverlay) {
+                needsForcedRelayout = true;
+                break;
+            }
+
+            const Rect currentSource = currentOverviewSourceFor(managed);
+            if (!rectApproxEqual(currentSource, managed.naturalGlobal, 0.5)) {
+                needsForcedRelayout = true;
+                break;
+            }
+        }
+
+        if (needsForcedRelayout && !m_visibleStateRebuildScheduled) {
+            const auto preferredSelected = selectedWindow();
+            if (!g_pEventLoopManager || !insideRenderLifecycle()) {
+                rebuildVisibleState(preferredSelected, true);
+            } else {
+                m_visibleStateRebuildScheduled = true;
+                const auto generation = ++m_visibleStateRebuildGeneration;
+                g_pEventLoopManager->doLater([this, generation, preferredSelected] {
+                    if (g_controller != this || generation != m_visibleStateRebuildGeneration)
+                        return;
+
+                    m_visibleStateRebuildScheduled = false;
+                    if (!isVisible() || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
+                        return;
+
+                    rebuildVisibleState(preferredSelected, true);
+                });
+            }
+        }
     }
 
     setFullscreenRenderOverride(true);
@@ -6847,6 +6907,8 @@ bool OverviewController::installHooks() {
         "movetoworkspacesilent",
         "moveactive",
         "resizeactive",
+        "togglefloating",
+        "pin",
         "movewindowpixel",
         "resizewindowpixel",
         "window.move",
