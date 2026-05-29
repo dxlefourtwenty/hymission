@@ -11243,8 +11243,49 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         previousPlaceholderRects.emplace_back(placeholder.monitor->m_id, placeholder.workspaceId, currentRect);
     }
 
+    const auto closestTiledWindowForRelayoutAnchor = [&](const PHLWINDOW& window) -> PHLWINDOW {
+        if (!forceRelayout || !window || !niriModeAppliesToState(m_state))
+            return window;
+
+        if (!window->m_pinned && !isFloatingOverviewWindow(window))
+            return window;
+
+        const auto workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
+        if (!workspace || !isScrollingWorkspace(workspace))
+            return window;
+
+        const auto* sourceManaged = managedWindowFor(m_state, window, true);
+        const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(window);
+
+        PHLWINDOW best;
+        double    bestDistance = std::numeric_limits<double>::infinity();
+        for (const auto& candidate : m_state.windows) {
+            const auto candidateWindow = candidate.window;
+            if (!candidateWindow || candidateWindow == window || !candidateWindow->m_isMapped || candidateWindow->m_workspace != workspace || candidateWindow->m_pinned)
+                continue;
+
+            const auto target = candidateWindow->layoutTarget();
+            if (!target || target->floating() || isFloatingOverviewWindow(candidateWindow))
+                continue;
+
+            const Rect candidateRect = currentPreviewRect(candidate);
+            const double dx = candidateRect.centerX() - sourceRect.centerX();
+            const double dy = candidateRect.centerY() - sourceRect.centerY();
+            const double distance = dx * dx + dy * dy;
+            if (!best || distance < bestDistance) {
+                best = candidateWindow;
+                bestDistance = distance;
+            }
+        }
+
+        return best ? best : window;
+    };
+
+    const auto requestedSelectedWindow = preferredSelectedWindow ? preferredSelectedWindow : (selectedWindow() ? selectedWindow() : Desktop::focusState()->window());
+    const auto relayoutSelectedWindow = closestTiledWindowForRelayoutAnchor(requestedSelectedWindow);
     const auto layoutSelectedWindow =
-        expandSelectedWindowEnabled() ? (preferredSelectedWindow ? preferredSelectedWindow : (selectedWindow() ? selectedWindow() : Desktop::focusState()->window())) : PHLWINDOW{};
+        expandSelectedWindowEnabled() ? (relayoutSelectedWindow ? relayoutSelectedWindow : requestedSelectedWindow) :
+        (forceRelayout ? relayoutSelectedWindow : PHLWINDOW{});
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] rebuild request forceRelayout=" << (forceRelayout ? 1 : 0)
@@ -13703,6 +13744,39 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     };
     std::unordered_map<std::size_t, Rect> niriWorkspaceViewportGlobalByWindowIndex;
 
+    const auto closestScrollingAnchorForFloatingWindow = [&](const PHLWINDOW& window, const PHLWORKSPACE& layoutWorkspace, const Rect& floatingSourceGlobal) -> std::optional<Rect> {
+        if (!window || !layoutWorkspace || !isScrollingWorkspace(layoutWorkspace))
+            return std::nullopt;
+
+        std::optional<Rect> bestAnchor;
+        double              bestDistance = std::numeric_limits<double>::infinity();
+        for (const auto& candidate : candidates) {
+            if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_fadingOut || candidate->isHidden() || candidate->m_pinned ||
+                candidate->m_workspace != layoutWorkspace)
+                continue;
+
+            const auto target = candidate->layoutTarget();
+            if (!target || target->floating() || isFloatingOverviewWindow(candidate))
+                continue;
+
+            const bool candidateUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(candidate);
+            const Rect candidateNaturalGlobal = stateSnapshotGlobalRectForWindow(candidate, candidateUseGoalGeometry);
+            Rect candidateAnchorGlobal = scrollingOverviewSourceGlobalRectForWindow(candidate, candidateNaturalGlobal);
+            if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
+                candidateAnchorGlobal = rowGeometry->anchorGlobal;
+
+            const double dx = candidateAnchorGlobal.centerX() - floatingSourceGlobal.centerX();
+            const double dy = candidateAnchorGlobal.centerY() - floatingSourceGlobal.centerY();
+            const double distance = dx * dx + dy * dy;
+            if (!bestAnchor || distance < bestDistance) {
+                bestAnchor = candidateAnchorGlobal;
+                bestDistance = distance;
+            }
+        }
+
+        return bestAnchor;
+    };
+
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
                                                std::size_t windowIndex, bool allowPinned,
                                                std::optional<GestureAxis> overflowAxis,
@@ -13876,22 +13950,31 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         };
     };
     const auto niriFloatingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
-                                                       std::size_t windowIndex) -> std::optional<WindowSlot> {
+                                                       std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
         if (!isFloatingOverviewWindow(window) && !(window && window->m_pinned))
             return std::nullopt;
 
+        resolvedSourceGlobal = sourceGlobal;
+
         Rect baseGlobal = niriFloatingOverviewBaseGlobalRect(targetMonitor);
-        if (window && window->m_pinned) {
-            if (const auto layoutWorkspace = focusedStripWorkspaceForMonitor(targetMonitor); layoutWorkspace && layoutWorkspace->m_space) {
-                const CBox workAreaBox = layoutWorkspace->m_space->workArea();
-                const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-                if (workArea.width > 1.0 && workArea.height > 1.0)
-                    baseGlobal = workArea;
-            }
+        const auto layoutWorkspace = window && window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : (window ? window->m_workspace : PHLWORKSPACE{});
+        if (layoutWorkspace && layoutWorkspace->m_space) {
+            const CBox workAreaBox = layoutWorkspace->m_space->workArea();
+            const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+            if (workArea.width > 1.0 && workArea.height > 1.0)
+                baseGlobal = workArea;
         }
 
-        return niriOverviewSlotForSource(window, targetMonitor, sourceGlobal, baseGlobal, windowIndex, true, std::nullopt,
-                                         std::nullopt);
+        std::optional<Rect> anchorOverride;
+        if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
+            anchorOverride = *anchor;
+            resolvedSourceGlobal = makeRect(anchor->centerX() - sourceGlobal.width * 0.5,
+                                            anchor->centerY() - sourceGlobal.height * 0.5,
+                                            sourceGlobal.width,
+                                            sourceGlobal.height);
+        }
+
+        return niriOverviewSlotForSource(window, targetMonitor, resolvedSourceGlobal, baseGlobal, windowIndex, true, std::nullopt, anchorOverride);
     };
     const auto niriScrollingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
                                                         std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
@@ -13937,9 +14020,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         bool directNiriFloatingOverlay = false;
 
         const Rect floatingSourceGlobal = floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
-        directNiriSlot = niriFloatingOverviewSlotForWindow(window, targetMonitor, floatingSourceGlobal, windowIndex);
+        Rect resolvedFloatingSourceGlobal = floatingSourceGlobal;
+        directNiriSlot = niriFloatingOverviewSlotForWindow(window, targetMonitor, floatingSourceGlobal, windowIndex, resolvedFloatingSourceGlobal);
         if (directNiriSlot) {
-            directNiriSourceGlobal = floatingSourceGlobal;
+            directNiriSourceGlobal = resolvedFloatingSourceGlobal;
             directNiriFloatingOverlay = true;
         } else {
             const Rect scrollingSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window, naturalGlobal);
