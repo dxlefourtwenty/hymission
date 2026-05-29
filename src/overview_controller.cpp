@@ -7503,6 +7503,55 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return window;
     };
 
+    const auto hardRecalculateScrollingWorkspaceAroundWindow = [&](const PHLWINDOW& anchor, const char* source) -> bool {
+        if (!anchor || !anchor->m_isMapped || !hasManagedWindow(anchor) || !anchor->m_workspace || !isScrollingWorkspace(anchor->m_workspace))
+            return false;
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(anchor->m_workspace);
+        const auto target = anchor->layoutTarget();
+        const bool targetIsTiled = target && !target->floating();
+
+        if (targetIsTiled) {
+            if (const auto targetData = scrolling ? scrolling->dataFor(target) : nullptr; targetData) {
+                if (const auto column = targetData->column.lock()) {
+                    column->lastFocusedTarget = targetData;
+                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
+                            scrolling->m_scrollingData->fitCol(column);
+                        else
+                            scrolling->m_scrollingData->centerCol(column);
+                    }
+                }
+            }
+        }
+
+        // This is the important part for colresize / regular resize while the overview is open:
+        // force Hyprland's scrolling layout to commit fresh target boxes before we rebuild the
+        // overview state.  The old path refreshed our cached snapshot, but it could still read
+        // the pre-resize column positions until a later manual focus move.
+        if (anchor->m_workspace->m_space)
+            anchor->m_workspace->m_space->recalculate();
+        if (scrolling && scrolling->m_scrollingData)
+            scrolling->m_scrollingData->recalculate(true);
+        (void)syncScrollingWorkspaceSpotOnWindow(anchor);
+        if (anchor->m_workspace->m_space)
+            anchor->m_workspace->m_space->recalculate();
+        if (scrolling && scrolling->m_scrollingData)
+            scrolling->m_scrollingData->recalculate(true);
+
+        refreshWorkspaceLayoutSnapshot(anchor->m_workspace);
+        if (const auto monitor = anchor->m_monitor.lock())
+            g_layoutManager->recalculateMonitor(monitor);
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+        refreshNiriScrollingOverviewAfterLayoutScroll(source);
+        damageOwnedMonitors();
+        return true;
+    };
+
     const auto forceDirectNiriGeometryFocus = [&](const PHLWINDOW& anchor, const char* source) -> bool {
         if (!anchor || !anchor->m_isMapped || !hasManagedWindow(anchor) || !usesDirectNiriScrollingOverview(m_state))
             return false;
@@ -7528,19 +7577,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == anchor)
             m_pendingLiveFocusWorkspaceChangeTarget.reset();
 
-        (void)syncScrollingWorkspaceSpotOnWindow(anchor);
-        if (anchor->m_workspace)
-            refreshWorkspaceLayoutSnapshot(anchor->m_workspace);
-        if (const auto monitor = anchor->m_monitor.lock())
-            g_layoutManager->recalculateMonitor(monitor);
-        if (g_pAnimationManager)
-            g_pAnimationManager->frameTick();
-
-        refreshNiriScrollingOverviewAfterLayoutScroll(source);
-        m_stripSnapshotsDirty = true;
-        scheduleWorkspaceStripSnapshotRefresh();
-        damageOwnedMonitors();
-        return true;
+        return hardRecalculateScrollingWorkspaceAroundWindow(anchor, source);
     };
 
     if (overviewActive && selectedBefore) {
@@ -7574,7 +7611,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if ((!editedWindow || !editedWindow->m_isMapped) && Desktop::focusState()->window())
                 editedWindow = Desktop::focusState()->window();
             forcedGeometryAnchor = closestTiledWindowInWorkspace(editedWindow);
-            if (forcedGeometryAnchor && forcedGeometryAnchor != editedWindow)
+            if (forcedGeometryAnchor)
                 (void)forceDirectNiriGeometryFocus(forcedGeometryAnchor, "geometry-edit-force-refocus");
         }
 
@@ -7600,6 +7637,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         PHLWINDOW preferredSelected = forcedGeometryAnchor ? forcedGeometryAnchor : selectedBefore;
         if ((!preferredSelected || !preferredSelected->m_isMapped || !hasManagedWindow(preferredSelected)) && focusAfter && hasManagedWindow(focusAfter))
             preferredSelected = focusAfter;
+
+        if (forceGeometryRefocus && preferredSelected && preferredSelected->m_isMapped && hasManagedWindow(preferredSelected))
+            (void)hardRecalculateScrollingWorkspaceAroundWindow(preferredSelected, "geometry-edit-pre-rebuild-hard-recalc");
 
         const auto relayoutAnchor = closestTiledWindowInWorkspace(preferredSelected);
         if (relayoutAnchor && relayoutAnchor != preferredSelected) {
@@ -7684,7 +7724,30 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                     focusWindowCompat(target, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
                     if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == target)
                         m_pendingLiveFocusWorkspaceChangeTarget.reset();
+                    if (target->m_workspace && isScrollingWorkspace(target->m_workspace)) {
+                        auto* const scrolling = scrollingAlgorithmForWorkspace(target->m_workspace);
+                        const auto layoutTarget = target->layoutTarget();
+                        if (scrolling && layoutTarget && !layoutTarget->floating()) {
+                            if (const auto targetData = scrolling->dataFor(layoutTarget); targetData) {
+                                if (const auto column = targetData->column.lock()) {
+                                    column->lastFocusedTarget = targetData;
+                                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
+                                            scrolling->m_scrollingData->fitCol(column);
+                                        else
+                                            scrolling->m_scrollingData->centerCol(column);
+                                    }
+                                }
+                            }
+                        }
+                        if (target->m_workspace->m_space)
+                            target->m_workspace->m_space->recalculate();
+                        if (scrolling && scrolling->m_scrollingData)
+                            scrolling->m_scrollingData->recalculate(true);
+                    }
                     (void)syncScrollingWorkspaceSpotOnWindow(target);
+                    if (target->m_workspace && target->m_workspace->m_space)
+                        target->m_workspace->m_space->recalculate();
                     refreshNiriScrollingOverviewAfterLayoutScroll("geometry-edit-deferred-refocus");
                     m_stripSnapshotsDirty = true;
                     scheduleWorkspaceStripSnapshotRefresh();
