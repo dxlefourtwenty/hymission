@@ -662,6 +662,23 @@ Rect clampRectInside(const Rect& rect, const Rect& bounds) {
     return makeRect(x, y, width, height);
 }
 
+Rect clampRectInsidePreservingAspect(const Rect& rect, const Rect& bounds, double& scale) {
+    if (bounds.width <= 1.0 || bounds.height <= 1.0)
+        return rect;
+
+    Rect result = rect;
+    if (result.width > bounds.width || result.height > bounds.height) {
+        const double fitScale = std::min(bounds.width / std::max(1.0, result.width), bounds.height / std::max(1.0, result.height));
+        const double clampedFitScale = std::clamp(fitScale, 0.0, 1.0);
+        const double width = std::max(1.0, result.width * clampedFitScale);
+        const double height = std::max(1.0, result.height * clampedFitScale);
+        result = makeRect(result.centerX() - width * 0.5, result.centerY() - height * 0.5, width, height);
+        scale *= clampedFitScale;
+    }
+
+    return clampRectInside(result, bounds);
+}
+
 bool rectFitsInsideBounds(const Rect& rect, const Rect& bounds, double epsilon = 0.5) {
     return rect.x >= bounds.x - epsilon && rect.y >= bounds.y - epsilon && rect.x + rect.width <= bounds.x + bounds.width + epsilon &&
         rect.y + rect.height <= bounds.y + bounds.height + epsilon;
@@ -13923,12 +13940,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterX = viewportX + (sourceGlobal.centerX() - baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+        Rect workspaceViewportLocal = makeRect(viewportX, viewportY, baseGlobal.width * scale, baseGlobal.height * scale);
         if (fitModeViewport) {
             const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
                                           baseGlobal.height * viewportScale);
+            workspaceViewportLocal = viewportLocal;
             targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
                                    viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
                                    targetWidth,
@@ -13966,6 +13985,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double width = std::max(1.0, targetLocal.width - stripPreviewGapBoost);
             const double height = std::max(1.0, targetLocal.height - stripPreviewGapBoost);
             targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.centerY() - height * 0.5, width, height);
+        }
+
+        if (isFloatingOverviewWindow(window)) {
+            // Floating windows can live outside the scrolling tape. Keep their
+            // overview cards inside the mapped 1.0 workspace viewport so they
+            // do not spill into neighboring Niri overview lanes.
+            targetLocal = clampRectInsidePreservingAspect(targetLocal, workspaceViewportLocal, scale);
         }
 
         return WindowSlot{
