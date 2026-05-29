@@ -1327,6 +1327,18 @@ Rect centeredSurfaceRectInLayoutBox(const CBox& layoutBox, const Rect& surfaceGl
     return makeRect(layoutBox.x + (layoutBox.width - width) * 0.5, layoutBox.y + (layoutBox.height - height) * 0.5, width, height);
 }
 
+template <typename TargetPtr>
+CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox) {
+    if (!target)
+        return snapshotBox;
+
+    const CBox liveBox = target->position();
+    if (liveBox.width > 1.0 && liveBox.height > 1.0)
+        return liveBox;
+
+    return snapshotBox;
+}
+
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -1345,7 +1357,7 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     CBox layoutBox = targetBox;
     if (auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace); scrolling) {
         if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
-            layoutBox = targetData->layoutBox;
+            layoutBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
     }
 
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
@@ -1399,7 +1411,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (firstTarget == column->targetDatas.end())
             continue;
 
-        const CBox& box = (*firstTarget)->layoutBox;
+        const CBox box = liveScrollingLayoutBoxForTarget((*firstTarget)->target, (*firstTarget)->layoutBox);
         columns.push_back({
             .column = column,
             .primary = horizontal ? box.x : box.y,
@@ -1422,7 +1434,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const Rect candidateBounds = makeRect(candidate->layoutBox.x, candidate->layoutBox.y, candidate->layoutBox.width, candidate->layoutBox.height);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            const Rect candidateBounds = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
             if (!hasColumnBounds) {
                 columnBounds = candidateBounds;
                 hasColumnBounds = true;
@@ -1442,7 +1455,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (candidate != targetData)
                 continue;
 
-            targetSource = centeredSurfaceRectInLayoutBox(candidate->layoutBox, fallbackGlobal);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            targetSource = centeredSurfaceRectInLayoutBox(candidateLayoutBox, fallbackGlobal);
             if (hasColumnBounds) {
                 const double anchorX = horizontal ? (columnBounds.x + columnBounds.width * 0.5) : baseGlobal.centerX();
                 const double anchorY = horizontal ? baseGlobal.centerY() : (columnBounds.y + columnBounds.height * 0.5);
