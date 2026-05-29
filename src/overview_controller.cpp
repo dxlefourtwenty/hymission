@@ -9424,6 +9424,82 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         return {};
     };
 
+    const auto dynamicNiriTiledResizeRect = [&]() -> std::optional<Rect> {
+        if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped || !window.targetMonitor)
+            return std::nullopt;
+
+        if (window.window->m_pinned || window.isPinned || isFloatingOverviewWindow(window.window) || window.isNiriFloatingOverlay)
+            return std::nullopt;
+
+        const auto workspace = window.window->m_workspace;
+        if (!workspace || !isScrollingWorkspace(workspace))
+            return std::nullopt;
+
+        const auto target = window.window->layoutTarget();
+        if (!target || target->floating())
+            return std::nullopt;
+
+        PHLWINDOW anchorWindow;
+        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
+            m_state.focusDuringOverview->m_workspace == workspace && !isFloatingOverviewWindow(m_state.focusDuringOverview)) {
+            anchorWindow = m_state.focusDuringOverview;
+        } else if (const auto selected = selectedWindow(); selected && selected->m_isMapped && !selected->m_pinned && selected->m_workspace == workspace &&
+                   !isFloatingOverviewWindow(selected)) {
+            anchorWindow = selected;
+        } else {
+            anchorWindow = window.window;
+        }
+
+        const auto* anchorManaged = managedWindowFor(m_state, anchorWindow, true);
+        if (!anchorManaged || !anchorManaged->window || !anchorManaged->targetMonitor || anchorManaged->targetMonitor != window.targetMonitor)
+            anchorManaged = &window;
+
+        const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window.window);
+        const Rect naturalGlobal = stateSnapshotGlobalRectForWindow(window.window, useGoalGeometry);
+        const Rect sourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window.window, naturalGlobal);
+        const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window.window, sourceGlobal, anchorWindow);
+        if (!rowGeometry)
+            return std::nullopt;
+
+        const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorManaged->window);
+        const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorManaged->window, anchorUseGoalGeometry);
+        const Rect anchorSourceBase = scrollingOverviewSourceGlobalRectForWindow(anchorManaged->window, anchorNaturalGlobal);
+        const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorManaged->window, anchorSourceBase, anchorManaged->window);
+        const Rect anchorSourceGlobal = anchorRowGeometry ? anchorRowGeometry->anchorGlobal : anchorManaged->naturalGlobal;
+
+        double scale = window.slot.scale;
+        if (scale <= 0.0 && window.naturalGlobal.width > 1.0)
+            scale = window.targetGlobal.width / window.naturalGlobal.width;
+        if (scale <= 0.0 && window.naturalGlobal.height > 1.0)
+            scale = window.targetGlobal.height / window.naturalGlobal.height;
+        if (scale <= 0.0)
+            return std::nullopt;
+
+        const double anchorPreviewCenterX = activeBaseRect().centerX() + (anchorManaged->targetGlobal.centerX() - window.targetGlobal.centerX());
+        const double anchorPreviewCenterY = activeBaseRect().centerY() + (anchorManaged->targetGlobal.centerY() - window.targetGlobal.centerY());
+        const double viewportX = anchorPreviewCenterX - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double viewportY = anchorPreviewCenterY - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+
+        const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
+        const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
+        const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+        Rect dynamicRect = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+
+        const double previewGap = niriWindowGapsForWorkspace(workspace, rowGeometry->primaryAxis);
+        if (previewGap > 0.0) {
+            if (rowGeometry->primaryAxis == GestureAxis::Horizontal) {
+                const double width = std::max(1.0, dynamicRect.width - previewGap);
+                dynamicRect = makeRect(dynamicRect.centerX() - width * 0.5, dynamicRect.y, width, dynamicRect.height);
+            } else {
+                const double height = std::max(1.0, dynamicRect.height - previewGap);
+                dynamicRect = makeRect(dynamicRect.x, dynamicRect.centerY() - height * 0.5, dynamicRect.width, height);
+            }
+        }
+
+        return dynamicRect;
+    };
+
     const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
         if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped)
             return std::nullopt;
@@ -9515,6 +9591,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
             if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
+                return *dynamicRect;
+            if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
                 return *dynamicRect;
             return activeBaseRect();
         case Phase::ClosingSettle:
