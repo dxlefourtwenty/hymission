@@ -1370,7 +1370,7 @@ struct ScrollingOverviewGeometry {
     GestureAxis primaryAxis = GestureAxis::Horizontal;
 };
 
-std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
+std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
         return std::nullopt;
 
@@ -1386,6 +1386,15 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (!targetData || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
         return std::nullopt;
 
+    if (!anchorWindow || !anchorWindow->m_isMapped || anchorWindow->m_workspace != window->m_workspace || anchorWindow->m_pinned || isFloatingOverviewWindow(anchorWindow))
+        anchorWindow = window;
+
+    auto anchorTarget = anchorWindow ? anchorWindow->layoutTarget() : nullptr;
+    if (!anchorTarget || anchorTarget->floating())
+        anchorTarget = target;
+
+    const auto anchorTargetData = scrolling->dataFor(anchorTarget);
+
     const CBox workAreaBox = window->m_workspace->m_space->workArea();
     if (workAreaBox.width <= 1.0 || workAreaBox.height <= 1.0)
         return std::nullopt;
@@ -1396,6 +1405,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
     struct ColumnEntry {
         SP<Layout::Tiled::SColumnData> column;
+        Rect                           bounds;
+        Rect                           virtualBounds;
         double                         primary = 0.0;
     };
 
@@ -1405,36 +1416,16 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (!column || column->targetDatas.empty())
             continue;
 
-        const auto firstTarget = std::ranges::find_if(column->targetDatas, [](const auto& candidate) {
-            return candidate && candidate->target && candidate->layoutBox.width > 1.0 && candidate->layoutBox.height > 1.0;
-        });
-        if (firstTarget == column->targetDatas.end())
-            continue;
-
-        const CBox box = liveScrollingLayoutBoxForTarget((*firstTarget)->target, (*firstTarget)->layoutBox);
-        columns.push_back({
-            .column = column,
-            .primary = horizontal ? box.x : box.y,
-        });
-    }
-
-    if (columns.empty())
-        return std::nullopt;
-
-    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
-
-    std::optional<Rect> targetSource;
-    std::optional<Rect> targetAnchor;
-    for (const auto& columnEntry : columns) {
-        const auto& column = columnEntry.column;
-        Rect        columnBounds{};
-        bool        hasColumnBounds = false;
-
+        Rect columnBounds{};
+        bool hasColumnBounds = false;
         for (const auto& candidate : column->targetDatas) {
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
             const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
+                continue;
+
             const Rect candidateBounds = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
             if (!hasColumnBounds) {
                 columnBounds = candidateBounds;
@@ -1448,25 +1439,107 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             }
         }
 
-        for (const auto& candidate : column->targetDatas) {
-            if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
-                continue;
+        if (!hasColumnBounds)
+            continue;
 
-            if (candidate != targetData)
-                continue;
+        columns.push_back({
+            .column = column,
+            .bounds = columnBounds,
+            .virtualBounds = columnBounds,
+            .primary = horizontal ? columnBounds.x : columnBounds.y,
+        });
+    }
 
-            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
-            targetSource = centeredSurfaceRectInLayoutBox(candidateLayoutBox, fallbackGlobal);
-            if (hasColumnBounds) {
-                const double anchorX = horizontal ? (columnBounds.x + columnBounds.width * 0.5) : baseGlobal.centerX();
-                const double anchorY = horizontal ? baseGlobal.centerY() : (columnBounds.y + columnBounds.height * 0.5);
-                targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
-            }
-            break;
+    if (columns.empty())
+        return std::nullopt;
+
+    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
+
+    std::optional<std::size_t> targetColumnIndex;
+    std::optional<std::size_t> anchorColumnIndex;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        for (const auto& candidate : columns[index].column->targetDatas) {
+            if (!candidate)
+                continue;
+            if (candidate == targetData)
+                targetColumnIndex = index;
+            if (anchorTargetData && candidate == anchorTargetData)
+                anchorColumnIndex = index;
         }
+    }
 
-        if (targetSource)
-            break;
+    if (!targetColumnIndex)
+        return std::nullopt;
+    if (!anchorColumnIndex)
+        anchorColumnIndex = targetColumnIndex;
+
+    const double configuredGap = static_cast<double>(std::max(0L, getConfigInt(nullptr, "general:gaps_in", 0)));
+    double       gap = configuredGap;
+    if (gap <= 0.0 && columns.size() > 1) {
+        std::vector<double> positiveGaps;
+        positiveGaps.reserve(columns.size() - 1);
+        for (std::size_t index = 1; index < columns.size(); ++index) {
+            const Rect& previous = columns[index - 1].bounds;
+            const Rect& current = columns[index].bounds;
+            const double previousEnd = horizontal ? previous.x + previous.width : previous.y + previous.height;
+            const double currentStart = horizontal ? current.x : current.y;
+            const double candidateGap = currentStart - previousEnd;
+            if (candidateGap > 0.0)
+                positiveGaps.push_back(candidateGap);
+        }
+        if (!positiveGaps.empty()) {
+            std::sort(positiveGaps.begin(), positiveGaps.end());
+            gap = positiveGaps[positiveGaps.size() / 2];
+        }
+    }
+
+    const auto primarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
+    const auto setPrimaryStart = [&](Rect& rect, double start) {
+        if (horizontal)
+            rect.x = start;
+        else
+            rect.y = start;
+    };
+    const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+    const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
+    setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
+
+    if (*anchorColumnIndex > 0) {
+        for (std::size_t index = *anchorColumnIndex; index > 0; --index) {
+            const std::size_t leftIndex = index - 1;
+            const double start = primaryStart(columns[index].virtualBounds) - gap - primarySize(columns[leftIndex].bounds);
+            setPrimaryStart(columns[leftIndex].virtualBounds, start);
+        }
+    }
+
+    for (std::size_t index = *anchorColumnIndex + 1; index < columns.size(); ++index) {
+        const Rect& previous = columns[index - 1].virtualBounds;
+        const double start = primaryStart(previous) + primarySize(previous) + gap;
+        setPrimaryStart(columns[index].virtualBounds, start);
+    }
+
+    std::optional<Rect> targetSource;
+    std::optional<Rect> targetAnchor;
+    const auto& targetColumn = columns[*targetColumnIndex];
+    for (const auto& candidate : targetColumn.column->targetDatas) {
+        if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
+            continue;
+
+        if (candidate != targetData)
+            continue;
+
+        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+        Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
+        const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
+        setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
+
+        CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
+        targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
+
+        const double anchorX = horizontal ? targetColumn.virtualBounds.centerX() : baseGlobal.centerX();
+        const double anchorY = horizontal ? baseGlobal.centerY() : targetColumn.virtualBounds.centerY();
+        targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
+        break;
     }
 
     if (!targetSource)
@@ -14467,7 +14540,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
                     const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
                     anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
-                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
+                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal, anchorWindow))
                         anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
                 }
             }
@@ -14598,7 +14671,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
         std::optional<GestureAxis> overflowAxis;
-        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal)) {
+        PHLWINDOW layoutAnchorWindow;
+        if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
+            layoutAnchorWindow = state.focusDuringOverview;
+        else
+            layoutAnchorWindow = focusCandidateForWorkspace(window->m_workspace);
+
+        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             overflowAxis = rowGeometry->primaryAxis;
