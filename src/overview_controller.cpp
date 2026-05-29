@@ -7332,10 +7332,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
     const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
+    const std::string dispatcherArgsLower = asciiLowerCopy(args);
+    const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
+    const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
+         dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
+         dispatcherArgsLower.find("consume") != std::string::npos);
     const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "pin" ||
         dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("pin") ||
         dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
-        dispatcherNameLower.find("window.pin") != std::string::npos;
+        dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
 
     const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !usesDirectNiriScrollingOverview(m_state))
@@ -8224,8 +8230,7 @@ bool OverviewController::shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& 
     if (!window)
         return false;
 
-    if (isVisible() && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible() &&
-        !isScrollingWorkspace(window->m_workspace)) {
+    if (isVisible() && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible()) {
         const Rect live = stateSnapshotGlobalRectForWindow(window);
         const Rect goal = stateSnapshotGlobalRectForWindow(window, true);
         if (!rectApproxEqual(live, goal, 0.5))
