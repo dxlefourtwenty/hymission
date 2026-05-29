@@ -7350,28 +7350,40 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         const auto* sourceManaged = managedWindowFor(m_state, window, true);
         const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(window);
 
-        PHLWINDOW best;
-        double    bestDistance = std::numeric_limits<double>::infinity();
+        PHLWINDOW bestTiled;
+        double    bestTiledDistance = std::numeric_limits<double>::infinity();
+        PHLWINDOW bestAny;
+        double    bestAnyDistance = std::numeric_limits<double>::infinity();
+
         for (const auto& managed : m_state.windows) {
             const auto candidate = managed.window;
             if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                continue;
-
-            const auto target = candidate->layoutTarget();
-            if (!target || target->floating() || isFloatingOverviewWindow(candidate))
                 continue;
 
             const Rect candidateRect = currentPreviewRect(managed);
             const double dx = candidateRect.centerX() - sourceRect.centerX();
             const double dy = candidateRect.centerY() - sourceRect.centerY();
             const double distance = dx * dx + dy * dy;
-            if (!best || distance < bestDistance) {
-                best = candidate;
-                bestDistance = distance;
+
+            const auto target = candidate->layoutTarget();
+            const bool candidateIsTiled = target && !target->floating() && !isFloatingOverviewWindow(candidate);
+
+            if (candidateIsTiled && (!bestTiled || distance < bestTiledDistance)) {
+                bestTiled = candidate;
+                bestTiledDistance = distance;
+            }
+
+            if (!bestAny || distance < bestAnyDistance) {
+                bestAny = candidate;
+                bestAnyDistance = distance;
             }
         }
 
-        return best ? best : window;
+        if (bestTiled)
+            return bestTiled;
+        if (bestAny)
+            return bestAny;
+        return window;
     };
 
     const auto forceDirectNiriGeometryFocus = [&](const PHLWINDOW& anchor, const char* source) -> bool {
@@ -14135,33 +14147,46 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (!window || !layoutWorkspace || !isScrollingWorkspace(layoutWorkspace))
             return std::nullopt;
 
-        std::optional<Rect> bestAnchor;
-        double              bestDistance = std::numeric_limits<double>::infinity();
+        std::optional<Rect> bestTiledAnchor;
+        double              bestTiledDistance = std::numeric_limits<double>::infinity();
+        std::optional<Rect> bestAnyAnchor;
+        double              bestAnyDistance = std::numeric_limits<double>::infinity();
+
         for (const auto& candidate : candidates) {
             if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_fadingOut || candidate->isHidden() || candidate->m_pinned ||
                 candidate->m_workspace != layoutWorkspace)
                 continue;
 
-            const auto target = candidate->layoutTarget();
-            if (!target || target->floating() || isFloatingOverviewWindow(candidate))
-                continue;
-
             const bool candidateUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(candidate);
             const Rect candidateNaturalGlobal = stateSnapshotGlobalRectForWindow(candidate, candidateUseGoalGeometry);
-            Rect candidateAnchorGlobal = scrollingOverviewSourceGlobalRectForWindow(candidate, candidateNaturalGlobal);
-            if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
-                candidateAnchorGlobal = rowGeometry->anchorGlobal;
+            Rect       candidateAnchorGlobal = candidateNaturalGlobal;
+
+            const auto target = candidate->layoutTarget();
+            const bool candidateIsTiledScrolling = target && !target->floating() && !isFloatingOverviewWindow(candidate);
+            if (candidateIsTiledScrolling) {
+                candidateAnchorGlobal = scrollingOverviewSourceGlobalRectForWindow(candidate, candidateNaturalGlobal);
+                if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
+                    candidateAnchorGlobal = rowGeometry->anchorGlobal;
+            } else {
+                candidateAnchorGlobal = floatingOverviewSourceGlobalRectForWindow(candidate, renderGlobalRectForWindow(candidate, candidateUseGoalGeometry));
+            }
 
             const double dx = candidateAnchorGlobal.centerX() - floatingSourceGlobal.centerX();
             const double dy = candidateAnchorGlobal.centerY() - floatingSourceGlobal.centerY();
             const double distance = dx * dx + dy * dy;
-            if (!bestAnchor || distance < bestDistance) {
-                bestAnchor = candidateAnchorGlobal;
-                bestDistance = distance;
+
+            if (candidateIsTiledScrolling && (!bestTiledAnchor || distance < bestTiledDistance)) {
+                bestTiledAnchor = candidateAnchorGlobal;
+                bestTiledDistance = distance;
+            }
+
+            if (!bestAnyAnchor || distance < bestAnyDistance) {
+                bestAnyAnchor = candidateAnchorGlobal;
+                bestAnyDistance = distance;
             }
         }
 
-        return bestAnchor;
+        return bestTiledAnchor ? bestTiledAnchor : bestAnyAnchor;
     };
 
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
