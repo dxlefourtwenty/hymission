@@ -168,9 +168,9 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
-        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
+        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" || lowered == "swapcol" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
-        lowered.starts_with("resizewindow") || lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
+        lowered.starts_with("resizewindow") || lowered.starts_with("swapcol") || lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
         lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos;
 }
 
@@ -428,6 +428,29 @@ bool keyboardHasPressedKeysym(const SP<IKeyboard>& keyboard, xkb_keysym_t target
     }
 
     return false;
+}
+
+bool keyboardHasPressedKeycode(const SP<IKeyboard>& keyboard, uint32_t evdevKeycode) {
+    if (!keyboard)
+        return false;
+
+    const uint32_t xkbKeycode = evdevKeycode + 8;
+    return keyboard->getPressed(xkbKeycode) || keyboard->getPressed(evdevKeycode);
+}
+
+bool keyboardHasPressedRawModifier(const SP<IKeyboard>& keyboard) {
+    static constexpr std::array<uint32_t, 8> modifierEvdevKeycodes = {
+        KEY_LEFTSHIFT,
+        KEY_RIGHTSHIFT,
+        KEY_LEFTCTRL,
+        KEY_RIGHTCTRL,
+        KEY_LEFTALT,
+        KEY_RIGHTALT,
+        KEY_LEFTMETA,
+        KEY_RIGHTMETA,
+    };
+
+    return std::ranges::any_of(modifierEvdevKeycodes, [&](uint32_t keycode) { return keyboardHasPressedKeycode(keyboard, keycode); });
 }
 
 template <typename Predicate>
@@ -3168,9 +3191,23 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
 }
 
 void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event::SCallbackInfo& info) {
-    const auto keyboard = inputKeyboardWithState();
-    if (!keyboard || !keyboard->m_xkbState)
-        return;
+    const auto keyboard = [&]() -> SP<IKeyboard> {
+        if (!g_pInputManager)
+            return {};
+
+        const auto eventKeycode = static_cast<uint32_t>(event.keycode + 8);
+        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            for (const auto& candidate : g_pInputManager->m_keyboards) {
+                if (!candidate || !candidate->m_xkbState)
+                    continue;
+
+                if (candidate->getPressed(eventKeycode))
+                    return candidate;
+            }
+        }
+
+        return inputKeyboardWithState();
+    }();
 
     if (m_toggleSwitchSessionActive)
         updateToggleSwitchSessionReleaseTracking("keyboard");
@@ -3181,7 +3218,7 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     if (m_state.phase == Phase::Closing)
         return;
 
-    if (m_toggleSwitchSessionActive && event.state == WL_KEYBOARD_KEY_STATE_RELEASED && isSwitchReleaseEvent(event, keyboard)) {
+    if (m_toggleSwitchSessionActive && keyboard && keyboard->m_xkbState && event.state == WL_KEYBOARD_KEY_STATE_RELEASED && isSwitchReleaseEvent(event, keyboard)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] toggle switch release close key=" << switchReleaseKeyConfig() << " keycode=" << event.keycode << " modifiers=" << keyboard->getModifiers();
@@ -3195,36 +3232,71 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
 
-    const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
-    if (handleNiriOverviewArrowKeybind(keysym, keyboard->getModifiers())) {
-        info.cancelled = true;
+    const auto matchesEvdevKeycode = [&](uint32_t evdevKeycode) {
+        return event.keycode == evdevKeycode || (event.keycode >= 8 && event.keycode - 8 == evdevKeycode);
+    };
+
+    xkb_keysym_t keysym = XKB_KEY_NoSymbol;
+    if (keyboard && keyboard->m_xkbState) {
+        const xkb_keysym_t fromEvdev = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
+        const xkb_keysym_t fromXkb = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode);
+        keysym = fromEvdev != XKB_KEY_NoSymbol ? fromEvdev : fromXkb;
+    }
+
+    const bool anyModifierHeld = anyKeyboardWithState([](const auto& candidate) {
+        const auto mods = candidate->getModifiers();
+        return (mods & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0 || keyboardHasPressedRawModifier(candidate);
+    });
+    if (anyModifierHeld) {
+        if (handleNiriOverviewArrowKeybind(keysym, keyboard ? keyboard->getModifiers() : 0)) {
+            info.cancelled = true;
+            return;
+        }
         return;
     }
 
     bool               handled = true;
-    switch (keysym) {
-        case XKB_KEY_Escape:
-            (void)close();
-            break;
-        case XKB_KEY_Return:
-        case XKB_KEY_KP_Enter:
-            activateSelection();
-            break;
-        case XKB_KEY_Left:
-            moveSelection(Direction::Left);
-            break;
-        case XKB_KEY_Right:
-            moveSelection(Direction::Right);
-            break;
-        case XKB_KEY_Up:
-            moveSelection(Direction::Up);
-            break;
-        case XKB_KEY_Down:
-            moveSelection(Direction::Down);
-            break;
-        default:
-            handled = false;
-            break;
+    if (matchesEvdevKeycode(KEY_ESC)) {
+        (void)close();
+    } else if (matchesEvdevKeycode(KEY_ENTER) || matchesEvdevKeycode(KEY_KPENTER)) {
+        activateSelection();
+    } else if (matchesEvdevKeycode(KEY_LEFT)) {
+        moveSelection(Direction::Left);
+    } else if (matchesEvdevKeycode(KEY_RIGHT)) {
+        moveSelection(Direction::Right);
+    } else if (matchesEvdevKeycode(KEY_UP)) {
+        moveSelection(Direction::Up);
+    } else if (matchesEvdevKeycode(KEY_DOWN)) {
+        moveSelection(Direction::Down);
+    } else {
+        switch (keysym) {
+            case XKB_KEY_Escape:
+                (void)close();
+                break;
+            case XKB_KEY_Return:
+            case XKB_KEY_KP_Enter:
+                activateSelection();
+                break;
+            case XKB_KEY_Left:
+            case XKB_KEY_KP_Left:
+                moveSelection(Direction::Left);
+                break;
+            case XKB_KEY_Right:
+            case XKB_KEY_KP_Right:
+                moveSelection(Direction::Right);
+                break;
+            case XKB_KEY_Up:
+            case XKB_KEY_KP_Up:
+                moveSelection(Direction::Up);
+                break;
+            case XKB_KEY_Down:
+            case XKB_KEY_KP_Down:
+                moveSelection(Direction::Down);
+                break;
+            default:
+                handled = false;
+                break;
+        }
     }
 
     if (handled)
@@ -6820,12 +6892,14 @@ bool OverviewController::installHooks() {
     }
     m_moveFocusDispatcherWrapped =
         wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
+    m_execDispatcherWrapped = wrapDispatcher("exec", m_execOriginal, [this](std::string args) { return runOverviewExecDispatcher(std::move(args)); });
 
     m_overviewEditingDispatchersOriginal.clear();
     std::vector<std::string> overviewEditingDispatchers = {
         "movewindow",
         "movewindoworgroup",
         "swapwindow",
+        "swapcol",
         "movetoworkspace",
         "movetoworkspacesilent",
         "moveactive",
@@ -6893,6 +6967,8 @@ bool OverviewController::installHooks() {
         m_layoutMessageOriginal = nullptr;
     if (!m_moveFocusDispatcherWrapped)
         m_moveFocusOriginal = nullptr;
+    if (!m_execDispatcherWrapped)
+        m_execOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -7050,6 +7126,61 @@ bool OverviewController::wrapDispatcher(const std::string& name, DispatcherHandl
     return true;
 }
 
+void OverviewController::prepareOverviewDispatcherTarget(PHLWINDOW preferredWindow, bool allowWorkspaceOnly) {
+    if (!isVisible() || m_state.phase != Phase::Active)
+        return;
+
+    PHLWINDOW targetWindow = preferredWindow;
+    if (!targetWindow)
+        targetWindow = selectedWindow();
+    if (!targetWindow && m_state.focusDuringOverview)
+        targetWindow = m_state.focusDuringOverview;
+
+    if (targetWindow && targetWindow->m_isMapped && hasManagedWindow(targetWindow)) {
+        m_state.focusDuringOverview = targetWindow;
+        selectWindowInState(m_state, targetWindow);
+
+        if (targetWindow->m_workspace) {
+            m_pendingLiveFocusWorkspaceChangeTarget = targetWindow;
+            (void)activateWindowWorkspaceForFocus(targetWindow);
+        }
+
+        focusWindowCompat(targetWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetWindow)
+            m_pendingLiveFocusWorkspaceChangeTarget.reset();
+
+        (void)syncScrollingWorkspaceSpotOnWindow(targetWindow);
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+        return;
+    }
+
+    if (!allowWorkspaceOnly)
+        return;
+
+    const auto targetWorkspace = activeLayoutWorkspace();
+    if (!targetWorkspace || targetWorkspace->m_isSpecialWorkspace)
+        return;
+
+    m_pendingStripWorkspaceChangeTarget = targetWorkspace;
+    (void)activateWorkspaceForExit(targetWorkspace);
+    if (m_pendingStripWorkspaceChangeTarget.lock() == targetWorkspace)
+        m_pendingStripWorkspaceChangeTarget.reset();
+
+    if (g_pAnimationManager)
+        g_pAnimationManager->frameTick();
+}
+
+SDispatchResult OverviewController::runOverviewExecDispatcher(std::string args) {
+    if (!m_execOriginal)
+        return {};
+
+    if (isVisible() && m_state.phase == Phase::Active)
+        prepareOverviewDispatcherTarget({}, true);
+
+    return m_execOriginal(std::move(args));
+}
+
 SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args) {
     if (!original || !*original)
         return {};
@@ -7057,20 +7188,24 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     if (overviewActive && selectedBefore) {
-        m_state.focusDuringOverview = selectedBefore;
-        syncRealFocusDuringOverview(selectedBefore, true);
-        if (Desktop::focusState()->window() != selectedBefore) {
-            m_pendingLiveFocusWorkspaceChangeTarget = selectedBefore;
-            focusWindowCompat(selectedBefore, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == selectedBefore)
-                m_pendingLiveFocusWorkspaceChangeTarget.reset();
-        }
-        (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
+        prepareOverviewDispatcherTarget(selectedBefore);
     }
 
     const auto result = (*original)(std::move(args));
 
     if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
+        // Editing dispatchers can defer layout target updates until the next
+        // frame. Force one tick before we snapshot/rebuild so overview reflects
+        // column swaps immediately.
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+
+        if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && isScrollingWorkspace(activeWorkspace)) {
+            if (const auto monitor = activeWorkspace->m_monitor.lock(); monitor && g_layoutManager)
+                g_layoutManager->recalculateMonitor(monitor);
+        }
+
+        const ScopedFlag forceFreshOrdering(m_forceFreshOverviewOrdering);
         std::vector<PHLWORKSPACE> affectedWorkspaces;
         affectedWorkspaces.reserve(3);
         const auto addWorkspace = [&](const PHLWORKSPACE& workspace) {
@@ -7091,8 +7226,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if ((!preferredSelected || !preferredSelected->m_isMapped || !hasManagedWindow(preferredSelected)) && focusAfter && hasManagedWindow(focusAfter))
             preferredSelected = focusAfter;
 
-        rebuildVisibleState(preferredSelected, true);
-        refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
+        const bool directNiriScrollingOverview = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
+            isScrollingWorkspace(activeLayoutWorkspace());
+        if (directNiriScrollingOverview) {
+            if (preferredSelected && hasManagedWindow(preferredSelected))
+                selectWindowInState(m_state, preferredSelected);
+            refreshNiriScrollingOverviewAfterLayoutScroll(dispatcherName);
+            scheduleDeferredNiriLayoutRefresh(dispatcherName, 2);
+        } else {
+            rebuildVisibleState(preferredSelected, true);
+        }
     }
 
     return result;
@@ -7119,6 +7262,7 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
     restore(m_layoutMessageDispatcherName.c_str(), m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
     restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
+    restore("exec", m_execDispatcherWrapped, m_execOriginal);
     for (auto& [name, original] : m_overviewEditingDispatchersOriginal) {
         if (original)
             g_pKeybindManager->m_dispatchers[name] = std::move(original);
@@ -7199,15 +7343,19 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     std::string direction;
     switch (keysym) {
         case XKB_KEY_Left:
+        case XKB_KEY_KP_Left:
             direction = "l";
             break;
         case XKB_KEY_Right:
+        case XKB_KEY_KP_Right:
             direction = "r";
             break;
         case XKB_KEY_Up:
+        case XKB_KEY_KP_Up:
             direction = "u";
             break;
         case XKB_KEY_Down:
+        case XKB_KEY_KP_Down:
             direction = "d";
             break;
         default:
@@ -7234,21 +7382,17 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args)).success;
     };
 
-    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right || keysym == XKB_KEY_KP_Left || keysym == XKB_KEY_KP_Right))
         return runLayoutMessage(std::string{"swapcol "} + direction);
-    }
 
-    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
-        return runLayoutMessage(keysym == XKB_KEY_Left ? "move -col" : "move +col");
-    }
+    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right || keysym == XKB_KEY_KP_Left || keysym == XKB_KEY_KP_Right))
+        return runLayoutMessage(keysym == XKB_KEY_Left || keysym == XKB_KEY_KP_Left ? "move -col" : "move +col");
 
-    if (hasShift && hasCtrl && !hasAlt) {
+    if (hasShift && hasCtrl && !hasAlt)
         return runNamedEditingDispatcher("swapwindow", direction);
-    }
 
-    if (hasShift && !hasCtrl && !hasAlt) {
+    if (hasShift && !hasCtrl && !hasAlt)
         return runNamedEditingDispatcher("movewindow", direction);
-    }
 
     return false;
 }
@@ -9811,6 +9955,71 @@ void OverviewController::scheduleVisibleStateRebuild() {
     });
 }
 
+void OverviewController::scheduleDeferredNiriLayoutRefresh(const char* source, std::size_t passes) {
+    if (passes == 0)
+        return;
+
+    if (source && *source)
+        m_deferredNiriLayoutRefreshSource = source;
+    else if (m_deferredNiriLayoutRefreshSource.empty())
+        m_deferredNiriLayoutRefreshSource = "deferred-niri-layout-refresh";
+
+    m_deferredNiriLayoutRefreshRemaining = std::max(m_deferredNiriLayoutRefreshRemaining, passes);
+
+    if (m_deferredNiriLayoutRefreshScheduled)
+        return;
+
+    if (!g_pEventLoopManager) {
+        while (m_deferredNiriLayoutRefreshRemaining > 0) {
+            --m_deferredNiriLayoutRefreshRemaining;
+            if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state) ||
+                !isScrollingWorkspace(activeLayoutWorkspace())) {
+                m_deferredNiriLayoutRefreshRemaining = 0;
+                return;
+            }
+            if (g_pAnimationManager)
+                g_pAnimationManager->frameTick();
+            if (const auto workspace = activeLayoutWorkspace(); workspace) {
+                refreshWorkspaceLayoutSnapshot(workspace);
+                if (const auto monitor = workspace->m_monitor.lock(); monitor && g_layoutManager)
+                    g_layoutManager->recalculateMonitor(monitor);
+            }
+            refreshNiriScrollingOverviewAfterLayoutScroll(m_deferredNiriLayoutRefreshSource.c_str());
+        }
+        return;
+    }
+
+    m_deferredNiriLayoutRefreshScheduled = true;
+    const auto generation = ++m_deferredNiriLayoutRefreshGeneration;
+    g_pEventLoopManager->doLater([this, generation] {
+        if (g_controller != this || generation != m_deferredNiriLayoutRefreshGeneration)
+            return;
+
+        m_deferredNiriLayoutRefreshScheduled = false;
+        if (m_deferredNiriLayoutRefreshRemaining == 0)
+            return;
+
+        --m_deferredNiriLayoutRefreshRemaining;
+        if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state) ||
+            !isScrollingWorkspace(activeLayoutWorkspace())) {
+            m_deferredNiriLayoutRefreshRemaining = 0;
+            return;
+        }
+
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+        if (const auto workspace = activeLayoutWorkspace(); workspace) {
+            refreshWorkspaceLayoutSnapshot(workspace);
+            if (const auto monitor = workspace->m_monitor.lock(); monitor && g_layoutManager)
+                g_layoutManager->recalculateMonitor(monitor);
+        }
+        refreshNiriScrollingOverviewAfterLayoutScroll(m_deferredNiriLayoutRefreshSource.c_str());
+
+        if (m_deferredNiriLayoutRefreshRemaining > 0)
+            scheduleDeferredNiriLayoutRefresh(m_deferredNiriLayoutRefreshSource.c_str(), m_deferredNiriLayoutRefreshRemaining);
+    });
+}
+
 void OverviewController::scheduleWorkspaceChangeHandling(const PHLWORKSPACE& workspace, OverviewWorkspaceChangeAction action, bool allowExternalTransition) {
     m_pendingWorkspaceChange = workspace;
     m_pendingWorkspaceChangeAction = action;
@@ -10647,6 +10856,10 @@ void OverviewController::deactivate() {
     m_visibleStateRebuildScheduled = false;
     ++m_visibleStateRebuildGeneration;
     m_postOpenRefreshFrames = 0;
+    m_deferredNiriLayoutRefreshScheduled = false;
+    ++m_deferredNiriLayoutRefreshGeneration;
+    m_deferredNiriLayoutRefreshRemaining = 0;
+    m_deferredNiriLayoutRefreshSource.clear();
     clearPendingWindowGeometryRetry();
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
@@ -11412,16 +11625,42 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 }
 
 void OverviewController::moveSelection(Direction direction) {
+    const auto workspaceStepForDirection = [&](Direction requestedDirection) {
+        const bool usesVerticalAxis = workspaceSwipeUsesVerticalAxis(activeLayoutWorkspace());
+        if (usesVerticalAxis) {
+            if (requestedDirection == Direction::Up)
+                return -1;
+            if (requestedDirection == Direction::Down)
+                return 1;
+        } else {
+            if (requestedDirection == Direction::Left)
+                return -1;
+            if (requestedDirection == Direction::Right)
+                return 1;
+        }
+
+        if (requestedDirection == Direction::Up)
+            return -1;
+        if (requestedDirection == Direction::Down)
+            return 1;
+        return 0;
+    };
+
     if (m_state.windows.empty()) {
-        if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace()) &&
-            (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0)
+                (void)switchOverviewWorkspaceByStep(step);
+        }
         return;
     }
 
     if (niriModeAppliesToState(m_state) && centeredEmptyWorkspacePlaceholder(m_state)) {
-        if ((direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        if (allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0)
+                (void)switchOverviewWorkspaceByStep(step);
+        }
         return;
     }
 
@@ -11517,14 +11756,25 @@ void OverviewController::moveSelection(Direction direction) {
             return;
         }
 
-        if (m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace()) && (direction == Direction::Up || direction == Direction::Down) &&
-            allowsWorkspaceSwitchInOverview()) {
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
-            return;
+        if (m_state.collectionPolicy.onlyActiveWorkspace && allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0) {
+                (void)switchOverviewWorkspaceByStep(step);
+                return;
+            }
         }
 
-        if (direction == Direction::Left || direction == Direction::Right)
+        if (direction == Direction::Left || direction == Direction::Right) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] keyboard-nav edge clamp direction="
+                    << (direction == Direction::Left ? "left" : "right");
+                if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size())
+                    out << " selected=" << debugWindowLabel(m_state.windows[*m_state.selectedIndex].window);
+                debugLog(out.str());
+            }
             return;
+        }
     }
 
     if (const auto next = chooseDirectionalNeighbor(rects, *m_state.selectedIndex, direction)) {
@@ -13182,8 +13432,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     if (!monitor)
         return state;
 
-    const bool preserveExistingOrder =
-        workspaceOverrides.empty() && isVisible() && requestedScope == m_state.collectionPolicy.requestedScope && (!m_state.ownerMonitor || monitor == m_state.ownerMonitor);
+    const bool preserveExistingOrder = !m_forceFreshOverviewOrdering && workspaceOverrides.empty() && isVisible() &&
+        requestedScope == m_state.collectionPolicy.requestedScope && (!m_state.ownerMonitor || monitor == m_state.ownerMonitor);
 
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;

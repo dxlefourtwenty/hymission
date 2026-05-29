@@ -547,6 +547,8 @@ class OverviewController {
     [[nodiscard]] void*        findFunction(const std::string& symbolName, const std::string& demangledNeedle) const;
     [[nodiscard]] void*        findFunction(const std::string& symbolName, const std::vector<std::string>& demangledNeedles) const;
     [[nodiscard]] bool         wrapDispatcher(const std::string& name, DispatcherHandler& original, DispatcherHandler replacement);
+    void                       prepareOverviewDispatcherTarget(PHLWINDOW preferredWindow = {}, bool allowWorkspaceOnly = false);
+    [[nodiscard]] SDispatchResult runOverviewExecDispatcher(std::string args);
     [[nodiscard]] SDispatchResult runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args);
     void                       restoreWrappedDispatchers();
 
@@ -675,6 +677,7 @@ class OverviewController {
     void                       updateSelectedWindowLayout(const PHLWINDOW& previousSelectedWindow);
     void                       clearPendingWindowGeometryRetry();
     void                       scheduleVisibleStateRebuild();
+    void                       scheduleDeferredNiriLayoutRefresh(const char* source = "?", std::size_t passes = 1);
     void                       scheduleWorkspaceChangeHandling(const PHLWORKSPACE& workspace, OverviewWorkspaceChangeAction action, bool allowExternalTransition = false);
     void                       updateOverviewWorkspaceSwipeGestureAdjusted(double delta, bool absolute);
     void                       schedulePendingWindowGeometryRetry(const PHLWINDOW& window);
@@ -794,6 +797,7 @@ class OverviewController {
     DispatcherHandler         m_layoutMessageOriginal;
     std::string               m_layoutMessageDispatcherName = "layoutmsg";
     DispatcherHandler         m_moveFocusOriginal;
+    DispatcherHandler         m_execOriginal;
     std::unordered_map<std::string, DispatcherHandler> m_overviewEditingDispatchersOriginal;
     bool                      m_fullscreenActiveDispatcherWrapped = false;
     bool                      m_fullscreenStateDispatcherWrapped = false;
@@ -801,6 +805,7 @@ class OverviewController {
     bool                      m_focusWorkspaceOnCurrentMonitorDispatcherWrapped = false;
     bool                      m_layoutMessageDispatcherWrapped = false;
     bool                      m_moveFocusDispatcherWrapped = false;
+    bool                      m_execDispatcherWrapped = false;
     WorkspaceSwipeBeginFn     m_workspaceSwipeBeginOriginal = nullptr;
     WorkspaceSwipeUpdateFn    m_workspaceSwipeUpdateOriginal = nullptr;
     WorkspaceSwipeEndFn       m_workspaceSwipeEndOriginal = nullptr;
@@ -918,6 +923,11 @@ class OverviewController {
     bool                      m_hoverSelectionRetargetCandidatePrimed = false;
     bool                      m_suppressInitialHoverUpdate = false;
     std::size_t               m_postOpenRefreshFrames = 0;
+    bool                      m_forceFreshOverviewOrdering = false;
+    bool                      m_deferredNiriLayoutRefreshScheduled = false;
+    std::size_t               m_deferredNiriLayoutRefreshGeneration = 0;
+    std::size_t               m_deferredNiriLayoutRefreshRemaining = 0;
+    std::string               m_deferredNiriLayoutRefreshSource;
 
     CHyprSignalListener       m_renderStageListener;
     CHyprSignalListener       m_mouseMoveListener;
