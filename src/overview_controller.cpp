@@ -3563,9 +3563,28 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         return;
     }
 
+    const bool hasSuperOnly = (modifiers & HL_MODIFIER_META) != 0 && (modifiers & (HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) == 0;
+    if (hasSuperOnly && (keysym == XKB_KEY_Return || keysym == XKB_KEY_KP_Enter)) {
+        bool launched = false;
+        if (g_pKeybindManager) {
+            const auto dispatcher = g_pKeybindManager->m_dispatchers.find("exec");
+            if (dispatcher != g_pKeybindManager->m_dispatchers.end())
+                launched = dispatcher->second("~/bin/launch-terminal").success;
+        }
+
+        if (!launched) {
+            const auto result = HyprlandAPI::invokeHyprctlCommand("dispatch", "exec ~/bin/launch-terminal");
+            launched = result == "ok" || result.empty();
+        }
+
+        if (launched) {
+            info.cancelled = true;
+            return;
+        }
+    }
+
     // Only the plain arrow keys and plain Enter are owned by the overview navigation model.
-    // Modified keys must fall through to Hyprland's regular keybind path so binds like
-    // SUPER+SHIFT+Arrow, SUPER+SHIFT+CTRL+ALT+Arrow, and SUPER+Return keep working.
+    // Modified keys are either handled above or left alone.
     bool handled = true;
     switch (keysym) {
         case XKB_KEY_Escape:
@@ -7882,7 +7901,7 @@ bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
 }
 
 bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) {
-    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !isScrollingWorkspace(activeLayoutWorkspace()))
+    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state))
         return false;
 
     std::string direction;
@@ -7910,34 +7929,55 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     if (!hasSuper)
         return false;
 
-    const auto runNamedEditingDispatcher = [&](const char* name, std::string args) {
-        const auto original = m_overviewEditingDispatchersOriginal.find(name);
+    const auto runNamedEditingDispatcher = [&](std::string_view name, std::string args) {
+        const auto original = m_overviewEditingDispatchersOriginal.find(std::string{name});
         if (original == m_overviewEditingDispatchersOriginal.end())
             return false;
-        return runOverviewEditingDispatcher(name, &original->second, std::move(args)).success;
+        return runOverviewEditingDispatcher(std::string{name}.c_str(), &original->second, std::move(args)).success;
+    };
+
+    const auto runFirstNamedEditingDispatcher = [&](std::initializer_list<std::string_view> names, const std::string& args) {
+        for (const auto name : names) {
+            if (runNamedEditingDispatcher(name, args))
+                return true;
+        }
+        return false;
     };
 
     const auto runLayoutMessage = [&](std::string args) {
-        if (!m_layoutMessageOriginal)
+        if (m_layoutMessageOriginal)
+            return runOverviewEditingDispatcher(m_layoutMessageDispatcherName.empty() ? "layoutmsg" : m_layoutMessageDispatcherName.c_str(), &m_layoutMessageOriginal, std::move(args)).success;
+
+        if (!g_pKeybindManager)
             return false;
-        return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args)).success;
+
+        for (const auto name : {std::string_view{"layoutmsg"}, std::string_view{"layout"}}) {
+            const auto dispatcher = g_pKeybindManager->m_dispatchers.find(std::string{name});
+            if (dispatcher == g_pKeybindManager->m_dispatchers.end())
+                continue;
+            if (dispatcher->second(args).success)
+                return true;
+        }
+        return false;
     };
 
-    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+    // SUPER + SHIFT + CTRL + ALT + Arrow: swap scrolling-layout columns in the strip.
+    // Handle this directly because the overview grabs keyboard input while open; simply
+    // letting the key event fall through is not reliable for global binds.
+    if (hasShift && hasCtrl && hasAlt)
         return runLayoutMessage(std::string{"swapcol "} + direction);
-    }
 
-    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+    // SUPER + SHIFT + Arrow: move the selected window in the strip. Prefer the Lua
+    // dispatcher names produced by hl.dsp.window.move(), then fall back to legacy names.
+    if (hasShift && !hasCtrl && !hasAlt)
+        return runFirstNamedEditingDispatcher({"window.move", "movewindow", "movewindoworgroup"}, direction);
+
+    // Keep the older SUPER + SHIFT + CTRL + Arrow swap-window path working too.
+    if (hasShift && hasCtrl && !hasAlt)
+        return runFirstNamedEditingDispatcher({"window.swap", "swapwindow"}, direction);
+
+    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right))
         return runLayoutMessage(keysym == XKB_KEY_Left ? "move -col" : "move +col");
-    }
-
-    if (hasShift && hasCtrl && !hasAlt) {
-        return runNamedEditingDispatcher("swapwindow", direction);
-    }
-
-    if (hasShift && !hasCtrl && !hasAlt) {
-        return runNamedEditingDispatcher("movewindow", direction);
-    }
 
     return false;
 }
