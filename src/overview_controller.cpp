@@ -1501,21 +1501,25 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             rect.y = start;
     };
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
-    const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
-    setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
+    const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
 
-    if (*anchorColumnIndex > 0) {
-        for (std::size_t index = *anchorColumnIndex; index > 0; --index) {
-            const std::size_t leftIndex = index - 1;
-            const double start = primaryStart(columns[index].virtualBounds) - gap - primarySize(columns[leftIndex].bounds);
-            setPrimaryStart(columns[leftIndex].virtualBounds, start);
+    if (!fitFocusMethod) {
+        const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
+        setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
+
+        if (*anchorColumnIndex > 0) {
+            for (std::size_t index = *anchorColumnIndex; index > 0; --index) {
+                const std::size_t leftIndex = index - 1;
+                const double start = primaryStart(columns[index].virtualBounds) - gap - primarySize(columns[leftIndex].bounds);
+                setPrimaryStart(columns[leftIndex].virtualBounds, start);
+            }
         }
-    }
 
-    for (std::size_t index = *anchorColumnIndex + 1; index < columns.size(); ++index) {
-        const Rect& previous = columns[index - 1].virtualBounds;
-        const double start = primaryStart(previous) + primarySize(previous) + gap;
-        setPrimaryStart(columns[index].virtualBounds, start);
+        for (std::size_t index = *anchorColumnIndex + 1; index < columns.size(); ++index) {
+            const Rect& previous = columns[index - 1].virtualBounds;
+            const double start = primaryStart(previous) + primarySize(previous) + gap;
+            setPrimaryStart(columns[index].virtualBounds, start);
+        }
     }
 
     std::optional<Rect> targetSource;
