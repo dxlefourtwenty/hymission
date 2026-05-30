@@ -9551,19 +9551,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return activeBaseRect();
         };
 
+        const bool directlyResizedWindow = ownSizeChanged;
         if (animation.start == std::chrono::steady_clock::time_point{}) {
-            animation = {
-                .from = currentVisibleRect(),
-                .to = dynamicRect,
-                .lastRendered = currentVisibleRect(),
-                .start = now,
-                .hasLastRendered = true,
-            };
-        } else if (!rectApproxEqual(animation.to, dynamicRect, 0.5)) {
-            // Always continue from the last actually drawn rect.  Using targetGlobal or
-            // relayoutFromGlobal here makes growing columns briefly jump back to the old
-            // smaller box before expanding, which looks like rubber banding.  This also
-            // lets neighboring columns slide away smoothly when the selected column grows.
             const Rect visibleNow = currentVisibleRect();
             animation = {
                 .from = visibleNow,
@@ -9572,6 +9561,24 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 .start = now,
                 .hasLastRendered = true,
             };
+        } else if (!rectApproxEqual(animation.to, dynamicRect, 0.5)) {
+            const double existingProgress = progressFor(animation);
+            if (directlyResizedWindow && existingProgress < 1.0) {
+                // The selected column's goal rect can update every frame while Hyprland is
+                // still applying colresize.  Restarting from the current frame each time
+                // makes growth lag, shrink, then expand again.  Keep the original start
+                // point and only update the destination so growth stays linear.
+                animation.to = dynamicRect;
+            } else {
+                const Rect visibleNow = currentVisibleRect();
+                animation = {
+                    .from = visibleNow,
+                    .to = dynamicRect,
+                    .lastRendered = visibleNow,
+                    .start = now,
+                    .hasLastRendered = true,
+                };
+            }
         }
 
         const double progress = progressFor(animation);
@@ -9584,7 +9591,18 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return dynamicRect;
         }
 
-        const Rect animatedRect = lerpRect(animation.from, animation.to, easeOutCubic(progress));
+        const double easedProgress = directlyResizedWindow ? progress : easeOutCubic(progress);
+        Rect animatedRect = lerpRect(animation.from, animation.to, easedProgress);
+
+        if (directlyResizedWindow && animation.hasLastRendered) {
+            const bool growingWidth = animation.to.width >= animation.lastRendered.width - 0.5;
+            const bool growingHeight = animation.to.height >= animation.lastRendered.height - 0.5;
+            if (growingWidth && animatedRect.width < animation.lastRendered.width)
+                animatedRect = makeRect(animatedRect.centerX() - animation.lastRendered.width * 0.5, animatedRect.y, animation.lastRendered.width, animatedRect.height);
+            if (growingHeight && animatedRect.height < animation.lastRendered.height)
+                animatedRect = makeRect(animatedRect.x, animatedRect.centerY() - animation.lastRendered.height * 0.5, animatedRect.width, animation.lastRendered.height);
+        }
+
         animation.lastRendered = animatedRect;
         animation.hasLastRendered = true;
         return animatedRect;
