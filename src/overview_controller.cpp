@@ -3555,31 +3555,52 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         return;
 
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
-    if (handleNiriOverviewArrowKeybind(keysym, keyboard->getModifiers())) {
+    const uint32_t     modifiers = keyboard->getModifiers();
+    const bool         hasActionModifier = (modifiers & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0;
+
+    if (handleNiriOverviewArrowKeybind(keysym, modifiers)) {
         info.cancelled = true;
         return;
     }
 
-    bool               handled = true;
+    // Only the plain arrow keys and plain Enter are owned by the overview navigation model.
+    // Modified keys must fall through to Hyprland's regular keybind path so binds like
+    // SUPER+SHIFT+Arrow, SUPER+SHIFT+CTRL+ALT+Arrow, and SUPER+Return keep working.
+    bool handled = true;
     switch (keysym) {
         case XKB_KEY_Escape:
             (void)close();
             break;
         case XKB_KEY_Return:
         case XKB_KEY_KP_Enter:
-            activateSelection();
+            if (hasActionModifier)
+                handled = false;
+            else
+                activateSelection();
             break;
         case XKB_KEY_Left:
-            moveSelection(Direction::Left);
+            if (hasActionModifier)
+                handled = false;
+            else
+                moveSelection(Direction::Left);
             break;
         case XKB_KEY_Right:
-            moveSelection(Direction::Right);
+            if (hasActionModifier)
+                handled = false;
+            else
+                moveSelection(Direction::Right);
             break;
         case XKB_KEY_Up:
-            moveSelection(Direction::Up);
+            if (hasActionModifier)
+                handled = false;
+            else
+                moveSelection(Direction::Up);
             break;
         case XKB_KEY_Down:
-            moveSelection(Direction::Down);
+            if (hasActionModifier)
+                handled = false;
+            else
+                moveSelection(Direction::Down);
             break;
         default:
             handled = false;
