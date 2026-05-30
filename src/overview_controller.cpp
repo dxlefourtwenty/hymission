@@ -9486,12 +9486,32 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const bool ownSizeChanged = std::abs(targetWidth - ownPreviewBase.width) > 1.0 || std::abs(targetHeight - ownPreviewBase.height) > 1.0;
         const bool anchorSizeChanged = std::abs(anchorTargetWidth - anchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - anchorPreviewBase.height) > 1.0;
 
-        // Only take over the render path while a real live resize/colresize is changing
-        // the scrolling tape geometry. Normal scrolling/focus movement should keep using
-        // the stored relayout animation targets; otherwise the live tape correction fights
-        // the regular animation and the column can visually detach for a frame.
-        if (!ownSizeChanged && !anchorSizeChanged)
+        struct DynamicResizeAnimation {
+            Rect                               from;
+            Rect                               to;
+            Rect                               lastRendered;
+            std::chrono::steady_clock::time_point start;
+            bool                               hasLastRendered = false;
+        };
+
+        static std::unordered_map<const void*, DynamicResizeAnimation> s_dynamicResizeAnimations;
+
+        const void* const animationKey = window.window.get();
+        const auto        now = std::chrono::steady_clock::now();
+        auto&             animation = s_dynamicResizeAnimations[animationKey];
+
+        // Keep the resize animation origin current while no live resize is happening.
+        // This prevents a later grow animation from starting from an old stale position
+        // after normal scrolling or focus movement.
+        if (!ownSizeChanged && !anchorSizeChanged) {
+            const Rect currentBase = activeBaseRect();
+            animation.from = currentBase;
+            animation.to = currentBase;
+            animation.lastRendered = currentBase;
+            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
+            animation.hasLastRendered = true;
             return std::nullopt;
+        }
 
         const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
         const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
@@ -9511,21 +9531,6 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             }
         }
 
-        if (m_state.relayoutActive)
-            return lerpRect(window.relayoutFromGlobal, dynamicRect, relayoutVisualProgress());
-
-        struct DynamicResizeAnimation {
-            Rect                               from;
-            Rect                               to;
-            std::chrono::steady_clock::time_point start;
-        };
-
-        static std::unordered_map<const void*, DynamicResizeAnimation> s_dynamicResizeAnimations;
-
-        const void* const animationKey = window.window.get();
-        const auto        now = std::chrono::steady_clock::now();
-        auto&             animation = s_dynamicResizeAnimations[animationKey];
-
         const auto progressFor = [&](const DynamicResizeAnimation& candidate) {
             if (candidate.start == std::chrono::steady_clock::time_point{})
                 return 1.0;
@@ -9534,21 +9539,38 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return clampUnit(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS));
         };
 
+        const auto currentVisibleRect = [&]() {
+            if (animation.hasLastRendered)
+                return animation.lastRendered;
+
+            if (animation.start != std::chrono::steady_clock::time_point{}) {
+                const double previousProgress = progressFor(animation);
+                return lerpRect(animation.from, animation.to, easeOutCubic(previousProgress));
+            }
+
+            return activeBaseRect();
+        };
+
         if (animation.start == std::chrono::steady_clock::time_point{}) {
             animation = {
-                .from = activeBaseRect(),
+                .from = currentVisibleRect(),
                 .to = dynamicRect,
+                .lastRendered = currentVisibleRect(),
                 .start = now,
+                .hasLastRendered = true,
             };
         } else if (!rectApproxEqual(animation.to, dynamicRect, 0.5)) {
-            const double previousProgress = progressFor(animation);
-            const Rect currentBase = activeBaseRect();
-            const bool previousAnimationFinished = previousProgress >= 1.0;
-            const bool baseMovedSinceLastResize = !rectApproxEqual(currentBase, animation.to, 2.0);
+            // Always continue from the last actually drawn rect.  Using targetGlobal or
+            // relayoutFromGlobal here makes growing columns briefly jump back to the old
+            // smaller box before expanding, which looks like rubber banding.  This also
+            // lets neighboring columns slide away smoothly when the selected column grows.
+            const Rect visibleNow = currentVisibleRect();
             animation = {
-                .from = previousAnimationFinished && baseMovedSinceLastResize ? currentBase : lerpRect(animation.from, animation.to, easeOutCubic(previousProgress)),
+                .from = visibleNow,
                 .to = dynamicRect,
+                .lastRendered = visibleNow,
                 .start = now,
+                .hasLastRendered = true,
             };
         }
 
@@ -9556,11 +9578,16 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (progress >= 1.0) {
             animation.from = dynamicRect;
             animation.to = dynamicRect;
+            animation.lastRendered = dynamicRect;
             animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
+            animation.hasLastRendered = true;
             return dynamicRect;
         }
 
-        return lerpRect(animation.from, animation.to, easeOutCubic(progress));
+        const Rect animatedRect = lerpRect(animation.from, animation.to, easeOutCubic(progress));
+        animation.lastRendered = animatedRect;
+        animation.hasLastRendered = true;
+        return animatedRect;
     };
 
     const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
