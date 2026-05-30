@@ -205,8 +205,10 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered == "togglefloating" || lowered == "pin" || lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") ||
-        lowered.starts_with("movetoworkspace") || lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("pin") ||
+        lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
+        lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+        lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
+        lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
         lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
         lowered.find("window.float") != std::string::npos || lowered.find("window.pin") != std::string::npos;
@@ -7270,6 +7272,8 @@ bool OverviewController::installHooks() {
         "moveactive",
         "resizeactive",
         "togglefloating",
+        "setfloating",
+        "settiled",
         "pin",
         "movewindowpixel",
         "resizewindowpixel",
@@ -7506,8 +7510,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos);
-    const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "pin" ||
-        dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("pin") ||
+    const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
+        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
+        dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
+        dispatcherNameLower.starts_with("settiled") || dispatcherNameLower.starts_with("pin") ||
         dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
         dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
 
@@ -8974,7 +8980,7 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     // tile-in animation.  For only that transition, fill the animated overview
     // rect directly; once the relayout finishes this falls back to the normal
     // uniform preview transform.
-    if (m_state.relayoutActive && retileFillTransformActiveForWindow(window)) {
+    if (retileFillTransformActiveForWindow(window)) {
         const double scaleX = std::max(0.0, current.width / actualWidth);
         const double scaleY = std::max(0.0, current.height / actualHeight);
         return WindowTransform{
