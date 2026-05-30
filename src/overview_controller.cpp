@@ -12505,8 +12505,33 @@ void OverviewController::moveSelection(Direction direction) {
         return;
     }
 
-    if (!m_state.selectedIndex) {
-        m_state.selectedIndex = 0;
+    const auto keyboardFocusableIndex = [&](std::size_t index) {
+        if (index >= m_state.windows.size())
+            return false;
+
+        const auto& managed = m_state.windows[index];
+        const auto  window = managed.window;
+        if (!window || !window->m_isMapped)
+            return false;
+
+        // Keyboard overview navigation must not land on floating/pinned overlay
+        // windows. Those previews stay clickable with the mouse, but arrow-key
+        // navigation should only move through normal strip columns/windows.
+        if (window->m_pinned || managed.isPinned || isFloatingOverviewWindow(window) || managed.isNiriFloatingOverlay)
+            return false;
+
+        return true;
+    };
+
+    if (!m_state.selectedIndex || *m_state.selectedIndex >= m_state.windows.size()) {
+        const auto firstFocusable = std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) {
+            const auto index = static_cast<std::size_t>(&managed - m_state.windows.data());
+            return keyboardFocusableIndex(index);
+        });
+        if (firstFocusable == m_state.windows.end())
+            return;
+
+        m_state.selectedIndex = static_cast<std::size_t>(std::distance(m_state.windows.begin(), firstFocusable));
         syncFocusDuringOverviewFromSelection(true, "keyboard-init");
         damageOwnedMonitors();
         return;
@@ -12529,7 +12554,7 @@ void OverviewController::moveSelection(Direction direction) {
         double bestDistance = std::numeric_limits<double>::infinity();
 
         for (std::size_t index = 0; index < m_state.windows.size() && index < rects.size(); ++index) {
-            if (index == *m_state.selectedIndex)
+            if (index == *m_state.selectedIndex || !keyboardFocusableIndex(index))
                 continue;
 
             const auto candidateWindow = m_state.windows[index].window;
@@ -12547,6 +12572,61 @@ void OverviewController::moveSelection(Direction direction) {
                 if (overlapWidth < std::min(current.width, candidate.width) * 0.15)
                     continue;
             }
+
+            double primary = 0.0;
+            double secondary = 0.0;
+            switch (searchDirection) {
+                case Direction::Left:
+                    primary = -dx;
+                    secondary = std::abs(dy);
+                    break;
+                case Direction::Right:
+                    primary = dx;
+                    secondary = std::abs(dy);
+                    break;
+                case Direction::Up:
+                    primary = -dy;
+                    secondary = std::abs(dx);
+                    break;
+                case Direction::Down:
+                    primary = dy;
+                    secondary = std::abs(dx);
+                    break;
+            }
+
+            if (primary <= 0.0)
+                continue;
+
+            const double score = primary * primary + std::pow(secondary * 1.5, 2.0);
+            const double distance = dx * dx + dy * dy;
+
+            if (!bestIndex || score < bestScore || (score == bestScore && distance < bestDistance) ||
+                (score == bestScore && distance == bestDistance && index < *bestIndex)) {
+                bestIndex = index;
+                bestScore = score;
+                bestDistance = distance;
+            }
+        }
+
+        return bestIndex;
+    };
+
+    const auto chooseKeyboardDirectionalNeighbor = [&](Direction searchDirection) -> std::optional<std::size_t> {
+        if (!m_state.selectedIndex || *m_state.selectedIndex >= rects.size())
+            return std::nullopt;
+
+        const Rect& current = rects[*m_state.selectedIndex];
+        std::optional<std::size_t> bestIndex;
+        double bestScore = std::numeric_limits<double>::infinity();
+        double bestDistance = std::numeric_limits<double>::infinity();
+
+        for (std::size_t index = 0; index < rects.size() && index < m_state.windows.size(); ++index) {
+            if (index == *m_state.selectedIndex || !keyboardFocusableIndex(index))
+                continue;
+
+            const Rect& candidate = rects[index];
+            const double dx = candidate.centerX() - current.centerX();
+            const double dy = candidate.centerY() - current.centerY();
 
             double primary = 0.0;
             double secondary = 0.0;
@@ -12607,7 +12687,7 @@ void OverviewController::moveSelection(Direction direction) {
             return;
     }
 
-    if (const auto next = chooseDirectionalNeighbor(rects, *m_state.selectedIndex, direction)) {
+    if (const auto next = chooseKeyboardDirectionalNeighbor(direction)) {
         if (*next == *m_state.selectedIndex)
             return;
         m_state.selectedIndex = *next;
@@ -12620,17 +12700,30 @@ bool OverviewController::moveSelectionCircular(int step, const char* source) {
     if (m_state.windows.size() < 2)
         return false;
 
-    if (!m_state.selectedIndex || *m_state.selectedIndex >= m_state.windows.size())
-        m_state.selectedIndex = 0;
+    const auto keyboardFocusableIndex = [&](std::size_t index) {
+        if (index >= m_state.windows.size())
+            return false;
 
-    const auto next = chooseCyclicIndex(m_state.windows.size(), *m_state.selectedIndex, step);
-    if (!next || *next == *m_state.selectedIndex)
-        return false;
+        const auto& managed = m_state.windows[index];
+        const auto  window = managed.window;
+        return window && window->m_isMapped && !window->m_pinned && !managed.isPinned && !isFloatingOverviewWindow(window) && !managed.isNiriFloatingOverlay;
+    };
 
-    m_state.selectedIndex = *next;
-    syncFocusDuringOverviewFromSelection(true, source);
-    damageOwnedMonitors();
-    return true;
+    const std::size_t count = m_state.windows.size();
+    const std::size_t start = (!m_state.selectedIndex || *m_state.selectedIndex >= count) ? 0 : *m_state.selectedIndex;
+    for (std::size_t offset = 1; offset <= count; ++offset) {
+        const long long rawIndex = static_cast<long long>(start) + static_cast<long long>(step) * static_cast<long long>(offset);
+        const auto normalized = static_cast<std::size_t>((rawIndex % static_cast<long long>(count) + static_cast<long long>(count)) % static_cast<long long>(count));
+        if (normalized == start || !keyboardFocusableIndex(normalized))
+            continue;
+
+        m_state.selectedIndex = normalized;
+        syncFocusDuringOverviewFromSelection(true, source);
+        damageOwnedMonitors();
+        return true;
+    }
+
+    return false;
 }
 
 void OverviewController::activateSelection() {
