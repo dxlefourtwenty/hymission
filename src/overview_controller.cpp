@@ -164,6 +164,42 @@ OverviewController* g_controller = nullptr;
 
 bool g_niriStripSnapshotSingleWorkspaceOnly = false;
 
+struct RetileFillTransformState {
+    std::chrono::steady_clock::time_point until;
+};
+
+std::unordered_map<const void*, RetileFillTransformState> g_retileFillTransformStates;
+
+const void* windowIdentityKey(const PHLWINDOW& window) {
+    return window ? window.get() : nullptr;
+}
+
+bool retileFillTransformActiveForWindow(const PHLWINDOW& window) {
+    const void* const key = windowIdentityKey(window);
+    if (!key)
+        return false;
+
+    const auto it = g_retileFillTransformStates.find(key);
+    if (it == g_retileFillTransformStates.end())
+        return false;
+
+    if (std::chrono::steady_clock::now() <= it->second.until)
+        return true;
+
+    g_retileFillTransformStates.erase(it);
+    return false;
+}
+
+void armRetileFillTransformForWindow(const PHLWINDOW& window) {
+    const void* const key = windowIdentityKey(window);
+    if (!key)
+        return;
+
+    g_retileFillTransformStates[key] = RetileFillTransformState{
+        .until = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS + 96.0)),
+    };
+}
+
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -8859,6 +8895,26 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     const Rect   actual = surfaceRenderGlobalRectForWindow(window);
     const double actualWidth = std::max(1.0, actual.width);
     const double actualHeight = std::max(1.0, actual.height);
+
+    // When a window was already floating/pinned before opening the overview,
+    // retile/tile/pin-toggle can make Hyprland switch the live surface to tiled
+    // geometry before the overview relayout animation has finished.  The normal
+    // uniform fit then tries to preserve the new tiled aspect inside the old
+    // floating card, which produces the bad shrinking/incorrect sizing during the
+    // tile-in animation.  For only that transition, fill the animated overview
+    // rect directly; once the relayout finishes this falls back to the normal
+    // uniform preview transform.
+    if (m_state.relayoutActive && retileFillTransformActiveForWindow(window)) {
+        const double scaleX = std::max(0.0, current.width / actualWidth);
+        const double scaleY = std::max(0.0, current.height / actualHeight);
+        return WindowTransform{
+            .actualGlobal = actual,
+            .targetGlobal = current,
+            .scaleX = scaleX,
+            .scaleY = scaleY,
+        };
+    }
+
     const double uniformScale = std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
     const Rect   fitted = makeRect(current.centerX() - actualWidth * uniformScale * 0.5, current.centerY() - actualHeight * uniformScale * 0.5,
                                    actualWidth * uniformScale, actualHeight * uniformScale);
@@ -12303,6 +12359,33 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         return it == m_state.windows.end() ? nullptr : &*it;
     };
 
+    const auto armRetileFillTransformIfNeeded = [&](const ManagedWindow& nextManaged, const ManagedWindow* previousManaged) {
+        if (!forceRelayout || !previousManaged || !nextManaged.window || !usesDirectNiriScrollingOverview(m_state))
+            return;
+
+        const bool wasFloatingLike = previousManaged->isFloating || previousManaged->isPinned || previousManaged->isNiriFloatingOverlay ||
+            isFloatingOverviewWindow(previousManaged->window) || (previousManaged->window && previousManaged->window->m_pinned);
+        const bool nowTiled = !nextManaged.isFloating && !nextManaged.isPinned && !nextManaged.isNiriFloatingOverlay &&
+            !nextManaged.window->m_pinned && !isFloatingOverviewWindow(nextManaged.window);
+
+        if (!wasFloatingLike || !nowTiled)
+            return;
+
+        const auto target = nextManaged.window->layoutTarget();
+        if (!target || target->floating())
+            return;
+
+        armRetileFillTransformForWindow(nextManaged.window);
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] arm retile fill transform window=" << debugWindowLabel(nextManaged.window)
+                << " previousFloating=" << (previousManaged->isFloating ? 1 : 0)
+                << " previousPinned=" << (previousManaged->isPinned ? 1 : 0)
+                << " previousOverlay=" << (previousManaged->isNiriFloatingOverlay ? 1 : 0);
+            debugLog(out.str());
+        }
+    };
+
     if (previousPendingExitFocus && std::any_of(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& managed) { return managed.window == previousPendingExitFocus; }))
         next.pendingExitFocus = previousPendingExitFocus;
     else
@@ -12323,6 +12406,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
             const auto* previousManaged = previousManagedForWindow(window.window);
             if (!previousManaged)
                 continue;
+
+            armRetileFillTransformIfNeeded(window, previousManaged);
 
             window.targetMonitor = previousManaged->targetMonitor;
             window.slot = previousManaged->slot;
@@ -12349,8 +12434,10 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         }
     } else if (previousPhase == Phase::Active || selectionRelayoutForced) {
         for (auto& window : next.windows) {
-            if (const auto* previousManaged = previousManagedForWindow(window.window); previousManaged)
+            if (const auto* previousManaged = previousManagedForWindow(window.window); previousManaged) {
+                armRetileFillTransformIfNeeded(window, previousManaged);
                 window.exitGlobal = previousManaged->exitGlobal;
+            }
 
             const auto it = std::find_if(previousPreviewRects.begin(), previousPreviewRects.end(), [&](const auto& previous) { return previous.first == window.window; });
             if (it != previousPreviewRects.end())
