@@ -9514,7 +9514,53 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (m_state.relayoutActive)
             return lerpRect(window.relayoutFromGlobal, dynamicRect, relayoutVisualProgress());
 
-        return dynamicRect;
+        struct DynamicResizeAnimation {
+            Rect                               from;
+            Rect                               to;
+            std::chrono::steady_clock::time_point start;
+        };
+
+        static std::unordered_map<const void*, DynamicResizeAnimation> s_dynamicResizeAnimations;
+
+        const void* const animationKey = window.window.get();
+        const auto        now = std::chrono::steady_clock::now();
+        auto&             animation = s_dynamicResizeAnimations[animationKey];
+
+        const auto progressFor = [&](const DynamicResizeAnimation& candidate) {
+            if (candidate.start == std::chrono::steady_clock::time_point{})
+                return 1.0;
+
+            const double elapsedMs = std::chrono::duration<double, std::milli>(now - candidate.start).count();
+            return clampUnit(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS));
+        };
+
+        if (animation.start == std::chrono::steady_clock::time_point{}) {
+            animation = {
+                .from = activeBaseRect(),
+                .to = dynamicRect,
+                .start = now,
+            };
+        } else if (!rectApproxEqual(animation.to, dynamicRect, 0.5)) {
+            const double previousProgress = progressFor(animation);
+            const Rect currentBase = activeBaseRect();
+            const bool previousAnimationFinished = previousProgress >= 1.0;
+            const bool baseMovedSinceLastResize = !rectApproxEqual(currentBase, animation.to, 2.0);
+            animation = {
+                .from = previousAnimationFinished && baseMovedSinceLastResize ? currentBase : lerpRect(animation.from, animation.to, easeOutCubic(previousProgress)),
+                .to = dynamicRect,
+                .start = now,
+            };
+        }
+
+        const double progress = progressFor(animation);
+        if (progress >= 1.0) {
+            animation.from = dynamicRect;
+            animation.to = dynamicRect;
+            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
+            return dynamicRect;
+        }
+
+        return lerpRect(animation.from, animation.to, easeOutCubic(progress));
     };
 
     const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
