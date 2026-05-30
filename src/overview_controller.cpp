@@ -9454,14 +9454,21 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (!anchorManaged || !anchorManaged->window || !anchorManaged->targetMonitor || anchorManaged->targetMonitor != window.targetMonitor)
             anchorManaged = &window;
 
-        const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window.window);
+        const bool isResizeAnchorWindow = window.window == anchorWindow;
+
+        // For the actively resized column, do not build the preview from Hyprland's
+        // goal geometry. Goal geometry jumps straight to the final column width while
+        // the live surface is still animating there, which makes the overview draw a
+        // shrink-then-grow rubber-band.  Track the live box for the resized column and
+        // let Hyprland's own linear size progression drive the preview size.
+        const bool useGoalGeometry = !isResizeAnchorWindow && shouldUseGoalGeometryForStateSnapshot(window.window);
         const Rect naturalGlobal = stateSnapshotGlobalRectForWindow(window.window, useGoalGeometry);
         const Rect sourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window.window, naturalGlobal);
         const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window.window, sourceGlobal, anchorWindow);
         if (!rowGeometry)
             return std::nullopt;
 
-        const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorManaged->window);
+        const bool anchorUseGoalGeometry = anchorManaged->window != anchorWindow && shouldUseGoalGeometryForStateSnapshot(anchorManaged->window);
         const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorManaged->window, anchorUseGoalGeometry);
         const Rect anchorSourceBase = scrollingOverviewSourceGlobalRectForWindow(anchorManaged->window, anchorNaturalGlobal);
         const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorManaged->window, anchorSourceBase, anchorManaged->window);
@@ -9591,17 +9598,20 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return dynamicRect;
         }
 
-        const double easedProgress = directlyResizedWindow ? progress : easeOutCubic(progress);
-        Rect animatedRect = lerpRect(animation.from, animation.to, easedProgress);
-
-        if (directlyResizedWindow && animation.hasLastRendered) {
-            const bool growingWidth = animation.to.width >= animation.lastRendered.width - 0.5;
-            const bool growingHeight = animation.to.height >= animation.lastRendered.height - 0.5;
-            if (growingWidth && animatedRect.width < animation.lastRendered.width)
-                animatedRect = makeRect(animatedRect.centerX() - animation.lastRendered.width * 0.5, animatedRect.y, animation.lastRendered.width, animatedRect.height);
-            if (growingHeight && animatedRect.height < animation.lastRendered.height)
-                animatedRect = makeRect(animatedRect.x, animatedRect.centerY() - animation.lastRendered.height * 0.5, animatedRect.width, animation.lastRendered.height);
+        if (directlyResizedWindow) {
+            // The resized column already has a live Hyprland size animation.  Adding a
+            // second overview-side interpolation on top of it causes visible jitter when
+            // the column grows.  Render the live corrected rect directly and keep the
+            // animation cache synchronized so outer windows can still slide smoothly.
+            animation.from = dynamicRect;
+            animation.to = dynamicRect;
+            animation.lastRendered = dynamicRect;
+            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
+            animation.hasLastRendered = true;
+            return dynamicRect;
         }
+
+        Rect animatedRect = lerpRect(animation.from, animation.to, easeOutCubic(progress));
 
         animation.lastRendered = animatedRect;
         animation.hasLastRendered = true;
