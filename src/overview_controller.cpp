@@ -168,12 +168,10 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
-        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered == "togglefloating" || lowered == "pin" || lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") ||
-        lowered.starts_with("movetoworkspace") || lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("pin") ||
-        lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
-        lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
-        lowered.find("window.float") != std::string::npos || lowered.find("window.pin") != std::string::npos;
+        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" || lowered == "swapcol" ||
+        lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+        lowered.starts_with("resizewindow") || lowered.starts_with("swapcol") || lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
+        lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos;
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -430,6 +428,29 @@ bool keyboardHasPressedKeysym(const SP<IKeyboard>& keyboard, xkb_keysym_t target
     }
 
     return false;
+}
+
+bool keyboardHasPressedKeycode(const SP<IKeyboard>& keyboard, uint32_t evdevKeycode) {
+    if (!keyboard)
+        return false;
+
+    const uint32_t xkbKeycode = evdevKeycode + 8;
+    return keyboard->getPressed(xkbKeycode) || keyboard->getPressed(evdevKeycode);
+}
+
+bool keyboardHasPressedRawModifier(const SP<IKeyboard>& keyboard) {
+    static constexpr std::array<uint32_t, 8> modifierEvdevKeycodes = {
+        KEY_LEFTSHIFT,
+        KEY_RIGHTSHIFT,
+        KEY_LEFTCTRL,
+        KEY_RIGHTCTRL,
+        KEY_LEFTALT,
+        KEY_RIGHTALT,
+        KEY_LEFTMETA,
+        KEY_RIGHTMETA,
+    };
+
+    return std::ranges::any_of(modifierEvdevKeycodes, [&](uint32_t keycode) { return keyboardHasPressedKeycode(keyboard, keycode); });
 }
 
 template <typename Predicate>
@@ -1327,18 +1348,6 @@ Rect centeredSurfaceRectInLayoutBox(const CBox& layoutBox, const Rect& surfaceGl
     return makeRect(layoutBox.x + (layoutBox.width - width) * 0.5, layoutBox.y + (layoutBox.height - height) * 0.5, width, height);
 }
 
-template <typename TargetPtr>
-CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox) {
-    if (!target)
-        return snapshotBox;
-
-    const CBox liveBox = target->position();
-    if (liveBox.width > 1.0 && liveBox.height > 1.0)
-        return liveBox;
-
-    return snapshotBox;
-}
-
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -1357,7 +1366,7 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     CBox layoutBox = targetBox;
     if (auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace); scrolling) {
         if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
-            layoutBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+            layoutBox = targetData->layoutBox;
     }
 
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
@@ -1370,7 +1379,7 @@ struct ScrollingOverviewGeometry {
     GestureAxis primaryAxis = GestureAxis::Horizontal;
 };
 
-std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
+std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
         return std::nullopt;
 
@@ -1386,15 +1395,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (!targetData || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
         return std::nullopt;
 
-    if (!anchorWindow || !anchorWindow->m_isMapped || anchorWindow->m_workspace != window->m_workspace || anchorWindow->m_pinned || isFloatingOverviewWindow(anchorWindow))
-        anchorWindow = window;
-
-    auto anchorTarget = anchorWindow ? anchorWindow->layoutTarget() : nullptr;
-    if (!anchorTarget || anchorTarget->floating())
-        anchorTarget = target;
-
-    const auto anchorTargetData = scrolling->dataFor(anchorTarget);
-
     const CBox workAreaBox = window->m_workspace->m_space->workArea();
     if (workAreaBox.width <= 1.0 || workAreaBox.height <= 1.0)
         return std::nullopt;
@@ -1405,8 +1405,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
     struct ColumnEntry {
         SP<Layout::Tiled::SColumnData> column;
-        Rect                           bounds;
-        Rect                           virtualBounds;
         double                         primary = 0.0;
     };
 
@@ -1416,17 +1414,36 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (!column || column->targetDatas.empty())
             continue;
 
-        Rect columnBounds{};
-        bool hasColumnBounds = false;
+        const auto firstTarget = std::ranges::find_if(column->targetDatas, [](const auto& candidate) {
+            return candidate && candidate->target && candidate->layoutBox.width > 1.0 && candidate->layoutBox.height > 1.0;
+        });
+        if (firstTarget == column->targetDatas.end())
+            continue;
+
+        const CBox& box = (*firstTarget)->layoutBox;
+        columns.push_back({
+            .column = column,
+            .primary = horizontal ? box.x : box.y,
+        });
+    }
+
+    if (columns.empty())
+        return std::nullopt;
+
+    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
+
+    std::optional<Rect> targetSource;
+    std::optional<Rect> targetAnchor;
+    for (const auto& columnEntry : columns) {
+        const auto& column = columnEntry.column;
+        Rect        columnBounds{};
+        bool        hasColumnBounds = false;
+
         for (const auto& candidate : column->targetDatas) {
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
-            if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
-                continue;
-
-            const Rect candidateBounds = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
+            const Rect candidateBounds = makeRect(candidate->layoutBox.x, candidate->layoutBox.y, candidate->layoutBox.width, candidate->layoutBox.height);
             if (!hasColumnBounds) {
                 columnBounds = candidateBounds;
                 hasColumnBounds = true;
@@ -1439,107 +1456,24 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             }
         }
 
-        if (!hasColumnBounds)
-            continue;
-
-        columns.push_back({
-            .column = column,
-            .bounds = columnBounds,
-            .virtualBounds = columnBounds,
-            .primary = horizontal ? columnBounds.x : columnBounds.y,
-        });
-    }
-
-    if (columns.empty())
-        return std::nullopt;
-
-    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
-
-    std::optional<std::size_t> targetColumnIndex;
-    std::optional<std::size_t> anchorColumnIndex;
-    for (std::size_t index = 0; index < columns.size(); ++index) {
-        for (const auto& candidate : columns[index].column->targetDatas) {
-            if (!candidate)
+        for (const auto& candidate : column->targetDatas) {
+            if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
-            if (candidate == targetData)
-                targetColumnIndex = index;
-            if (anchorTargetData && candidate == anchorTargetData)
-                anchorColumnIndex = index;
+
+            if (candidate != targetData)
+                continue;
+
+            targetSource = centeredSurfaceRectInLayoutBox(candidate->layoutBox, fallbackGlobal);
+            if (hasColumnBounds) {
+                const double anchorX = horizontal ? (columnBounds.x + columnBounds.width * 0.5) : baseGlobal.centerX();
+                const double anchorY = horizontal ? baseGlobal.centerY() : (columnBounds.y + columnBounds.height * 0.5);
+                targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
+            }
+            break;
         }
-    }
 
-    if (!targetColumnIndex)
-        return std::nullopt;
-    if (!anchorColumnIndex)
-        anchorColumnIndex = targetColumnIndex;
-
-    const double configuredGap = static_cast<double>(std::max(0L, getConfigInt(nullptr, "general:gaps_in", 0)));
-    double       gap = configuredGap;
-    if (gap <= 0.0 && columns.size() > 1) {
-        std::vector<double> positiveGaps;
-        positiveGaps.reserve(columns.size() - 1);
-        for (std::size_t index = 1; index < columns.size(); ++index) {
-            const Rect& previous = columns[index - 1].bounds;
-            const Rect& current = columns[index].bounds;
-            const double previousEnd = horizontal ? previous.x + previous.width : previous.y + previous.height;
-            const double currentStart = horizontal ? current.x : current.y;
-            const double candidateGap = currentStart - previousEnd;
-            if (candidateGap > 0.0)
-                positiveGaps.push_back(candidateGap);
-        }
-        if (!positiveGaps.empty()) {
-            std::sort(positiveGaps.begin(), positiveGaps.end());
-            gap = positiveGaps[positiveGaps.size() / 2];
-        }
-    }
-
-    const auto primarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
-    const auto setPrimaryStart = [&](Rect& rect, double start) {
-        if (horizontal)
-            rect.x = start;
-        else
-            rect.y = start;
-    };
-    const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
-    const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
-    setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
-
-    if (*anchorColumnIndex > 0) {
-        for (std::size_t index = *anchorColumnIndex; index > 0; --index) {
-            const std::size_t leftIndex = index - 1;
-            const double start = primaryStart(columns[index].virtualBounds) - gap - primarySize(columns[leftIndex].bounds);
-            setPrimaryStart(columns[leftIndex].virtualBounds, start);
-        }
-    }
-
-    for (std::size_t index = *anchorColumnIndex + 1; index < columns.size(); ++index) {
-        const Rect& previous = columns[index - 1].virtualBounds;
-        const double start = primaryStart(previous) + primarySize(previous) + gap;
-        setPrimaryStart(columns[index].virtualBounds, start);
-    }
-
-    std::optional<Rect> targetSource;
-    std::optional<Rect> targetAnchor;
-    const auto& targetColumn = columns[*targetColumnIndex];
-    for (const auto& candidate : targetColumn.column->targetDatas) {
-        if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
-            continue;
-
-        if (candidate != targetData)
-            continue;
-
-        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
-        Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
-        const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
-        setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
-
-        CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
-        targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
-
-        const double anchorX = horizontal ? targetColumn.virtualBounds.centerX() : baseGlobal.centerX();
-        const double anchorY = horizontal ? baseGlobal.centerY() : targetColumn.virtualBounds.centerY();
-        targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
-        break;
+        if (targetSource)
+            break;
     }
 
     if (!targetSource)
@@ -2923,259 +2857,6 @@ void OverviewController::renderStage(eRenderStage stage) {
         scheduleVisibleStateRebuild();
     }
 
-    if (stage == RENDER_PRE_WINDOWS && !m_workspaceTransition.active && m_state.phase == Phase::Active && workspaceStripEnabled(m_state) && !m_state.windows.empty()) {
-        const bool niriOverview = niriModeAppliesToState(m_state);
-        const bool directNiriOverview = usesDirectNiriScrollingOverview(m_state);
-        const auto currentOverviewSourceFor = [&](const ManagedWindow& managed) {
-            const auto window = managed.window;
-            const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window);
-            const Rect stateGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry);
-            if (managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window) || (window && window->m_pinned))
-                return floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
-            if (directNiriOverview)
-                return scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
-            return layoutAnchorGlobalRectForWindow(window, useGoalGeometry);
-        };
-
-        const auto focusedFloatingPinnedAnchor = [&]() -> PHLWINDOW {
-            if (!directNiriOverview)
-                return {};
-
-            PHLWINDOW floatingFocus = selectedWindow();
-            if ((!floatingFocus || (!floatingFocus->m_pinned && !isFloatingOverviewWindow(floatingFocus))) && m_state.focusDuringOverview)
-                floatingFocus = m_state.focusDuringOverview;
-            if (!floatingFocus || (!floatingFocus->m_pinned && !isFloatingOverviewWindow(floatingFocus)))
-                return {};
-
-            const auto workspace = floatingFocus->m_pinned ? activeLayoutWorkspace() : floatingFocus->m_workspace;
-            if (!workspace || !isScrollingWorkspace(workspace))
-                return {};
-
-            const auto* sourceManaged = managedWindowFor(m_state, floatingFocus, true);
-            const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(floatingFocus);
-            PHLWINDOW best;
-            double    bestDistance = std::numeric_limits<double>::infinity();
-            for (const auto& managed : m_state.windows) {
-                const auto candidate = managed.window;
-                if (!candidate || candidate == floatingFocus || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                    continue;
-
-                const auto target = candidate->layoutTarget();
-                if (!target || target->floating() || isFloatingOverviewWindow(candidate))
-                    continue;
-
-                const Rect candidateRect = currentPreviewRect(managed);
-                const double dx = candidateRect.centerX() - sourceRect.centerX();
-                const double dy = candidateRect.centerY() - sourceRect.centerY();
-                const double distance = dx * dx + dy * dy;
-                if (!best || distance < bestDistance) {
-                    best = candidate;
-                    bestDistance = distance;
-                }
-            }
-
-            return best;
-        };
-
-        if (g_pEventLoopManager && !m_visibleStateRebuildScheduled) {
-            if (const auto refocusAnchor = focusedFloatingPinnedAnchor(); refocusAnchor && refocusAnchor != selectedWindow()) {
-                m_visibleStateRebuildScheduled = true;
-                const auto generation = ++m_visibleStateRebuildGeneration;
-                g_pEventLoopManager->doLater([this, generation, refocusAnchor] {
-                    if (g_controller != this || generation != m_visibleStateRebuildGeneration)
-                        return;
-
-                    m_visibleStateRebuildScheduled = false;
-                    if (!isVisible() || m_state.phase != Phase::Active || m_workspaceTransition.active || m_beginCloseInProgress)
-                        return;
-                    if (!refocusAnchor || !refocusAnchor->m_isMapped || !hasManagedWindow(refocusAnchor))
-                        return;
-
-                    selectWindowInState(m_state, refocusAnchor);
-                    m_state.focusDuringOverview = refocusAnchor;
-                    m_queuedOverviewSelectionTarget.reset();
-                    m_queuedOverviewLiveFocusTarget.reset();
-                    if (refocusAnchor->m_workspace) {
-                        m_pendingLiveFocusWorkspaceChangeTarget = refocusAnchor;
-                        (void)activateWindowWorkspaceForFocus(refocusAnchor);
-                    }
-                    focusWindowCompat(refocusAnchor, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-                    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == refocusAnchor)
-                        m_pendingLiveFocusWorkspaceChangeTarget.reset();
-                    (void)syncScrollingWorkspaceSpotOnWindow(refocusAnchor);
-                    if (refocusAnchor->m_workspace)
-                        refreshWorkspaceLayoutSnapshot(refocusAnchor->m_workspace);
-                    refreshNiriScrollingOverviewAfterLayoutScroll("floating-selected-render-refocus");
-                    rebuildVisibleState(refocusAnchor, true);
-                    m_stripSnapshotsDirty = true;
-                    scheduleWorkspaceStripSnapshotRefresh();
-                    damageOwnedMonitors();
-                });
-            }
-        }
-
-        bool needsForcedRelayout = false;
-        PHLWINDOW relayoutTriggerWindow;
-        for (const auto& managed : m_state.windows) {
-            const auto window = managed.window;
-            if (!window || !window->m_isMapped || window->m_fadingOut || window->isHidden()) {
-                needsForcedRelayout = true;
-                relayoutTriggerWindow = window;
-                break;
-            }
-
-            const auto nextMonitor = preferredMonitorForWindow(window, m_state);
-            const bool expectedNiriFloatingOverlay = niriOverview && (isFloatingOverviewWindow(window) || window->m_pinned);
-            if (nextMonitor != managed.targetMonitor || managed.isFloating != window->m_isFloating || managed.isPinned != window->m_pinned ||
-                managed.isNiriFloatingOverlay != expectedNiriFloatingOverlay) {
-                needsForcedRelayout = true;
-                relayoutTriggerWindow = window;
-                break;
-            }
-
-            const Rect currentSource = currentOverviewSourceFor(managed);
-            if (!rectApproxEqual(currentSource, managed.naturalGlobal, 0.5)) {
-                needsForcedRelayout = true;
-                relayoutTriggerWindow = window;
-                break;
-            }
-        }
-
-        if (needsForcedRelayout && !m_visibleStateRebuildScheduled) {
-            const auto resolveRelayoutAnchor = [&](const PHLWINDOW& window) -> PHLWINDOW {
-                if (!window || !usesDirectNiriScrollingOverview(m_state))
-                    return window;
-                if (!window->m_pinned && !isFloatingOverviewWindow(window))
-                    return window;
-
-                const auto workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
-                if (!workspace || !isScrollingWorkspace(workspace))
-                    return window;
-
-                const auto* sourceManaged = managedWindowFor(m_state, window, true);
-                const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(window);
-                PHLWINDOW best;
-                double    bestDistance = std::numeric_limits<double>::infinity();
-                for (const auto& managed : m_state.windows) {
-                    const auto candidate = managed.window;
-                    if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                        continue;
-
-                    const auto target = candidate->layoutTarget();
-                    if (!target || target->floating() || isFloatingOverviewWindow(candidate))
-                        continue;
-
-                    const Rect candidateRect = currentPreviewRect(managed);
-                    const double dx = candidateRect.centerX() - sourceRect.centerX();
-                    const double dy = candidateRect.centerY() - sourceRect.centerY();
-                    const double distance = dx * dx + dy * dy;
-                    if (!best || distance < bestDistance) {
-                        best = candidate;
-                        bestDistance = distance;
-                    }
-                }
-
-                return best ? best : window;
-            };
-
-            auto preferredSelected = resolveRelayoutAnchor(relayoutTriggerWindow ? relayoutTriggerWindow : selectedWindow());
-            if (preferredSelected && preferredSelected->m_workspace)
-                refreshWorkspaceLayoutSnapshot(preferredSelected->m_workspace);
-            if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && (!preferredSelected || activeWorkspace != preferredSelected->m_workspace))
-                refreshWorkspaceLayoutSnapshot(activeWorkspace);
-
-            if (!g_pEventLoopManager || !insideRenderLifecycle()) {
-                if (preferredSelected) {
-                    selectWindowInState(m_state, preferredSelected);
-                    m_state.focusDuringOverview = preferredSelected;
-                    m_queuedOverviewSelectionTarget.reset();
-                    m_queuedOverviewLiveFocusTarget.reset();
-                    if (preferredSelected->m_workspace) {
-                        m_pendingLiveFocusWorkspaceChangeTarget = preferredSelected;
-                        (void)activateWindowWorkspaceForFocus(preferredSelected);
-                    }
-                    focusWindowCompat(preferredSelected, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-                    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == preferredSelected)
-                        m_pendingLiveFocusWorkspaceChangeTarget.reset();
-                    (void)syncScrollingWorkspaceSpotOnWindow(preferredSelected);
-                    refreshNiriScrollingOverviewAfterLayoutScroll("render-geometry-force-refocus");
-                }
-                rebuildVisibleState(preferredSelected, true);
-            } else {
-                m_visibleStateRebuildScheduled = true;
-                const auto generation = ++m_visibleStateRebuildGeneration;
-                g_pEventLoopManager->doLater([this, generation, preferredSelected] {
-                    if (g_controller != this || generation != m_visibleStateRebuildGeneration)
-                        return;
-
-                    m_visibleStateRebuildScheduled = false;
-                    if (!isVisible() || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
-                        return;
-
-                    PHLWINDOW target = preferredSelected;
-                    if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                        target = selectedWindow();
-                    if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                        target = Desktop::focusState()->window();
-                    if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                        return;
-
-                    if ((target->m_pinned || isFloatingOverviewWindow(target)) && usesDirectNiriScrollingOverview(m_state)) {
-                        const auto workspace = target->m_pinned ? activeLayoutWorkspace() : target->m_workspace;
-                        if (workspace && isScrollingWorkspace(workspace)) {
-                            const auto* sourceManaged = managedWindowFor(m_state, target, true);
-                            const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(target);
-                            PHLWINDOW best;
-                            double    bestDistance = std::numeric_limits<double>::infinity();
-                            for (const auto& managed : m_state.windows) {
-                                const auto candidate = managed.window;
-                                if (!candidate || candidate == target || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                                    continue;
-
-                                const auto layoutTarget = candidate->layoutTarget();
-                                if (!layoutTarget || layoutTarget->floating() || isFloatingOverviewWindow(candidate))
-                                    continue;
-
-                                const Rect candidateRect = currentPreviewRect(managed);
-                                const double dx = candidateRect.centerX() - sourceRect.centerX();
-                                const double dy = candidateRect.centerY() - sourceRect.centerY();
-                                const double distance = dx * dx + dy * dy;
-                                if (!best || distance < bestDistance) {
-                                    best = candidate;
-                                    bestDistance = distance;
-                                }
-                            }
-
-                            if (best && best->m_isMapped && hasManagedWindow(best))
-                                target = best;
-                        }
-                    }
-
-                    if (g_pAnimationManager)
-                        g_pAnimationManager->frameTick();
-                    if (target->m_workspace)
-                        refreshWorkspaceLayoutSnapshot(target->m_workspace);
-                    if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && activeWorkspace != target->m_workspace)
-                        refreshWorkspaceLayoutSnapshot(activeWorkspace);
-                    selectWindowInState(m_state, target);
-                    m_state.focusDuringOverview = target;
-                    m_queuedOverviewSelectionTarget.reset();
-                    m_queuedOverviewLiveFocusTarget.reset();
-                    if (target->m_workspace) {
-                        m_pendingLiveFocusWorkspaceChangeTarget = target;
-                        (void)activateWindowWorkspaceForFocus(target);
-                    }
-                    focusWindowCompat(target, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-                    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == target)
-                        m_pendingLiveFocusWorkspaceChangeTarget.reset();
-                    (void)syncScrollingWorkspaceSpotOnWindow(target);
-                    refreshNiriScrollingOverviewAfterLayoutScroll("render-geometry-deferred-refocus");
-                    rebuildVisibleState(target, true);
-                });
-            }
-        }
-    }
-
     setFullscreenRenderOverride(true);
     expandRenderDamageToFullMonitor(monitor);
 
@@ -3527,9 +3208,23 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
 }
 
 void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event::SCallbackInfo& info) {
-    const auto keyboard = inputKeyboardWithState();
-    if (!keyboard || !keyboard->m_xkbState)
-        return;
+    const auto keyboard = [&]() -> SP<IKeyboard> {
+        if (!g_pInputManager)
+            return {};
+
+        const auto eventKeycode = static_cast<uint32_t>(event.keycode + 8);
+        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            for (const auto& candidate : g_pInputManager->m_keyboards) {
+                if (!candidate || !candidate->m_xkbState)
+                    continue;
+
+                if (candidate->getPressed(eventKeycode))
+                    return candidate;
+            }
+        }
+
+        return inputKeyboardWithState();
+    }();
 
     if (m_toggleSwitchSessionActive)
         updateToggleSwitchSessionReleaseTracking("keyboard");
@@ -3540,7 +3235,7 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     if (m_state.phase == Phase::Closing)
         return;
 
-    if (m_toggleSwitchSessionActive && event.state == WL_KEYBOARD_KEY_STATE_RELEASED && isSwitchReleaseEvent(event, keyboard)) {
+    if (m_toggleSwitchSessionActive && keyboard && keyboard->m_xkbState && event.state == WL_KEYBOARD_KEY_STATE_RELEASED && isSwitchReleaseEvent(event, keyboard)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] toggle switch release close key=" << switchReleaseKeyConfig() << " keycode=" << event.keycode << " modifiers=" << keyboard->getModifiers();
@@ -3554,36 +3249,71 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     if (event.state != WL_KEYBOARD_KEY_STATE_PRESSED)
         return;
 
-    const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
-    if (handleNiriOverviewArrowKeybind(keysym, keyboard->getModifiers())) {
-        info.cancelled = true;
+    const auto matchesEvdevKeycode = [&](uint32_t evdevKeycode) {
+        return event.keycode == evdevKeycode || (event.keycode >= 8 && event.keycode - 8 == evdevKeycode);
+    };
+
+    xkb_keysym_t keysym = XKB_KEY_NoSymbol;
+    if (keyboard && keyboard->m_xkbState) {
+        const xkb_keysym_t fromEvdev = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
+        const xkb_keysym_t fromXkb = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode);
+        keysym = fromEvdev != XKB_KEY_NoSymbol ? fromEvdev : fromXkb;
+    }
+
+    const bool anyModifierHeld = anyKeyboardWithState([](const auto& candidate) {
+        const auto mods = candidate->getModifiers();
+        return (mods & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0 || keyboardHasPressedRawModifier(candidate);
+    });
+    if (anyModifierHeld) {
+        if (handleNiriOverviewArrowKeybind(keysym, keyboard ? keyboard->getModifiers() : 0)) {
+            info.cancelled = true;
+            return;
+        }
         return;
     }
 
     bool               handled = true;
-    switch (keysym) {
-        case XKB_KEY_Escape:
-            (void)close();
-            break;
-        case XKB_KEY_Return:
-        case XKB_KEY_KP_Enter:
-            activateSelection();
-            break;
-        case XKB_KEY_Left:
-            moveSelection(Direction::Left);
-            break;
-        case XKB_KEY_Right:
-            moveSelection(Direction::Right);
-            break;
-        case XKB_KEY_Up:
-            moveSelection(Direction::Up);
-            break;
-        case XKB_KEY_Down:
-            moveSelection(Direction::Down);
-            break;
-        default:
-            handled = false;
-            break;
+    if (matchesEvdevKeycode(KEY_ESC)) {
+        (void)close();
+    } else if (matchesEvdevKeycode(KEY_ENTER) || matchesEvdevKeycode(KEY_KPENTER)) {
+        activateSelection();
+    } else if (matchesEvdevKeycode(KEY_LEFT)) {
+        moveSelection(Direction::Left);
+    } else if (matchesEvdevKeycode(KEY_RIGHT)) {
+        moveSelection(Direction::Right);
+    } else if (matchesEvdevKeycode(KEY_UP)) {
+        moveSelection(Direction::Up);
+    } else if (matchesEvdevKeycode(KEY_DOWN)) {
+        moveSelection(Direction::Down);
+    } else {
+        switch (keysym) {
+            case XKB_KEY_Escape:
+                (void)close();
+                break;
+            case XKB_KEY_Return:
+            case XKB_KEY_KP_Enter:
+                activateSelection();
+                break;
+            case XKB_KEY_Left:
+            case XKB_KEY_KP_Left:
+                moveSelection(Direction::Left);
+                break;
+            case XKB_KEY_Right:
+            case XKB_KEY_KP_Right:
+                moveSelection(Direction::Right);
+                break;
+            case XKB_KEY_Up:
+            case XKB_KEY_KP_Up:
+                moveSelection(Direction::Up);
+                break;
+            case XKB_KEY_Down:
+            case XKB_KEY_KP_Down:
+                moveSelection(Direction::Down);
+                break;
+            default:
+                handled = false;
+                break;
+        }
     }
 
     if (handled)
@@ -7179,18 +6909,18 @@ bool OverviewController::installHooks() {
     }
     m_moveFocusDispatcherWrapped =
         wrapDispatcher("movefocus", m_moveFocusOriginal, [this](std::string args) { return moveFocusDispatcherHook(std::move(args)); });
+    m_execDispatcherWrapped = wrapDispatcher("exec", m_execOriginal, [this](std::string args) { return runOverviewExecDispatcher(std::move(args)); });
 
     m_overviewEditingDispatchersOriginal.clear();
     std::vector<std::string> overviewEditingDispatchers = {
         "movewindow",
         "movewindoworgroup",
         "swapwindow",
+        "swapcol",
         "movetoworkspace",
         "movetoworkspacesilent",
         "moveactive",
         "resizeactive",
-        "togglefloating",
-        "pin",
         "movewindowpixel",
         "resizewindowpixel",
         "window.move",
@@ -7254,6 +6984,8 @@ bool OverviewController::installHooks() {
         m_layoutMessageOriginal = nullptr;
     if (!m_moveFocusDispatcherWrapped)
         m_moveFocusOriginal = nullptr;
+    if (!m_execDispatcherWrapped)
+        m_execOriginal = nullptr;
     m_workspaceSwipeBeginOriginal = nullptr;
     m_workspaceSwipeUpdateOriginal = nullptr;
     m_workspaceSwipeEndOriginal = nullptr;
@@ -7411,212 +7143,88 @@ bool OverviewController::wrapDispatcher(const std::string& name, DispatcherHandl
     return true;
 }
 
+void OverviewController::prepareOverviewDispatcherTarget(PHLWINDOW preferredWindow, bool allowWorkspaceOnly) {
+    if (!isVisible() || m_state.phase != Phase::Active)
+        return;
+
+    PHLWINDOW targetWindow = preferredWindow;
+    if (!targetWindow)
+        targetWindow = selectedWindow();
+    if (!targetWindow && m_state.focusDuringOverview)
+        targetWindow = m_state.focusDuringOverview;
+
+    if (targetWindow && targetWindow->m_isMapped && hasManagedWindow(targetWindow)) {
+        m_state.focusDuringOverview = targetWindow;
+        selectWindowInState(m_state, targetWindow);
+
+        if (targetWindow->m_workspace) {
+            m_pendingLiveFocusWorkspaceChangeTarget = targetWindow;
+            (void)activateWindowWorkspaceForFocus(targetWindow);
+        }
+
+        focusWindowCompat(targetWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetWindow)
+            m_pendingLiveFocusWorkspaceChangeTarget.reset();
+
+        (void)syncScrollingWorkspaceSpotOnWindow(targetWindow);
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+        return;
+    }
+
+    if (!allowWorkspaceOnly)
+        return;
+
+    const auto targetWorkspace = activeLayoutWorkspace();
+    if (!targetWorkspace || targetWorkspace->m_isSpecialWorkspace)
+        return;
+
+    m_pendingStripWorkspaceChangeTarget = targetWorkspace;
+    (void)activateWorkspaceForExit(targetWorkspace);
+    if (m_pendingStripWorkspaceChangeTarget.lock() == targetWorkspace)
+        m_pendingStripWorkspaceChangeTarget.reset();
+
+    if (g_pAnimationManager)
+        g_pAnimationManager->frameTick();
+}
+
+SDispatchResult OverviewController::runOverviewExecDispatcher(std::string args) {
+    if (!m_execOriginal)
+        return {};
+
+    if (isVisible() && m_state.phase == Phase::Active)
+        prepareOverviewDispatcherTarget({}, true);
+
+    return m_execOriginal(std::move(args));
+}
+
 SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args) {
     if (!original || !*original)
         return {};
 
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
-    const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
-    const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
-    const std::string dispatcherArgsLower = asciiLowerCopy(args);
-    const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
-    const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
-        (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
-         dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
-         dispatcherArgsLower.find("consume") != std::string::npos);
-    const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "pin" ||
-        dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("pin") ||
-        dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
-        dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
-
-    const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
-        if (!window || !usesDirectNiriScrollingOverview(m_state))
-            return window;
-
-        if (!window->m_pinned && !isFloatingOverviewWindow(window))
-            return window;
-
-        const auto workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
-        if (!workspace || !isScrollingWorkspace(workspace))
-            return window;
-
-        const Rect sourceRect = liveGlobalRectForWindow(window);
-
-        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
-            const double x1 = std::max(lhs.x, rhs.x);
-            const double y1 = std::max(lhs.y, rhs.y);
-            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
-            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
-            if (x2 <= x1 || y2 <= y1)
-                return 0.0;
-            return (x2 - x1) * (y2 - y1);
-        };
-
-        struct CandidateScore {
-            PHLWINDOW window;
-            double    overlap = 0.0;
-            double    distance = std::numeric_limits<double>::infinity();
-        };
-
-        std::optional<CandidateScore> bestTiled;
-        std::optional<CandidateScore> bestAny;
-
-        const auto better = [](const CandidateScore& candidate, const std::optional<CandidateScore>& current) {
-            if (!current)
-                return true;
-            if (candidate.overlap > current->overlap + 1.0)
-                return true;
-            if (candidate.overlap + 1.0 < current->overlap)
-                return false;
-            return candidate.distance < current->distance;
-        };
-
-        for (const auto& managed : m_state.windows) {
-            const auto candidate = managed.window;
-            if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                continue;
-
-            const Rect candidateRect = liveGlobalRectForWindow(candidate);
-            const double dx = candidateRect.centerX() - sourceRect.centerX();
-            const double dy = candidateRect.centerY() - sourceRect.centerY();
-            CandidateScore score{
-                .window = candidate,
-                .overlap = overlapArea(sourceRect, candidateRect),
-                .distance = dx * dx + dy * dy,
-            };
-
-            const auto target = candidate->layoutTarget();
-            const bool candidateIsTiled = target && !target->floating() && !isFloatingOverviewWindow(candidate);
-
-            if (candidateIsTiled && better(score, bestTiled))
-                bestTiled = score;
-
-            if (better(score, bestAny))
-                bestAny = score;
-        }
-
-        if (bestTiled)
-            return bestTiled->window;
-        if (bestAny)
-            return bestAny->window;
-        return window;
-    };
-
-    const auto hardRecalculateScrollingWorkspaceAroundWindow = [&](const PHLWINDOW& anchor, const char* source) -> bool {
-        if (!anchor || !anchor->m_isMapped || !hasManagedWindow(anchor) || !anchor->m_workspace || !isScrollingWorkspace(anchor->m_workspace))
-            return false;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(anchor->m_workspace);
-        const auto target = anchor->layoutTarget();
-        const bool targetIsTiled = target && !target->floating();
-
-        if (targetIsTiled) {
-            if (const auto targetData = scrolling ? scrolling->dataFor(target) : nullptr; targetData) {
-                if (const auto column = targetData->column.lock()) {
-                    column->lastFocusedTarget = targetData;
-                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
-                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
-                            scrolling->m_scrollingData->fitCol(column);
-                        else
-                            scrolling->m_scrollingData->centerCol(column);
-                    }
-                }
-            }
-        }
-
-        // This is the important part for colresize / regular resize while the overview is open:
-        // force Hyprland's scrolling layout to commit fresh target boxes before we rebuild the
-        // overview state.  The old path refreshed our cached snapshot, but it could still read
-        // the pre-resize column positions until a later manual focus move.
-        if (anchor->m_workspace->m_space)
-            anchor->m_workspace->m_space->recalculate();
-        if (scrolling && scrolling->m_scrollingData)
-            scrolling->m_scrollingData->recalculate(true);
-        (void)syncScrollingWorkspaceSpotOnWindow(anchor);
-        if (anchor->m_workspace->m_space)
-            anchor->m_workspace->m_space->recalculate();
-        if (scrolling && scrolling->m_scrollingData)
-            scrolling->m_scrollingData->recalculate(true);
-
-        refreshWorkspaceLayoutSnapshot(anchor->m_workspace);
-        if (const auto monitor = anchor->m_monitor.lock())
-            g_layoutManager->recalculateMonitor(monitor);
-        if (g_pAnimationManager)
-            g_pAnimationManager->frameTick();
-
-        m_stripSnapshotsDirty = true;
-        scheduleWorkspaceStripSnapshotRefresh();
-        refreshNiriScrollingOverviewAfterLayoutScroll(source);
-        damageOwnedMonitors();
-        return true;
-    };
-
-    const auto forceDirectNiriGeometryFocus = [&](const PHLWINDOW& anchor, const char* source) -> bool {
-        if (!anchor || !anchor->m_isMapped || !hasManagedWindow(anchor) || !usesDirectNiriScrollingOverview(m_state))
-            return false;
-
-        selectWindowInState(m_state, anchor);
-        m_state.focusDuringOverview = anchor;
-        m_queuedOverviewSelectionTarget.reset();
-        m_queuedOverviewSelectionSyncScrollingSpot = false;
-        m_queuedOverviewSelectionCenterCursor = false;
-        m_queuedOverviewLiveFocusTarget.reset();
-        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
-        m_queuedOverviewLiveFocusCenterCursor = false;
-
-        if (anchor->m_workspace) {
-            m_pendingLiveFocusWorkspaceChangeTarget = anchor;
-            (void)activateWindowWorkspaceForFocus(anchor);
-        }
-
-        // Do not route this through syncRealFocusDuringOverview().  That helper may
-        // intentionally skip real focus changes depending on config, but resize / float /
-        // pin needs the scrolling layout to behave exactly as if the user moved focus.
-        focusWindowCompat(anchor, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-        if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == anchor)
-            m_pendingLiveFocusWorkspaceChangeTarget.reset();
-
-        return hardRecalculateScrollingWorkspaceAroundWindow(anchor, source);
-    };
-
     if (overviewActive && selectedBefore) {
-        m_state.focusDuringOverview = selectedBefore;
-        syncRealFocusDuringOverview(selectedBefore, true);
-        if (Desktop::focusState()->window() != selectedBefore) {
-            m_pendingLiveFocusWorkspaceChangeTarget = selectedBefore;
-            focusWindowCompat(selectedBefore, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == selectedBefore)
-                m_pendingLiveFocusWorkspaceChangeTarget.reset();
-        }
-        (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
+        prepareOverviewDispatcherTarget(selectedBefore);
     }
 
     const auto result = (*original)(std::move(args));
 
-    if (overviewActive && selectedWasPinnedBefore && selectedBefore && !selectedBefore->m_pinned && selectedBefore->m_isMapped && usesDirectNiriScrollingOverview(m_state)) {
-        if (const auto workspace = activeLayoutWorkspace(); workspace && workspace->m_space) {
-            if (const auto target = selectedBefore->layoutTarget(); target)
-                target->assignToSpace(workspace->m_space);
-            refreshWorkspaceLayoutSnapshot(workspace);
-            if (const auto monitor = workspace->m_monitor.lock())
+    if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
+        // Editing dispatchers can defer layout target updates until the next
+        // frame. Force one tick before we snapshot/rebuild so overview reflects
+        // column swaps immediately.
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+
+        if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && isScrollingWorkspace(activeWorkspace)) {
+            if (const auto monitor = activeWorkspace->m_monitor.lock(); monitor && g_layoutManager)
                 g_layoutManager->recalculateMonitor(monitor);
         }
-    }
 
-    if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
-        PHLWINDOW forcedGeometryAnchor;
-        if (forceGeometryRefocus) {
-            PHLWINDOW editedWindow = selectedBefore;
-            if ((!editedWindow || !editedWindow->m_isMapped) && Desktop::focusState()->window())
-                editedWindow = Desktop::focusState()->window();
-            forcedGeometryAnchor = closestTiledWindowInWorkspace(editedWindow);
-            if (forcedGeometryAnchor)
-                (void)forceDirectNiriGeometryFocus(forcedGeometryAnchor, "geometry-edit-force-refocus");
-        }
-
+        const ScopedFlag forceFreshOrdering(m_forceFreshOverviewOrdering);
         std::vector<PHLWORKSPACE> affectedWorkspaces;
-        affectedWorkspaces.reserve(4);
+        affectedWorkspaces.reserve(3);
         const auto addWorkspace = [&](const PHLWORKSPACE& workspace) {
             if (workspace && !containsHandle(affectedWorkspaces, workspace))
                 affectedWorkspaces.push_back(workspace);
@@ -7627,139 +7235,23 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             addWorkspace(focusedAfter->m_workspace);
         if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace)
             addWorkspace(activeWorkspace);
-
-        if (g_pAnimationManager)
-            g_pAnimationManager->frameTick();
         for (const auto& workspace : affectedWorkspaces)
             refreshWorkspaceLayoutSnapshot(workspace);
 
         const auto focusAfter = Desktop::focusState()->window();
-        PHLWINDOW preferredSelected = forcedGeometryAnchor ? forcedGeometryAnchor : selectedBefore;
+        PHLWINDOW preferredSelected = selectedBefore;
         if ((!preferredSelected || !preferredSelected->m_isMapped || !hasManagedWindow(preferredSelected)) && focusAfter && hasManagedWindow(focusAfter))
             preferredSelected = focusAfter;
 
-        if (forceGeometryRefocus && preferredSelected && preferredSelected->m_isMapped && hasManagedWindow(preferredSelected))
-            (void)hardRecalculateScrollingWorkspaceAroundWindow(preferredSelected, "geometry-edit-pre-rebuild-hard-recalc");
-
-        const auto relayoutAnchor = closestTiledWindowInWorkspace(preferredSelected);
-        if (relayoutAnchor && relayoutAnchor != preferredSelected) {
-            preferredSelected = relayoutAnchor;
-            selectWindowInState(m_state, preferredSelected);
-            m_state.focusDuringOverview = preferredSelected;
-            syncRealFocusDuringOverview(preferredSelected, true);
-            (void)syncScrollingWorkspaceSpotOnWindow(preferredSelected);
-            if (preferredSelected->m_workspace)
-                refreshWorkspaceLayoutSnapshot(preferredSelected->m_workspace);
-        }
-
-        rebuildVisibleState(preferredSelected, true);
-        refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
-
-        if (g_pEventLoopManager && usesDirectNiriScrollingOverview(m_state)) {
-            const auto deferredTarget = preferredSelected;
-            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus] {
-                if (g_controller != this || !isVisible() || m_state.phase != Phase::Active || m_workspaceTransition.active || m_beginCloseInProgress)
-                    return;
-
-                PHLWINDOW target = deferredTarget;
-                if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                    target = selectedWindow();
-                if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                    target = Desktop::focusState()->window();
-                if (!target || !target->m_isMapped || !hasManagedWindow(target))
-                    return;
-
-                if ((target->m_pinned || isFloatingOverviewWindow(target)) && usesDirectNiriScrollingOverview(m_state)) {
-                    const auto workspace = target->m_pinned ? activeLayoutWorkspace() : target->m_workspace;
-                    if (workspace && isScrollingWorkspace(workspace)) {
-                        const auto* sourceManaged = managedWindowFor(m_state, target, true);
-                        const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(target);
-                        PHLWINDOW best;
-                        double    bestDistance = std::numeric_limits<double>::infinity();
-                        for (const auto& managed : m_state.windows) {
-                            const auto candidate = managed.window;
-                            if (!candidate || candidate == target || !candidate->m_isMapped || candidate->m_workspace != workspace || candidate->m_pinned)
-                                continue;
-
-                            const auto layoutTarget = candidate->layoutTarget();
-                            if (!layoutTarget || layoutTarget->floating() || isFloatingOverviewWindow(candidate))
-                                continue;
-
-                            const Rect candidateRect = currentPreviewRect(managed);
-                            const double dx = candidateRect.centerX() - sourceRect.centerX();
-                            const double dy = candidateRect.centerY() - sourceRect.centerY();
-                            const double distance = dx * dx + dy * dy;
-                            if (!best || distance < bestDistance) {
-                                best = candidate;
-                                bestDistance = distance;
-                            }
-                        }
-
-                        if (best && best->m_isMapped && hasManagedWindow(best))
-                            target = best;
-                    }
-                }
-
-                if (g_pAnimationManager)
-                    g_pAnimationManager->frameTick();
-                if (target->m_workspace)
-                    refreshWorkspaceLayoutSnapshot(target->m_workspace);
-                if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && activeWorkspace != target->m_workspace)
-                    refreshWorkspaceLayoutSnapshot(activeWorkspace);
-
-                if (forceGeometryRefocus) {
-                    selectWindowInState(m_state, target);
-                    m_state.focusDuringOverview = target;
-                    m_queuedOverviewSelectionTarget.reset();
-                    m_queuedOverviewSelectionSyncScrollingSpot = false;
-                    m_queuedOverviewSelectionCenterCursor = false;
-                    m_queuedOverviewLiveFocusTarget.reset();
-                    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
-                    m_queuedOverviewLiveFocusCenterCursor = false;
-
-                    if (target->m_workspace) {
-                        m_pendingLiveFocusWorkspaceChangeTarget = target;
-                        (void)activateWindowWorkspaceForFocus(target);
-                    }
-                    focusWindowCompat(target, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-                    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == target)
-                        m_pendingLiveFocusWorkspaceChangeTarget.reset();
-                    if (target->m_workspace && isScrollingWorkspace(target->m_workspace)) {
-                        auto* const scrolling = scrollingAlgorithmForWorkspace(target->m_workspace);
-                        const auto layoutTarget = target->layoutTarget();
-                        if (scrolling && layoutTarget && !layoutTarget->floating()) {
-                            if (const auto targetData = scrolling->dataFor(layoutTarget); targetData) {
-                                if (const auto column = targetData->column.lock()) {
-                                    column->lastFocusedTarget = targetData;
-                                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
-                                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
-                                            scrolling->m_scrollingData->fitCol(column);
-                                        else
-                                            scrolling->m_scrollingData->centerCol(column);
-                                    }
-                                }
-                            }
-                        }
-                        if (target->m_workspace->m_space)
-                            target->m_workspace->m_space->recalculate();
-                        if (scrolling && scrolling->m_scrollingData)
-                            scrolling->m_scrollingData->recalculate(true);
-                    }
-                    (void)syncScrollingWorkspaceSpotOnWindow(target);
-                    if (target->m_workspace && target->m_workspace->m_space)
-                        target->m_workspace->m_space->recalculate();
-                    refreshNiriScrollingOverviewAfterLayoutScroll("geometry-edit-deferred-refocus");
-                    m_stripSnapshotsDirty = true;
-                    scheduleWorkspaceStripSnapshotRefresh();
-                } else {
-                    selectWindowInState(m_state, target);
-                    m_state.focusDuringOverview = target;
-                    syncRealFocusDuringOverview(target, true);
-                    (void)syncScrollingWorkspaceSpotOnWindow(target);
-                }
-                rebuildVisibleState(target, true);
-                refreshNiriScrollingOverviewAfterFocusDispatcher(source.c_str(), target);
-            });
+        const bool directNiriScrollingOverview = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
+            isScrollingWorkspace(activeLayoutWorkspace());
+        if (directNiriScrollingOverview) {
+            if (preferredSelected && hasManagedWindow(preferredSelected))
+                selectWindowInState(m_state, preferredSelected);
+            refreshNiriScrollingOverviewAfterLayoutScroll(dispatcherName);
+            scheduleDeferredNiriLayoutRefresh(dispatcherName, 2);
+        } else {
+            rebuildVisibleState(preferredSelected, true);
         }
     }
 
@@ -7787,6 +7279,7 @@ void OverviewController::restoreWrappedDispatchers() {
     restore("focusworkspaceoncurrentmonitor", m_focusWorkspaceOnCurrentMonitorDispatcherWrapped, m_focusWorkspaceOnCurrentMonitorOriginal);
     restore(m_layoutMessageDispatcherName.c_str(), m_layoutMessageDispatcherWrapped, m_layoutMessageOriginal);
     restore("movefocus", m_moveFocusDispatcherWrapped, m_moveFocusOriginal);
+    restore("exec", m_execDispatcherWrapped, m_execOriginal);
     for (auto& [name, original] : m_overviewEditingDispatchersOriginal) {
         if (original)
             g_pKeybindManager->m_dispatchers[name] = std::move(original);
@@ -7867,15 +7360,19 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     std::string direction;
     switch (keysym) {
         case XKB_KEY_Left:
+        case XKB_KEY_KP_Left:
             direction = "l";
             break;
         case XKB_KEY_Right:
+        case XKB_KEY_KP_Right:
             direction = "r";
             break;
         case XKB_KEY_Up:
+        case XKB_KEY_KP_Up:
             direction = "u";
             break;
         case XKB_KEY_Down:
+        case XKB_KEY_KP_Down:
             direction = "d";
             break;
         default:
@@ -7902,21 +7399,17 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args)).success;
     };
 
-    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
+    if (hasAlt && hasCtrl && hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right || keysym == XKB_KEY_KP_Left || keysym == XKB_KEY_KP_Right))
         return runLayoutMessage(std::string{"swapcol "} + direction);
-    }
 
-    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right)) {
-        return runLayoutMessage(keysym == XKB_KEY_Left ? "move -col" : "move +col");
-    }
+    if (hasAlt && !hasCtrl && !hasShift && (keysym == XKB_KEY_Left || keysym == XKB_KEY_Right || keysym == XKB_KEY_KP_Left || keysym == XKB_KEY_KP_Right))
+        return runLayoutMessage(keysym == XKB_KEY_Left || keysym == XKB_KEY_KP_Left ? "move -col" : "move +col");
 
-    if (hasShift && hasCtrl && !hasAlt) {
+    if (hasShift && hasCtrl && !hasAlt)
         return runNamedEditingDispatcher("swapwindow", direction);
-    }
 
-    if (hasShift && !hasCtrl && !hasAlt) {
+    if (hasShift && !hasCtrl && !hasAlt)
         return runNamedEditingDispatcher("movewindow", direction);
-    }
 
     return false;
 }
@@ -8380,7 +7873,8 @@ bool OverviewController::shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& 
     if (!window)
         return false;
 
-    if (isVisible() && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible()) {
+    if (isVisible() && m_animationsEnabledOverridden && !window->m_isFloating && window->m_workspace && window->m_workspace->isVisible() &&
+        !isScrollingWorkspace(window->m_workspace)) {
         const Rect live = stateSnapshotGlobalRectForWindow(window);
         const Rect goal = stateSnapshotGlobalRectForWindow(window, true);
         if (!rectApproxEqual(live, goal, 0.5))
@@ -9399,320 +8893,13 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
     }
 
-    const auto activeBaseRect = [&]() {
-        if (m_state.relayoutActive)
-            return lerpRect(window.relayoutFromGlobal, window.targetGlobal, relayoutVisualProgress());
-        return window.targetGlobal;
-    };
-
-    const auto focusedStripWorkspaceForPreviewMonitor = [&](const PHLMONITOR& candidateMonitor) -> PHLWORKSPACE {
-        if (!candidateMonitor)
-            return {};
-
-        if (m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace) {
-            const auto focusedWorkspaceMonitor = m_state.focusDuringOverview->m_workspace->m_monitor.lock();
-            if (focusedWorkspaceMonitor == candidateMonitor)
-                return m_state.focusDuringOverview->m_workspace;
-        }
-
-        if (candidateMonitor->m_activeWorkspace)
-            return candidateMonitor->m_activeWorkspace;
-
-        if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == candidateMonitor)
-            return m_state.ownerWorkspace;
-
-        return {};
-    };
-
-    const auto dynamicNiriTiledResizeRect = [&]() -> std::optional<Rect> {
-        if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped || !window.targetMonitor)
-            return std::nullopt;
-
-        if (window.window->m_pinned || window.isPinned || isFloatingOverviewWindow(window.window) || window.isNiriFloatingOverlay)
-            return std::nullopt;
-
-        const auto workspace = window.window->m_workspace;
-        if (!workspace || !isScrollingWorkspace(workspace))
-            return std::nullopt;
-
-        const auto target = window.window->layoutTarget();
-        if (!target || target->floating())
-            return std::nullopt;
-
-        PHLWINDOW anchorWindow;
-        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
-            m_state.focusDuringOverview->m_workspace == workspace && !isFloatingOverviewWindow(m_state.focusDuringOverview)) {
-            anchorWindow = m_state.focusDuringOverview;
-        } else if (const auto selected = selectedWindow(); selected && selected->m_isMapped && !selected->m_pinned && selected->m_workspace == workspace &&
-                   !isFloatingOverviewWindow(selected)) {
-            anchorWindow = selected;
-        } else {
-            anchorWindow = window.window;
-        }
-
-        const auto* anchorManaged = managedWindowFor(m_state, anchorWindow, true);
-        if (!anchorManaged || !anchorManaged->window || !anchorManaged->targetMonitor || anchorManaged->targetMonitor != window.targetMonitor)
-            anchorManaged = &window;
-
-        const bool isResizeAnchorWindow = window.window == anchorWindow;
-
-        // For the actively resized column, do not build the preview from Hyprland's
-        // goal geometry. Goal geometry jumps straight to the final column width while
-        // the live surface is still animating there, which makes the overview draw a
-        // shrink-then-grow rubber-band.  Track the live box for the resized column and
-        // let Hyprland's own linear size progression drive the preview size.
-        const bool useGoalGeometry = !isResizeAnchorWindow && shouldUseGoalGeometryForStateSnapshot(window.window);
-        const Rect naturalGlobal = stateSnapshotGlobalRectForWindow(window.window, useGoalGeometry);
-        const Rect sourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window.window, naturalGlobal);
-        const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window.window, sourceGlobal, anchorWindow);
-        if (!rowGeometry)
-            return std::nullopt;
-
-        const bool anchorUseGoalGeometry = anchorManaged->window != anchorWindow && shouldUseGoalGeometryForStateSnapshot(anchorManaged->window);
-        const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorManaged->window, anchorUseGoalGeometry);
-        const Rect anchorSourceBase = scrollingOverviewSourceGlobalRectForWindow(anchorManaged->window, anchorNaturalGlobal);
-        const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorManaged->window, anchorSourceBase, anchorManaged->window);
-        const Rect anchorSourceGlobal = anchorRowGeometry ? anchorRowGeometry->anchorGlobal : anchorManaged->naturalGlobal;
-
-        double scale = window.slot.scale;
-        if (scale <= 0.0 && window.naturalGlobal.width > 1.0)
-            scale = window.targetGlobal.width / window.naturalGlobal.width;
-        if (scale <= 0.0 && window.naturalGlobal.height > 1.0)
-            scale = window.targetGlobal.height / window.naturalGlobal.height;
-        if (scale <= 0.0)
-            return std::nullopt;
-
-        const Rect ownPreviewBase = activeBaseRect();
-        const Rect anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
-            (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
-
-        const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
-        const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
-        const double anchorTargetWidth = std::max(1.0, anchorSourceGlobal.width * scale);
-        const double anchorTargetHeight = std::max(1.0, anchorSourceGlobal.height * scale);
-        const bool ownSizeChanged = std::abs(targetWidth - ownPreviewBase.width) > 1.0 || std::abs(targetHeight - ownPreviewBase.height) > 1.0;
-        const bool anchorSizeChanged = std::abs(anchorTargetWidth - anchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - anchorPreviewBase.height) > 1.0;
-
-        struct DynamicResizeAnimation {
-            Rect                               from;
-            Rect                               to;
-            Rect                               lastRendered;
-            std::chrono::steady_clock::time_point start;
-            bool                               hasLastRendered = false;
-        };
-
-        static std::unordered_map<const void*, DynamicResizeAnimation> s_dynamicResizeAnimations;
-
-        const void* const animationKey = window.window.get();
-        const auto        now = std::chrono::steady_clock::now();
-        auto&             animation = s_dynamicResizeAnimations[animationKey];
-
-        // Keep the resize animation origin current while no live resize is happening.
-        // This prevents a later grow animation from starting from an old stale position
-        // after normal scrolling or focus movement.
-        if (!ownSizeChanged && !anchorSizeChanged) {
-            const Rect currentBase = activeBaseRect();
-            animation.from = currentBase;
-            animation.to = currentBase;
-            animation.lastRendered = currentBase;
-            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
-            animation.hasLastRendered = true;
-            return std::nullopt;
-        }
-
-        const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
-
-        const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
-        Rect dynamicRect = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-
-        const double previewGap = niriWindowGapsForWorkspace(workspace, rowGeometry->primaryAxis);
-        if (previewGap > 0.0) {
-            if (rowGeometry->primaryAxis == GestureAxis::Horizontal) {
-                const double width = std::max(1.0, dynamicRect.width - previewGap);
-                dynamicRect = makeRect(dynamicRect.centerX() - width * 0.5, dynamicRect.y, width, dynamicRect.height);
-            } else {
-                const double height = std::max(1.0, dynamicRect.height - previewGap);
-                dynamicRect = makeRect(dynamicRect.x, dynamicRect.centerY() - height * 0.5, dynamicRect.width, height);
-            }
-        }
-
-        const auto progressFor = [&](const DynamicResizeAnimation& candidate) {
-            if (candidate.start == std::chrono::steady_clock::time_point{})
-                return 1.0;
-
-            const double elapsedMs = std::chrono::duration<double, std::milli>(now - candidate.start).count();
-            return clampUnit(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS));
-        };
-
-        const auto currentVisibleRect = [&]() {
-            if (animation.hasLastRendered)
-                return animation.lastRendered;
-
-            if (animation.start != std::chrono::steady_clock::time_point{}) {
-                const double previousProgress = progressFor(animation);
-                return lerpRect(animation.from, animation.to, easeOutCubic(previousProgress));
-            }
-
-            return activeBaseRect();
-        };
-
-        const bool directlyResizedWindow = ownSizeChanged;
-        if (animation.start == std::chrono::steady_clock::time_point{}) {
-            const Rect visibleNow = currentVisibleRect();
-            animation = {
-                .from = visibleNow,
-                .to = dynamicRect,
-                .lastRendered = visibleNow,
-                .start = now,
-                .hasLastRendered = true,
-            };
-        } else if (!rectApproxEqual(animation.to, dynamicRect, 0.5)) {
-            const double existingProgress = progressFor(animation);
-            if (directlyResizedWindow && existingProgress < 1.0) {
-                // The selected column's goal rect can update every frame while Hyprland is
-                // still applying colresize.  Restarting from the current frame each time
-                // makes growth lag, shrink, then expand again.  Keep the original start
-                // point and only update the destination so growth stays linear.
-                animation.to = dynamicRect;
-            } else {
-                const Rect visibleNow = currentVisibleRect();
-                animation = {
-                    .from = visibleNow,
-                    .to = dynamicRect,
-                    .lastRendered = visibleNow,
-                    .start = now,
-                    .hasLastRendered = true,
-                };
-            }
-        }
-
-        const double progress = progressFor(animation);
-        if (progress >= 1.0) {
-            animation.from = dynamicRect;
-            animation.to = dynamicRect;
-            animation.lastRendered = dynamicRect;
-            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
-            animation.hasLastRendered = true;
-            return dynamicRect;
-        }
-
-        if (directlyResizedWindow) {
-            // The resized column already has a live Hyprland size animation.  Adding a
-            // second overview-side interpolation on top of it causes visible jitter when
-            // the column grows.  Render the live corrected rect directly and keep the
-            // animation cache synchronized so outer windows can still slide smoothly.
-            animation.from = dynamicRect;
-            animation.to = dynamicRect;
-            animation.lastRendered = dynamicRect;
-            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
-            animation.hasLastRendered = true;
-            return dynamicRect;
-        }
-
-        Rect animatedRect = lerpRect(animation.from, animation.to, easeOutCubic(progress));
-
-        animation.lastRendered = animatedRect;
-        animation.hasLastRendered = true;
-        return animatedRect;
-    };
-
-    const auto dynamicNiriFloatingResizeRect = [&]() -> std::optional<Rect> {
-        if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped)
-            return std::nullopt;
-
-        PHLWINDOW floatingWindow = selectedWindow();
-        const auto isPinnedOrWasPinnedFloating = [&](const PHLWINDOW& candidate) {
-            const auto* managed = managedWindowFor(m_state, candidate, true);
-            return candidate && (candidate->m_pinned || (managed && managed->isPinned));
-        };
-        const auto isFloatingOrPinnedCandidate = [&](const PHLWINDOW& candidate) {
-            return candidate && (isFloatingOverviewWindow(candidate) || isPinnedOrWasPinnedFloating(candidate));
-        };
-
-        if ((!floatingWindow || !isFloatingOrPinnedCandidate(floatingWindow)) && m_state.focusDuringOverview)
-            floatingWindow = m_state.focusDuringOverview;
-        if (!isFloatingOrPinnedCandidate(floatingWindow))
-            return std::nullopt;
-
-        const auto* floatingManaged = managedWindowFor(m_state, floatingWindow, true);
-        if (!floatingManaged || !floatingManaged->targetMonitor)
-            return std::nullopt;
-
-        const bool floatingUsesFocusedWorkspace = floatingWindow->m_pinned || floatingManaged->isPinned;
-        const auto floatingWorkspace = floatingUsesFocusedWorkspace ? focusedStripWorkspaceForPreviewMonitor(floatingManaged->targetMonitor) : floatingWindow->m_workspace;
-        if (!floatingWorkspace || !isScrollingWorkspace(floatingWorkspace))
-            return std::nullopt;
-
-        const bool windowUsesFocusedWorkspace = window.window->m_pinned || window.isPinned;
-        const auto currentWorkspace = windowUsesFocusedWorkspace ? focusedStripWorkspaceForPreviewMonitor(window.targetMonitor) : window.window->m_workspace;
-        if (currentWorkspace != floatingWorkspace)
-            return std::nullopt;
-
-        const Rect floatingLive = renderGlobalRectForWindow(floatingWindow);
-        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
-            const double x1 = std::max(lhs.x, rhs.x);
-            const double y1 = std::max(lhs.y, rhs.y);
-            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
-            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
-            if (x2 <= x1 || y2 <= y1)
-                return 0.0;
-            return (x2 - x1) * (y2 - y1);
-        };
-
-        const ManagedWindow* anchorManaged = nullptr;
-        double               bestOverlap = -1.0;
-        double               bestDistance = std::numeric_limits<double>::infinity();
-        for (const auto& candidateManaged : m_state.windows) {
-            const auto candidate = candidateManaged.window;
-            if (!candidate || candidate == floatingWindow || !candidate->m_isMapped || candidate->m_workspace != floatingWorkspace || candidate->m_pinned)
-                continue;
-
-            const auto target = candidate->layoutTarget();
-            if (!target || target->floating() || isFloatingOverviewWindow(candidate))
-                continue;
-
-            const Rect candidateLive = renderGlobalRectForWindow(candidate);
-            const double overlap = overlapArea(floatingLive, candidateLive);
-            const double dx = candidateLive.centerX() - floatingLive.centerX();
-            const double dy = candidateLive.centerY() - floatingLive.centerY();
-            const double distance = dx * dx + dy * dy;
-            if (!anchorManaged || overlap > bestOverlap + 1.0 || (std::abs(overlap - bestOverlap) <= 1.0 && distance < bestDistance)) {
-                anchorManaged = &candidateManaged;
-                bestOverlap = overlap;
-                bestDistance = distance;
-            }
-        }
-
-        if (!anchorManaged)
-            return std::nullopt;
-
-        const Rect anchorPreview = m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal;
-        const Rect floatingPreview = m_state.relayoutActive ? lerpRect(floatingManaged->relayoutFromGlobal, floatingManaged->targetGlobal, relayoutVisualProgress()) : floatingManaged->targetGlobal;
-        const double shiftX = floatingPreview.centerX() - anchorPreview.centerX();
-        const double shiftY = floatingPreview.centerY() - anchorPreview.centerY();
-
-        if (window.window == floatingWindow) {
-            const double scaleX = floatingManaged->naturalGlobal.width > 1.0 ? floatingManaged->targetGlobal.width / floatingManaged->naturalGlobal.width : 1.0;
-            const double scaleY = floatingManaged->naturalGlobal.height > 1.0 ? floatingManaged->targetGlobal.height / floatingManaged->naturalGlobal.height : 1.0;
-            const double width = std::max(1.0, floatingLive.width * scaleX);
-            const double height = std::max(1.0, floatingLive.height * scaleY);
-            return makeRect(floatingPreview.centerX() - width * 0.5, floatingPreview.centerY() - height * 0.5, width, height);
-        }
-
-        return translateRect(activeBaseRect(), shiftX, shiftY);
-    };
-
     switch (m_state.phase) {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
-            if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
-                return *dynamicRect;
-            if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
-                return *dynamicRect;
-            return activeBaseRect();
+            if (m_state.relayoutActive)
+                return lerpRect(window.relayoutFromGlobal, window.targetGlobal, relayoutVisualProgress());
+            return window.targetGlobal;
         case Phase::ClosingSettle:
             return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
         case Phase::Closing:
@@ -10785,6 +9972,71 @@ void OverviewController::scheduleVisibleStateRebuild() {
     });
 }
 
+void OverviewController::scheduleDeferredNiriLayoutRefresh(const char* source, std::size_t passes) {
+    if (passes == 0)
+        return;
+
+    if (source && *source)
+        m_deferredNiriLayoutRefreshSource = source;
+    else if (m_deferredNiriLayoutRefreshSource.empty())
+        m_deferredNiriLayoutRefreshSource = "deferred-niri-layout-refresh";
+
+    m_deferredNiriLayoutRefreshRemaining = std::max(m_deferredNiriLayoutRefreshRemaining, passes);
+
+    if (m_deferredNiriLayoutRefreshScheduled)
+        return;
+
+    if (!g_pEventLoopManager) {
+        while (m_deferredNiriLayoutRefreshRemaining > 0) {
+            --m_deferredNiriLayoutRefreshRemaining;
+            if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state) ||
+                !isScrollingWorkspace(activeLayoutWorkspace())) {
+                m_deferredNiriLayoutRefreshRemaining = 0;
+                return;
+            }
+            if (g_pAnimationManager)
+                g_pAnimationManager->frameTick();
+            if (const auto workspace = activeLayoutWorkspace(); workspace) {
+                refreshWorkspaceLayoutSnapshot(workspace);
+                if (const auto monitor = workspace->m_monitor.lock(); monitor && g_layoutManager)
+                    g_layoutManager->recalculateMonitor(monitor);
+            }
+            refreshNiriScrollingOverviewAfterLayoutScroll(m_deferredNiriLayoutRefreshSource.c_str());
+        }
+        return;
+    }
+
+    m_deferredNiriLayoutRefreshScheduled = true;
+    const auto generation = ++m_deferredNiriLayoutRefreshGeneration;
+    g_pEventLoopManager->doLater([this, generation] {
+        if (g_controller != this || generation != m_deferredNiriLayoutRefreshGeneration)
+            return;
+
+        m_deferredNiriLayoutRefreshScheduled = false;
+        if (m_deferredNiriLayoutRefreshRemaining == 0)
+            return;
+
+        --m_deferredNiriLayoutRefreshRemaining;
+        if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state) ||
+            !isScrollingWorkspace(activeLayoutWorkspace())) {
+            m_deferredNiriLayoutRefreshRemaining = 0;
+            return;
+        }
+
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
+        if (const auto workspace = activeLayoutWorkspace(); workspace) {
+            refreshWorkspaceLayoutSnapshot(workspace);
+            if (const auto monitor = workspace->m_monitor.lock(); monitor && g_layoutManager)
+                g_layoutManager->recalculateMonitor(monitor);
+        }
+        refreshNiriScrollingOverviewAfterLayoutScroll(m_deferredNiriLayoutRefreshSource.c_str());
+
+        if (m_deferredNiriLayoutRefreshRemaining > 0)
+            scheduleDeferredNiriLayoutRefresh(m_deferredNiriLayoutRefreshSource.c_str(), m_deferredNiriLayoutRefreshRemaining);
+    });
+}
+
 void OverviewController::scheduleWorkspaceChangeHandling(const PHLWORKSPACE& workspace, OverviewWorkspaceChangeAction action, bool allowExternalTransition) {
     m_pendingWorkspaceChange = workspace;
     m_pendingWorkspaceChangeAction = action;
@@ -11621,6 +10873,10 @@ void OverviewController::deactivate() {
     m_visibleStateRebuildScheduled = false;
     ++m_visibleStateRebuildGeneration;
     m_postOpenRefreshFrames = 0;
+    m_deferredNiriLayoutRefreshScheduled = false;
+    ++m_deferredNiriLayoutRefreshGeneration;
+    m_deferredNiriLayoutRefreshRemaining = 0;
+    m_deferredNiriLayoutRefreshSource.clear();
     clearPendingWindowGeometryRetry();
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
@@ -12138,49 +11394,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         previousPlaceholderRects.emplace_back(placeholder.monitor->m_id, placeholder.workspaceId, currentRect);
     }
 
-    const auto closestTiledWindowForRelayoutAnchor = [&](const PHLWINDOW& window) -> PHLWINDOW {
-        if (!forceRelayout || !window || !niriModeAppliesToState(m_state))
-            return window;
-
-        if (!window->m_pinned && !isFloatingOverviewWindow(window))
-            return window;
-
-        const auto workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
-        if (!workspace || !isScrollingWorkspace(workspace))
-            return window;
-
-        const auto* sourceManaged = managedWindowFor(m_state, window, true);
-        const Rect sourceRect = sourceManaged ? currentPreviewRect(*sourceManaged) : liveGlobalRectForWindow(window);
-
-        PHLWINDOW best;
-        double    bestDistance = std::numeric_limits<double>::infinity();
-        for (const auto& candidate : m_state.windows) {
-            const auto candidateWindow = candidate.window;
-            if (!candidateWindow || candidateWindow == window || !candidateWindow->m_isMapped || candidateWindow->m_workspace != workspace || candidateWindow->m_pinned)
-                continue;
-
-            const auto target = candidateWindow->layoutTarget();
-            if (!target || target->floating() || isFloatingOverviewWindow(candidateWindow))
-                continue;
-
-            const Rect candidateRect = currentPreviewRect(candidate);
-            const double dx = candidateRect.centerX() - sourceRect.centerX();
-            const double dy = candidateRect.centerY() - sourceRect.centerY();
-            const double distance = dx * dx + dy * dy;
-            if (!best || distance < bestDistance) {
-                best = candidateWindow;
-                bestDistance = distance;
-            }
-        }
-
-        return best ? best : window;
-    };
-
-    const auto requestedSelectedWindow = preferredSelectedWindow ? preferredSelectedWindow : (selectedWindow() ? selectedWindow() : Desktop::focusState()->window());
-    const auto relayoutSelectedWindow = closestTiledWindowForRelayoutAnchor(requestedSelectedWindow);
     const auto layoutSelectedWindow =
-        expandSelectedWindowEnabled() ? (relayoutSelectedWindow ? relayoutSelectedWindow : requestedSelectedWindow) :
-        (forceRelayout ? relayoutSelectedWindow : PHLWINDOW{});
+        expandSelectedWindowEnabled() ? (preferredSelectedWindow ? preferredSelectedWindow : (selectedWindow() ? selectedWindow() : Desktop::focusState()->window())) : PHLWINDOW{};
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] rebuild request forceRelayout=" << (forceRelayout ? 1 : 0)
@@ -12427,16 +11642,42 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 }
 
 void OverviewController::moveSelection(Direction direction) {
+    const auto workspaceStepForDirection = [&](Direction requestedDirection) {
+        const bool usesVerticalAxis = workspaceSwipeUsesVerticalAxis(activeLayoutWorkspace());
+        if (usesVerticalAxis) {
+            if (requestedDirection == Direction::Up)
+                return -1;
+            if (requestedDirection == Direction::Down)
+                return 1;
+        } else {
+            if (requestedDirection == Direction::Left)
+                return -1;
+            if (requestedDirection == Direction::Right)
+                return 1;
+        }
+
+        if (requestedDirection == Direction::Up)
+            return -1;
+        if (requestedDirection == Direction::Down)
+            return 1;
+        return 0;
+    };
+
     if (m_state.windows.empty()) {
-        if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace()) &&
-            (direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0)
+                (void)switchOverviewWorkspaceByStep(step);
+        }
         return;
     }
 
     if (niriModeAppliesToState(m_state) && centeredEmptyWorkspacePlaceholder(m_state)) {
-        if ((direction == Direction::Up || direction == Direction::Down) && allowsWorkspaceSwitchInOverview())
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
+        if (allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0)
+                (void)switchOverviewWorkspaceByStep(step);
+        }
         return;
     }
 
@@ -12532,14 +11773,25 @@ void OverviewController::moveSelection(Direction direction) {
             return;
         }
 
-        if (m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace()) && (direction == Direction::Up || direction == Direction::Down) &&
-            allowsWorkspaceSwitchInOverview()) {
-            (void)switchOverviewWorkspaceByStep(direction == Direction::Up ? -1 : 1);
-            return;
+        if (m_state.collectionPolicy.onlyActiveWorkspace && allowsWorkspaceSwitchInOverview()) {
+            const int step = workspaceStepForDirection(direction);
+            if (step != 0) {
+                (void)switchOverviewWorkspaceByStep(step);
+                return;
+            }
         }
 
-        if (direction == Direction::Left || direction == Direction::Right)
+        if (direction == Direction::Left || direction == Direction::Right) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] keyboard-nav edge clamp direction="
+                    << (direction == Direction::Left ? "left" : "right");
+                if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size())
+                    out << " selected=" << debugWindowLabel(m_state.windows[*m_state.selectedIndex].window);
+                debugLog(out.str());
+            }
             return;
+        }
     }
 
     if (const auto next = chooseDirectionalNeighbor(rects, *m_state.selectedIndex, direction)) {
@@ -14197,8 +13449,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     if (!monitor)
         return state;
 
-    const bool preserveExistingOrder =
-        workspaceOverrides.empty() && isVisible() && requestedScope == m_state.collectionPolicy.requestedScope && (!m_state.ownerMonitor || monitor == m_state.ownerMonitor);
+    const bool preserveExistingOrder = !m_forceFreshOverviewOrdering && workspaceOverrides.empty() && isVisible() &&
+        requestedScope == m_state.collectionPolicy.requestedScope && (!m_state.ownerMonitor || monitor == m_state.ownerMonitor);
 
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
@@ -14291,38 +13543,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const auto scopedPreferredWindow = windowMatchesOverviewScope(preferredSelectedWindow, state, false) ? preferredSelectedWindow : PHLWINDOW{};
     state.focusBeforeOpen = scopedFocusedWindow;
     state.focusDuringOverview = scopedPreferredWindow ? scopedPreferredWindow : scopedFocusedWindow;
-
-    const auto focusedStripWorkspaceForMonitor = [&](const PHLMONITOR& candidateMonitor) -> PHLWORKSPACE {
-        if (!candidateMonitor)
-            return {};
-
-        if (const auto* override = overrideForMonitor(candidateMonitor); override) {
-            if (override->workspace)
-                return override->workspace;
-
-            if (override->workspaceId != WORKSPACE_INVALID) {
-                const auto it = std::find_if(state.managedWorkspaces.begin(),
-                                             state.managedWorkspaces.end(),
-                                             [&](const PHLWORKSPACE& workspace) { return workspace && workspace->m_id == override->workspaceId; });
-                if (it != state.managedWorkspaces.end())
-                    return *it;
-            }
-        }
-
-        if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace) {
-            const auto focusedWorkspaceMonitor = state.focusDuringOverview->m_workspace->m_monitor.lock();
-            if (focusedWorkspaceMonitor == candidateMonitor)
-                return state.focusDuringOverview->m_workspace;
-        }
-
-        if (candidateMonitor->m_activeWorkspace)
-            return candidateMonitor->m_activeWorkspace;
-
-        if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == candidateMonitor)
-            return state.ownerWorkspace;
-
-        return {};
-    };
 
     for (const auto& workspace : state.managedWorkspaces) {
         if (!workspace)
@@ -14471,18 +13691,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     if (allowDirectNiriOverviewLayout) {
         std::unordered_map<MONITORID, std::unordered_set<WORKSPACEID>> directNiriWorkspacesWithWindowsByMonitor;
         for (const auto& window : candidates) {
-            if (!shouldManageWindow(window, state) || !window->m_isMapped)
+            if (!shouldManageWindow(window, state) || !window->m_workspace || !window->m_isMapped)
                 continue;
 
             const auto targetMonitor = preferredMonitorForWindow(window, state);
             if (!targetMonitor)
                 continue;
 
-            const auto directWorkspace = window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : window->m_workspace;
-            if (!directWorkspace || !isScrollingWorkspace(directWorkspace))
-                continue;
-
-            directNiriWorkspacesWithWindowsByMonitor[targetMonitor->m_id].insert(directWorkspace->m_id);
+            directNiriWorkspacesWithWindowsByMonitor[targetMonitor->m_id].insert(window->m_workspace->m_id);
         }
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
@@ -14639,89 +13855,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     };
     std::unordered_map<std::size_t, Rect> niriWorkspaceViewportGlobalByWindowIndex;
 
-    const auto closestScrollingAnchorForFloatingWindow = [&](const PHLWINDOW& window, const PHLWORKSPACE& layoutWorkspace, const Rect& floatingSourceGlobal) -> std::optional<Rect> {
-        if (!window || !layoutWorkspace || !isScrollingWorkspace(layoutWorkspace))
-            return std::nullopt;
-
-        const auto overlapArea = [](const Rect& lhs, const Rect& rhs) {
-            const double x1 = std::max(lhs.x, rhs.x);
-            const double y1 = std::max(lhs.y, rhs.y);
-            const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
-            const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
-            if (x2 <= x1 || y2 <= y1)
-                return 0.0;
-            return (x2 - x1) * (y2 - y1);
-        };
-
-        struct AnchorCandidate {
-            Rect   rect;
-            bool   tiled = false;
-            double overlap = 0.0;
-            double distance = std::numeric_limits<double>::infinity();
-        };
-
-        std::optional<AnchorCandidate> bestTiled;
-        std::optional<AnchorCandidate> bestAny;
-
-        const auto betterAnchor = [](const AnchorCandidate& candidate, const std::optional<AnchorCandidate>& current) {
-            if (!current)
-                return true;
-
-            // Resize is the important case here.  A floating window can keep the
-            // same center while its edges move across a different column/window.
-            // Center-distance alone then keeps picking the old anchor, so the
-            // overview card only changes size in-place.  Prefer the window/column
-            // with the largest live overlap; use distance only as the fallback.
-            if (candidate.overlap > current->overlap + 1.0)
-                return true;
-            if (candidate.overlap + 1.0 < current->overlap)
-                return false;
-
-            return candidate.distance < current->distance;
-        };
-
-        for (const auto& candidate : candidates) {
-            if (!candidate || candidate == window || !candidate->m_isMapped || candidate->m_fadingOut || candidate->isHidden() || candidate->m_pinned ||
-                candidate->m_workspace != layoutWorkspace)
-                continue;
-
-            const bool candidateUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(candidate);
-            const Rect candidateNaturalGlobal = stateSnapshotGlobalRectForWindow(candidate, candidateUseGoalGeometry);
-            Rect       candidateAnchorGlobal = candidateNaturalGlobal;
-
-            const auto target = candidate->layoutTarget();
-            const bool candidateIsTiledScrolling = target && !target->floating() && !isFloatingOverviewWindow(candidate);
-            if (candidateIsTiledScrolling) {
-                candidateAnchorGlobal = scrollingOverviewSourceGlobalRectForWindow(candidate, candidateNaturalGlobal);
-                if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
-                    candidateAnchorGlobal = rowGeometry->anchorGlobal;
-            } else {
-                candidateAnchorGlobal = floatingOverviewSourceGlobalRectForWindow(candidate, renderGlobalRectForWindow(candidate, candidateUseGoalGeometry));
-            }
-
-            const double dx = candidateAnchorGlobal.centerX() - floatingSourceGlobal.centerX();
-            const double dy = candidateAnchorGlobal.centerY() - floatingSourceGlobal.centerY();
-            AnchorCandidate anchor{
-                .rect = candidateAnchorGlobal,
-                .tiled = candidateIsTiledScrolling,
-                .overlap = overlapArea(floatingSourceGlobal, candidateAnchorGlobal),
-                .distance = dx * dx + dy * dy,
-            };
-
-            if (candidateIsTiledScrolling && betterAnchor(anchor, bestTiled))
-                bestTiled = anchor;
-
-            if (betterAnchor(anchor, bestAny))
-                bestAny = anchor;
-        }
-
-        if (bestTiled)
-            return bestTiled->rect;
-        if (bestAny)
-            return bestAny->rect;
-        return std::nullopt;
-    };
-
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
                                                std::size_t windowIndex, bool allowPinned,
                                                std::optional<GestureAxis> overflowAxis,
@@ -14729,19 +13862,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (!allowDirectNiriOverviewLayout)
             return std::nullopt;
 
-        if (!niriModeEnabled() || !window || !targetMonitor || (window->m_pinned && !allowPinned))
+        if (!niriModeEnabled() || !window || !targetMonitor || (window->m_pinned && !allowPinned) || !window->m_workspace || !window->m_workspace->m_space ||
+            !isScrollingWorkspace(window->m_workspace))
             return std::nullopt;
 
-        const auto layoutWorkspace = window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : window->m_workspace;
-        if (!layoutWorkspace || !layoutWorkspace->m_space || !isScrollingWorkspace(layoutWorkspace))
-            return std::nullopt;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(layoutWorkspace);
+        auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
         if (!scrolling || !scrolling->m_scrollingData)
             return std::nullopt;
 
         Rect previewArea = overviewContentRectForMonitor(targetMonitor, state);
-        if (const auto laneIt = niriWorkspaceLaneById.find(layoutWorkspace->m_id); laneIt != niriWorkspaceLaneById.end())
+        if (const auto laneIt = niriWorkspaceLaneById.find(window->m_workspace->m_id); laneIt != niriWorkspaceLaneById.end())
             previewArea = laneIt->second;
         if (previewArea.width <= 1.0 || previewArea.height <= 1.0)
             return std::nullopt;
@@ -14789,17 +13919,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
         } else {
             PHLWINDOW anchorWindow;
-            if (!anchorOverride && layoutWorkspace) {
-                if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == layoutWorkspace)
+            if (!anchorOverride && window->m_workspace) {
+                if (state.focusDuringOverview && state.focusDuringOverview->m_workspace == window->m_workspace)
                     anchorWindow = state.focusDuringOverview;
                 else
-                    anchorWindow = focusCandidateForWorkspace(layoutWorkspace);
+                    anchorWindow = focusCandidateForWorkspace(window->m_workspace);
 
-                if (anchorWindow && anchorWindow->m_workspace == layoutWorkspace) {
+                if (anchorWindow && anchorWindow->m_workspace == window->m_workspace) {
                     const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
                     const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
                     anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
-                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal, anchorWindow))
+                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal))
                         anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
                 }
             }
@@ -14825,15 +13955,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                    targetWidth,
                                    targetHeight);
 
-            if (niriFitBackingPlaceholderWorkspaces.insert(layoutWorkspace->m_id).second) {
+            if (niriFitBackingPlaceholderWorkspaces.insert(window->m_workspace->m_id).second) {
                 const Rect targetGlobal = makeRect(targetMonitor->m_position.x + viewportLocal.x,
                                                    targetMonitor->m_position.y + viewportLocal.y,
                                                    viewportLocal.width,
                                                    viewportLocal.height);
                 state.emptyWorkspacePlaceholders.push_back({
                     .monitor = targetMonitor,
-                    .workspace = layoutWorkspace,
-                    .workspaceId = layoutWorkspace->m_id,
+                    .workspace = window->m_workspace,
+                    .workspaceId = window->m_workspace->m_id,
                     .naturalGlobal = baseGlobal,
                     .exitGlobal = baseGlobal,
                     .targetGlobal = targetGlobal,
@@ -14844,7 +13974,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
         const double stripPreviewGapBoost = g_niriStripSnapshotSingleWorkspaceOnly ? 2.0 : 0.0;
         if (overflowAxis) {
-            const double previewGap = niriWindowGapsForWorkspace(layoutWorkspace, *overflowAxis) + stripPreviewGapBoost;
+            const double previewGap = niriWindowGapsForWorkspace(window->m_workspace, *overflowAxis) + stripPreviewGapBoost;
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
                 targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.y, width, targetLocal.height);
@@ -14859,21 +13989,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             targetLocal = makeRect(targetLocal.centerX() - width * 0.5, targetLocal.centerY() - height * 0.5, width, height);
         }
 
-        if (window->m_pinned) {
-            // Pinned windows are monitor-global in Hyprland, so their stored
-            // workspace can lag behind the workspace strip currently centered
-            // in the overview. Force them into the focused workspace viewport
-            // and center them over that viewport's focused window.
-            targetLocal = makeRect(previewArea.centerX() - targetLocal.width * 0.5,
-                                   previewArea.centerY() - targetLocal.height * 0.5,
-                                   targetLocal.width,
-                                   targetLocal.height);
-        }
-
-        if (isFloatingOverviewWindow(window) || window->m_pinned) {
-            // Floating and pinned windows can live outside the scrolling tape.
-            // Keep their overview cards inside the mapped 1.0 workspace viewport
-            // so they do not spill into neighboring Niri overview lanes.
+        if (isFloatingOverviewWindow(window)) {
+            // Floating windows can live outside the scrolling tape. Keep their
+            // overview cards inside the mapped 1.0 workspace viewport so they
+            // do not spill into neighboring Niri overview lanes.
             targetLocal = clampRectInsidePreservingAspect(targetLocal, workspaceViewportLocal, scale);
             niriWorkspaceViewportGlobalByWindowIndex[windowIndex] = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
                                                                             targetMonitor->m_position.y + workspaceViewportLocal.y,
@@ -14895,31 +14014,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         };
     };
     const auto niriFloatingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
-                                                       std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
-        if (!isFloatingOverviewWindow(window) && !(window && window->m_pinned))
+                                                       std::size_t windowIndex) -> std::optional<WindowSlot> {
+        if (!isFloatingOverviewWindow(window))
             return std::nullopt;
 
-        resolvedSourceGlobal = sourceGlobal;
-
-        Rect baseGlobal = niriFloatingOverviewBaseGlobalRect(targetMonitor);
-        const auto layoutWorkspace = window && window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : (window ? window->m_workspace : PHLWORKSPACE{});
-        if (layoutWorkspace && layoutWorkspace->m_space) {
-            const CBox workAreaBox = layoutWorkspace->m_space->workArea();
-            const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-            if (workArea.width > 1.0 && workArea.height > 1.0)
-                baseGlobal = workArea;
-        }
-
-        std::optional<Rect> anchorOverride;
-        if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
-            anchorOverride = *anchor;
-            resolvedSourceGlobal = makeRect(anchor->centerX() - sourceGlobal.width * 0.5,
-                                            anchor->centerY() - sourceGlobal.height * 0.5,
-                                            sourceGlobal.width,
-                                            sourceGlobal.height);
-        }
-
-        return niriOverviewSlotForSource(window, targetMonitor, resolvedSourceGlobal, baseGlobal, windowIndex, true, std::nullopt, anchorOverride);
+        return niriOverviewSlotForSource(window, targetMonitor, sourceGlobal, niriFloatingOverviewBaseGlobalRect(targetMonitor), windowIndex, true, std::nullopt,
+                                         std::nullopt);
     };
     const auto niriScrollingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
                                                         std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
@@ -14930,13 +14030,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
         std::optional<GestureAxis> overflowAxis;
-        PHLWINDOW layoutAnchorWindow;
-        if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
-            layoutAnchorWindow = state.focusDuringOverview;
-        else
-            layoutAnchorWindow = focusCandidateForWorkspace(window->m_workspace);
-
-        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
+        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             overflowAxis = rowGeometry->primaryAxis;
@@ -14971,10 +14065,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         bool directNiriFloatingOverlay = false;
 
         const Rect floatingSourceGlobal = floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
-        Rect resolvedFloatingSourceGlobal = floatingSourceGlobal;
-        directNiriSlot = niriFloatingOverviewSlotForWindow(window, targetMonitor, floatingSourceGlobal, windowIndex, resolvedFloatingSourceGlobal);
+        directNiriSlot = niriFloatingOverviewSlotForWindow(window, targetMonitor, floatingSourceGlobal, windowIndex);
         if (directNiriSlot) {
-            directNiriSourceGlobal = resolvedFloatingSourceGlobal;
+            directNiriSourceGlobal = floatingSourceGlobal;
             directNiriFloatingOverlay = true;
         } else {
             const Rect scrollingSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window, naturalGlobal);
@@ -15117,7 +14210,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     return false;
                 if (managed.window->m_workspace == workspace)
                     return true;
-                return managed.window->m_pinned && focusedStripWorkspaceForMonitor(targetMonitor) == workspace;
+                return managed.window->m_pinned && targetMonitor->m_activeWorkspace == workspace;
             });
             if (hasManagedWindow)
                 continue;
