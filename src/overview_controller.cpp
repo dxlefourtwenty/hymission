@@ -3599,6 +3599,8 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
     const uint32_t     modifiers = keyboard->getModifiers();
     const bool         hasActionModifier = (modifiers & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0;
+    const bool         disablePlainOverviewArrowAndEnter =
+        niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace());
 
     if (handleNiriOverviewArrowKeybind(keysym, modifiers)) {
         info.cancelled = true;
@@ -3636,11 +3638,15 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         case XKB_KEY_KP_Enter:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 activateSelection();
             break;
         case XKB_KEY_Left:
             if (hasActionModifier)
+                handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
                 handled = false;
             else
                 moveSelection(Direction::Left);
@@ -3648,17 +3654,23 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         case XKB_KEY_Right:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 moveSelection(Direction::Right);
             break;
         case XKB_KEY_Up:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 moveSelection(Direction::Up);
             break;
         case XKB_KEY_Down:
             if (hasActionModifier)
+                handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
                 handled = false;
             else
                 moveSelection(Direction::Down);
