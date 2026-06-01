@@ -201,6 +201,88 @@ void armRetileFillTransformForWindow(const PHLWINDOW& window) {
     };
 }
 
+
+struct ForcedNiriSwapPreviewState {
+    const void* workspaceKey = nullptr;
+    Rect        from;
+    Rect        target;
+    std::chrono::steady_clock::time_point start;
+    std::chrono::steady_clock::time_point until;
+    bool        animate = false;
+};
+
+std::unordered_map<const void*, ForcedNiriSwapPreviewState> g_forcedNiriSwapPreviewStates;
+
+const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
+    return workspace ? workspace.get() : nullptr;
+}
+
+void clearForcedNiriSwapPreviewStates() {
+    g_forcedNiriSwapPreviewStates.clear();
+}
+
+void clearForcedNiriSwapPreviewStatesForWorkspace(const PHLWORKSPACE& workspace) {
+    const void* const workspaceKey = workspaceIdentityKey(workspace);
+    if (!workspaceKey)
+        return;
+
+    std::erase_if(g_forcedNiriSwapPreviewStates, [&](const auto& entry) { return entry.second.workspaceKey == workspaceKey; });
+}
+
+void armForcedNiriSwapPreviewForWindow(const PHLWINDOW& window, const PHLWORKSPACE& workspace, const Rect& from, const Rect& target, bool animate) {
+    const void* const windowKey = windowIdentityKey(window);
+    const void* const workspaceKey = workspaceIdentityKey(workspace);
+    if (!windowKey || !workspaceKey)
+        return;
+
+    const auto now = std::chrono::steady_clock::now();
+    g_forcedNiriSwapPreviewStates[windowKey] = ForcedNiriSwapPreviewState{
+        .workspaceKey = workspaceKey,
+        .from = animate ? from : target,
+        .target = target,
+        .start = now,
+        // Keep this override for the whole visible stale-layout window. Hyprland's scrolling
+        // data can continue to report the old two-column geometry until the overview exits,
+        // so a short animation-only lifetime makes the preview snap back while still open.
+        .until = now + std::chrono::seconds(30),
+        .animate = animate,
+    };
+}
+
+std::optional<Rect> forcedNiriSwapPreviewRectForWindow(const PHLWINDOW& window) {
+    const void* const windowKey = windowIdentityKey(window);
+    if (!windowKey)
+        return std::nullopt;
+
+    const auto it = g_forcedNiriSwapPreviewStates.find(windowKey);
+    if (it == g_forcedNiriSwapPreviewStates.end())
+        return std::nullopt;
+
+    if (!window || workspaceIdentityKey(window->m_workspace) != it->second.workspaceKey) {
+        g_forcedNiriSwapPreviewStates.erase(it);
+        return std::nullopt;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now > it->second.until) {
+        g_forcedNiriSwapPreviewStates.erase(it);
+        return std::nullopt;
+    }
+
+    if (!it->second.animate)
+        return it->second.target;
+
+    const double elapsedMs = std::chrono::duration<double, std::milli>(now - it->second.start).count();
+    const double progress = clampUnit(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS));
+    if (progress >= 1.0) {
+        it->second.from = it->second.target;
+        it->second.animate = false;
+        return it->second.target;
+    }
+
+    return lerpRect(it->second.from, it->second.target, easeOutCubic(progress));
+}
+
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -7511,6 +7593,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (!original || !*original)
         return {};
 
+    if (!isVisible())
+        clearForcedNiriSwapPreviewStates();
+
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
@@ -7555,7 +7640,20 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
             return preview;
 
-        const auto focusedTarget = Desktop::focusState()->window() ? Desktop::focusState()->window()->layoutTarget() : nullptr;
+        const auto focusWindowForColumn = [&]() -> PHLWINDOW {
+            if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == workspace && !selectedBefore->m_pinned && !isFloatingOverviewWindow(selectedBefore))
+                return selectedBefore;
+            if (const auto focused = Desktop::focusState()->window(); focused && focused->m_isMapped && focused->m_workspace == workspace && !focused->m_pinned &&
+                !isFloatingOverviewWindow(focused))
+                return focused;
+            if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && m_state.focusDuringOverview->m_workspace == workspace &&
+                !m_state.focusDuringOverview->m_pinned && !isFloatingOverviewWindow(m_state.focusDuringOverview))
+                return m_state.focusDuringOverview;
+            return {};
+        };
+
+        const auto focusedWindow = focusWindowForColumn();
+        const auto focusedTarget = focusedWindow ? focusedWindow->layoutTarget() : nullptr;
         const auto focusedData = focusedTarget ? scrolling->dataFor(focusedTarget) : nullptr;
         const auto focusedColumn = focusedData ? focusedData->column.lock() : SP<Layout::Tiled::SColumnData>{};
         const int64_t currentIndex = focusedColumn ? scrolling->m_scrollingData->idx(focusedColumn) : -1;
@@ -7566,15 +7664,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         std::string command;
         std::string direction;
         argsStream >> command >> direction;
-        if (direction != "l" && direction != "r")
-            return preview;
 
         const bool wrapSwap = getConfigInt(m_handle, "scrolling:wrap_swapcol", 0) == 1;
-        int64_t targetIndex = currentIndex;
+        int64_t targetIndex = currentIndex == 0 ? 1 : 0;
         if (direction == "l")
             targetIndex = currentIndex == 0 ? (wrapSwap ? 1 : 0) : 0;
-        else
+        else if (direction == "r")
             targetIndex = currentIndex == 1 ? (wrapSwap ? 0 : 1) : 1;
+        // With exactly two columns, any successful swapcol variant can only swap those two
+        // columns.  Do not require a directional argument here; Lua / custom binds often call
+        // layoutmsg swapcol directly, and the stale two-column path is exactly the one Hyprland
+        // does not expose through fresh live positions until the overview closes.
         if (targetIndex == currentIndex)
             return preview;
 
@@ -7628,6 +7728,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!preview.valid || !isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
             return false;
 
+        clearForcedNiriSwapPreviewStatesForWorkspace(preview.workspace);
+
         bool applied = false;
         for (auto& managed : m_state.windows) {
             const auto originIt = std::find_if(preview.windows.begin(), preview.windows.end(),
@@ -7644,6 +7746,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
             managed.relayoutFromGlobal = originIt->rect;
             managed.targetGlobal = target;
+            armForcedNiriSwapPreviewForWindow(managed.window, preview.workspace, originIt->rect, target, niriOverviewAnimationsEnabled());
             if (managed.targetMonitor) {
                 managed.slot.target = {
                     .x = managed.targetGlobal.x - managed.targetMonitor->m_position.x,
@@ -10115,6 +10218,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
+            if (const auto forcedSwapRect = forcedNiriSwapPreviewRectForWindow(window.window); forcedSwapRect)
+                return *forcedSwapRect;
             if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
                 return *dynamicRect;
             if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
