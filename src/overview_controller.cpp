@@ -1578,8 +1578,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
 
-        const double anchorX = horizontal ? targetColumn.virtualBounds.centerX() : baseGlobal.centerX();
-        const double anchorY = horizontal ? baseGlobal.centerY() : targetColumn.virtualBounds.centerY();
+        const double anchorX = targetColumn.virtualBounds.centerX();
+        const double anchorY = targetColumn.virtualBounds.centerY();
         targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
         break;
     }
@@ -3599,6 +3599,8 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(keyboard->m_xkbState, event.keycode + 8);
     const uint32_t     modifiers = keyboard->getModifiers();
     const bool         hasActionModifier = (modifiers & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0;
+    const bool         disablePlainOverviewArrowAndEnter =
+        niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace());
 
     if (handleNiriOverviewArrowKeybind(keysym, modifiers)) {
         info.cancelled = true;
@@ -3636,11 +3638,15 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         case XKB_KEY_KP_Enter:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 activateSelection();
             break;
         case XKB_KEY_Left:
             if (hasActionModifier)
+                handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
                 handled = false;
             else
                 moveSelection(Direction::Left);
@@ -3648,17 +3654,23 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         case XKB_KEY_Right:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 moveSelection(Direction::Right);
             break;
         case XKB_KEY_Up:
             if (hasActionModifier)
                 handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
+                handled = false;
             else
                 moveSelection(Direction::Up);
             break;
         case XKB_KEY_Down:
             if (hasActionModifier)
+                handled = false;
+            else if (disablePlainOverviewArrowAndEnter)
                 handled = false;
             else
                 moveSelection(Direction::Down);
@@ -9680,8 +9692,17 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return std::nullopt;
 
         const Rect ownPreviewBase = activeBaseRect();
-        const Rect anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
-            (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
+        Rect       anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
+                  (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
+        if (anchorRowGeometry) {
+            const double anchorWidth = anchorSourceGlobal.width * scale;
+            const double anchorHeight = anchorSourceGlobal.height * scale;
+            const double anchorCenterX =
+                anchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
+            const double anchorCenterY =
+                anchorPreviewBase.centerY() + (anchorRowGeometry->anchorGlobal.centerY() - anchorRowGeometry->sourceGlobal.centerY()) * scale;
+            anchorPreviewBase = makeRect(anchorCenterX - anchorWidth * 0.5, anchorCenterY - anchorHeight * 0.5, anchorWidth, anchorHeight);
+        }
 
         const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
         const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
@@ -15104,10 +15125,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
         if (g_niriStripSnapshotSingleWorkspaceOnly) {
-            const Rect centeredBaseAnchor =
-                makeRect(baseGlobal.centerX() - anchorSourceGlobal.width * 0.5, baseGlobal.centerY() - anchorSourceGlobal.height * 0.5,
-                         anchorSourceGlobal.width, anchorSourceGlobal.height);
-            anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
+            if (!anchorOverride) {
+                const Rect centeredBaseAnchor =
+                    makeRect(baseGlobal.centerX() - anchorSourceGlobal.width * 0.5, baseGlobal.centerY() - anchorSourceGlobal.height * 0.5,
+                             anchorSourceGlobal.width, anchorSourceGlobal.height);
+                anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
+            }
         } else {
             PHLWINDOW anchorWindow;
             if (!anchorOverride && layoutWorkspace) {
@@ -15250,6 +15273,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
+        std::optional<Rect> anchorOverride;
         std::optional<GestureAxis> overflowAxis;
         PHLWINDOW layoutAnchorWindow;
         if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
@@ -15260,13 +15284,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
+            if (g_niriStripSnapshotSingleWorkspaceOnly)
+                anchorOverride = rowGeometry->anchorGlobal;
             overflowAxis = rowGeometry->primaryAxis;
         } else {
             const CBox workAreaBox = window && window->m_workspace && window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
             baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         }
 
-        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, std::nullopt);
+        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorOverride);
         if (slot)
             resolvedSourceGlobal = sourceForOverview;
         return slot;
