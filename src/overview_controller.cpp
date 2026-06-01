@@ -7918,14 +7918,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         rebuildVisibleState(preferredSelected, true);
         refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
 
-        if (twoColumnSwapPreview.valid && niriOverviewAnimationsEnabled()) {
+        if (twoColumnSwapPreview.valid) {
             bool seededTwoColumnSwap = false;
             for (auto& managed : m_state.windows) {
                 const auto originIt = std::find_if(twoColumnSwapPreview.windows.begin(), twoColumnSwapPreview.windows.end(),
                                                    [&](const TwoColumnSwapPreview::WindowOrigin& origin) { return origin.window == managed.window; });
                 if (originIt == twoColumnSwapPreview.windows.end() || !managed.window || managed.window->m_workspace != twoColumnSwapPreview.workspace)
                     continue;
-                if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
+                if (!rectApproxEqual(managed.targetGlobal, originIt->rect, 0.5))
                     continue;
 
                 const std::size_t otherColumn = originIt->columnIndex == 0 ? 1 : 0;
@@ -7933,15 +7933,30 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 const Rect& otherColumnRect = twoColumnSwapPreview.columnRects[otherColumn];
                 const double dx = otherColumnRect.centerX() - sourceColumn.centerX();
                 const double dy = otherColumnRect.centerY() - sourceColumn.centerY();
-                managed.relayoutFromGlobal = translateRect(originIt->rect, dx, dy);
+                managed.relayoutFromGlobal = originIt->rect;
+                managed.targetGlobal = translateRect(originIt->rect, dx, dy);
+                if (managed.targetMonitor) {
+                    managed.slot.target = {
+                        .x = managed.targetGlobal.x - managed.targetMonitor->m_position.x,
+                        .y = managed.targetGlobal.y - managed.targetMonitor->m_position.y,
+                        .width = managed.targetGlobal.width,
+                        .height = managed.targetGlobal.height,
+                    };
+                }
                 if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
                     seededTwoColumnSwap = true;
             }
 
-            if (seededTwoColumnSwap) {
+            if (seededTwoColumnSwap && niriOverviewAnimationsEnabled()) {
                 m_state.relayoutActive = true;
                 m_state.relayoutProgress = 0.0;
                 m_state.relayoutStart = {};
+                damageOwnedMonitors();
+            } else if (seededTwoColumnSwap) {
+                m_state.relayoutActive = false;
+                m_state.relayoutProgress = 1.0;
+                for (auto& managed : m_state.windows)
+                    managed.relayoutFromGlobal = managed.targetGlobal;
                 damageOwnedMonitors();
             }
         }
