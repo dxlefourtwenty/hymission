@@ -7663,7 +7663,41 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         // target / live geometry still reports the old column.  Capture both columns and let
         // the post-dispatch path decide whether to apply the preview.
 
-        std::array<bool, 2> hasColumnRect{false, false};
+        struct CapturedColumn {
+            SP<Layout::Tiled::SColumnData> column;
+            Rect                           rect;
+            std::vector<TwoColumnSwapPreview::WindowOrigin> windows;
+            bool                           hasRect = false;
+        };
+
+        std::vector<CapturedColumn> capturedColumns;
+        capturedColumns.reserve(2);
+
+        const auto appendToColumn = [&](const SP<Layout::Tiled::SColumnData>& column, const PHLWINDOW& window, const Rect& rect) {
+            auto it = std::find_if(capturedColumns.begin(), capturedColumns.end(), [&](const CapturedColumn& captured) { return captured.column == column; });
+            if (it == capturedColumns.end()) {
+                capturedColumns.push_back({
+                    .column = column,
+                    .rect = rect,
+                    .windows = {},
+                    .hasRect = true,
+                });
+                it = capturedColumns.end() - 1;
+            } else {
+                const double minX = std::min(it->rect.x, rect.x);
+                const double minY = std::min(it->rect.y, rect.y);
+                const double maxX = std::max(it->rect.x + it->rect.width, rect.x + rect.width);
+                const double maxY = std::max(it->rect.y + it->rect.height, rect.y + rect.height);
+                it->rect = makeRect(minX, minY, maxX - minX, maxY - minY);
+            }
+
+            it->windows.push_back({
+                .window = window,
+                .rect = rect,
+                .columnIndex = 0,
+            });
+        };
+
         for (const auto& managed : m_state.windows) {
             const auto window = managed.window;
             if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
@@ -7678,32 +7712,32 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (!column)
                 continue;
 
-            const int64_t columnIndex = scrolling->m_scrollingData->idx(column);
-            if (columnIndex < 0 || columnIndex > 1)
-                continue;
+            appendToColumn(column, window, currentPreviewRect(managed));
+        }
 
-            const Rect rect = currentPreviewRect(managed);
-            preview.windows.push_back({
-                .window = window,
-                .rect = rect,
-                .columnIndex = static_cast<std::size_t>(columnIndex),
-            });
+        if (capturedColumns.size() != 2)
+            return preview;
 
-            auto& columnRect = preview.columnRects[static_cast<std::size_t>(columnIndex)];
-            if (!hasColumnRect[static_cast<std::size_t>(columnIndex)]) {
-                columnRect = rect;
-                hasColumnRect[static_cast<std::size_t>(columnIndex)] = true;
-            } else {
-                const double minX = std::min(columnRect.x, rect.x);
-                const double minY = std::min(columnRect.y, rect.y);
-                const double maxX = std::max(columnRect.x + columnRect.width, rect.x + rect.width);
-                const double maxY = std::max(columnRect.y + columnRect.height, rect.y + rect.height);
-                columnRect = makeRect(minX, minY, maxX - minX, maxY - minY);
+        const bool horizontal = axisForScrollingLayoutDirection(scrollingLayoutDirection()) == GestureAxis::Horizontal;
+        const auto visualPrimary = [&](const CapturedColumn& column) { return horizontal ? column.rect.centerX() : column.rect.centerY(); };
+        std::stable_sort(capturedColumns.begin(), capturedColumns.end(), [&](const CapturedColumn& lhs, const CapturedColumn& rhs) {
+            return visualPrimary(lhs) < visualPrimary(rhs);
+        });
+
+        if (!capturedColumns[0].hasRect || !capturedColumns[1].hasRect)
+            return preview;
+
+        preview.workspace = workspace;
+        preview.columnRects[0] = capturedColumns[0].rect;
+        preview.columnRects[1] = capturedColumns[1].rect;
+        for (std::size_t visualColumnIndex = 0; visualColumnIndex < capturedColumns.size(); ++visualColumnIndex) {
+            for (auto origin : capturedColumns[visualColumnIndex].windows) {
+                origin.columnIndex = visualColumnIndex;
+                preview.windows.push_back(origin);
             }
         }
 
-        preview.workspace = workspace;
-        preview.valid = hasColumnRect[0] && hasColumnRect[1] && !preview.windows.empty();
+        preview.valid = !preview.windows.empty();
         return preview;
     };
 
