@@ -15116,10 +15116,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         Rect anchorSourceGlobal = anchorOverride.value_or(sourceGlobal);
         if (g_niriStripSnapshotSingleWorkspaceOnly) {
-            const Rect centeredBaseAnchor =
-                makeRect(baseGlobal.centerX() - anchorSourceGlobal.width * 0.5, baseGlobal.centerY() - anchorSourceGlobal.height * 0.5,
-                         anchorSourceGlobal.width, anchorSourceGlobal.height);
-            anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
+            if (!anchorOverride) {
+                const Rect centeredBaseAnchor =
+                    makeRect(baseGlobal.centerX() - anchorSourceGlobal.width * 0.5, baseGlobal.centerY() - anchorSourceGlobal.height * 0.5,
+                             anchorSourceGlobal.width, anchorSourceGlobal.height);
+                anchorSourceGlobal = centerAnchorOnWorkspaceStripAxis(centeredBaseAnchor, centeredBaseAnchor, parseWorkspaceStripAnchor(workspaceStripAnchor()));
+            }
         } else {
             PHLWINDOW anchorWindow;
             if (!anchorOverride && layoutWorkspace) {
@@ -15262,6 +15264,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         Rect sourceForOverview = sourceGlobal;
         Rect baseGlobal;
+        std::optional<Rect> anchorOverride;
         std::optional<GestureAxis> overflowAxis;
         PHLWINDOW layoutAnchorWindow;
         if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
@@ -15272,13 +15275,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
+            if (g_niriStripSnapshotSingleWorkspaceOnly)
+                anchorOverride = rowGeometry->anchorGlobal;
             overflowAxis = rowGeometry->primaryAxis;
         } else {
             const CBox workAreaBox = window && window->m_workspace && window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
             baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         }
 
-        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, std::nullopt);
+        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorOverride);
         if (slot)
             resolvedSourceGlobal = sourceForOverview;
         return slot;
