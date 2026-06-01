@@ -7617,13 +7617,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
     const bool selectedWasFloatingLikeBefore = selectedBefore && (selectedBefore->m_pinned || isFloatingOverviewWindow(selectedBefore));
     const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
-    const std::string dispatcherArgsLower = asciiLowerCopy(args);
+    const std::string dispatcherArgsLower = asciiLowerCopy(trimCopy(args));
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
+    const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
-         dispatcherArgsLower.find("consume") != std::string::npos);
-    const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher && dispatcherArgsLower.starts_with("swapcol");
+         dispatcherArgsLower.find("consume") != std::string::npos || isSwapColumnLayoutMessage);
     const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
         dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
         dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
@@ -7962,6 +7963,22 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const auto result = (*original)(std::move(args));
+
+    // swapcol is special in Hyprland's scrolling layout: with exactly two columns, the
+    // column-order mutation can be committed while the exposed target boxes still look
+    // unchanged until a focus movement happens. Treat it like a geometry edit and force
+    // the same focus/recalculate path that fixes the stale state when the user manually
+    // moves focus inside the overview.
+    if (overviewActive && result.success && isSwapColumnLayoutMessage && selectedBefore && selectedBefore->m_isMapped &&
+        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        const auto swapWorkspace = activeLayoutWorkspace();
+        auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
+        if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
+            const auto swapAnchor = closestTiledWindowInWorkspace(selectedBefore);
+            if (swapAnchor && swapAnchor->m_isMapped && hasManagedWindow(swapAnchor))
+                (void)forceDirectNiriGeometryFocus(swapAnchor, "swapcol-two-column-force-refocus");
+        }
+    }
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
