@@ -9692,24 +9692,26 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return std::nullopt;
 
         const Rect ownPreviewBase = activeBaseRect();
-        Rect       anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
-                  (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
-        if (anchorRowGeometry) {
-            const double anchorWidth = anchorSourceGlobal.width * scale;
-            const double anchorHeight = anchorSourceGlobal.height * scale;
-            const double anchorCenterX =
-                anchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
-            const double anchorCenterY =
-                anchorPreviewBase.centerY() + (anchorRowGeometry->anchorGlobal.centerY() - anchorRowGeometry->sourceGlobal.centerY()) * scale;
-            anchorPreviewBase = makeRect(anchorCenterX - anchorWidth * 0.5, anchorCenterY - anchorHeight * 0.5, anchorWidth, anchorHeight);
-        }
-
+        const Rect rawAnchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
+            (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
         const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
         const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
         const double anchorTargetWidth = std::max(1.0, anchorSourceGlobal.width * scale);
         const double anchorTargetHeight = std::max(1.0, anchorSourceGlobal.height * scale);
         const bool ownSizeChanged = std::abs(targetWidth - ownPreviewBase.width) > 1.0 || std::abs(targetHeight - ownPreviewBase.height) > 1.0;
-        const bool anchorSizeChanged = std::abs(anchorTargetWidth - anchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - anchorPreviewBase.height) > 1.0;
+        const bool anchorSizeChanged = std::abs(anchorTargetWidth - rawAnchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - rawAnchorPreviewBase.height) > 1.0;
+
+        Rect anchorPreviewBase = rawAnchorPreviewBase;
+        bool anchorColumnPositionChanged = false;
+        if (m_state.relayoutActive && anchorRowGeometry && !ownSizeChanged && !anchorSizeChanged) {
+            const double anchorCenterX =
+                rawAnchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
+            const double anchorCenterY =
+                rawAnchorPreviewBase.centerY() + (anchorRowGeometry->anchorGlobal.centerY() - anchorRowGeometry->sourceGlobal.centerY()) * scale;
+            anchorPreviewBase = makeRect(anchorCenterX - anchorTargetWidth * 0.5, anchorCenterY - anchorTargetHeight * 0.5, anchorTargetWidth, anchorTargetHeight);
+            anchorColumnPositionChanged = std::abs(anchorPreviewBase.centerX() - rawAnchorPreviewBase.centerX()) > 1.0 ||
+                std::abs(anchorPreviewBase.centerY() - rawAnchorPreviewBase.centerY()) > 1.0;
+        }
 
         struct DynamicResizeAnimation {
             Rect                               from;
@@ -9728,7 +9730,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         // Keep the resize animation origin current while no live resize is happening.
         // This prevents a later grow animation from starting from an old stale position
         // after normal scrolling or focus movement.
-        if (!ownSizeChanged && !anchorSizeChanged) {
+        if (!ownSizeChanged && !anchorSizeChanged && !anchorColumnPositionChanged) {
             const Rect currentBase = activeBaseRect();
             animation.from = currentBase;
             animation.to = currentBase;
