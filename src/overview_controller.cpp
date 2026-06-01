@@ -9692,8 +9692,17 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return std::nullopt;
 
         const Rect ownPreviewBase = activeBaseRect();
-        const Rect anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
-            (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
+        Rect       anchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
+                  (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
+        if (anchorRowGeometry) {
+            const double anchorWidth = anchorSourceGlobal.width * scale;
+            const double anchorHeight = anchorSourceGlobal.height * scale;
+            const double anchorCenterX =
+                anchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
+            const double anchorCenterY =
+                anchorPreviewBase.centerY() + (anchorRowGeometry->anchorGlobal.centerY() - anchorRowGeometry->sourceGlobal.centerY()) * scale;
+            anchorPreviewBase = makeRect(anchorCenterX - anchorWidth * 0.5, anchorCenterY - anchorHeight * 0.5, anchorWidth, anchorHeight);
+        }
 
         const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
         const double targetHeight = std::max(1.0, rowGeometry->sourceGlobal.height * scale);
