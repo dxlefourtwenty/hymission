@@ -3067,8 +3067,8 @@ void OverviewController::renderStage(eRenderStage stage) {
             if (directNiriOverview) {
                 const Rect scrollingSource = scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
                 PHLWINDOW layoutAnchorWindow;
-                if (window && state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
-                    layoutAnchorWindow = state.focusDuringOverview;
+                if (window && m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace == window->m_workspace)
+                    layoutAnchorWindow = m_state.focusDuringOverview;
                 else
                     layoutAnchorWindow = focusCandidateForWorkspace(window ? window->m_workspace : PHLWORKSPACE{});
                 if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, scrollingSource, layoutAnchorWindow))
