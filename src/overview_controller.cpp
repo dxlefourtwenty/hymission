@@ -5035,7 +5035,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     m_state.relayoutActive = animateRefresh && targetChanged;
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
-
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
@@ -9691,7 +9690,13 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (scale <= 0.0)
             return std::nullopt;
 
-        const Rect ownPreviewBase = activeBaseRect();
+        const auto previewBaseForManaged = [&](const ManagedWindow& managed) {
+            if (m_state.relayoutActive)
+                return lerpRect(managed.relayoutFromGlobal, managed.targetGlobal, relayoutVisualProgress());
+            return managed.targetGlobal;
+        };
+
+        const Rect ownPreviewBase = previewBaseForManaged(window);
         const Rect rawAnchorPreviewBase = anchorManaged == &window ? ownPreviewBase :
             (m_state.relayoutActive ? lerpRect(anchorManaged->relayoutFromGlobal, anchorManaged->targetGlobal, relayoutVisualProgress()) : anchorManaged->targetGlobal);
         const double targetWidth = std::max(1.0, rowGeometry->sourceGlobal.width * scale);
@@ -9702,15 +9707,45 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const bool anchorSizeChanged = std::abs(anchorTargetWidth - rawAnchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - rawAnchorPreviewBase.height) > 1.0;
 
         Rect anchorPreviewBase = rawAnchorPreviewBase;
-        bool anchorColumnPositionChanged = false;
-        if (m_state.relayoutActive && anchorRowGeometry && !ownSizeChanged && !anchorSizeChanged) {
-            const double anchorCenterX =
-                rawAnchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
-            const double anchorCenterY =
-                rawAnchorPreviewBase.centerY() + (anchorRowGeometry->anchorGlobal.centerY() - anchorRowGeometry->sourceGlobal.centerY()) * scale;
-            anchorPreviewBase = makeRect(anchorCenterX - anchorTargetWidth * 0.5, anchorCenterY - anchorTargetHeight * 0.5, anchorTargetWidth, anchorTargetHeight);
-            anchorColumnPositionChanged = std::abs(anchorPreviewBase.centerX() - rawAnchorPreviewBase.centerX()) > 1.0 ||
-                std::abs(anchorPreviewBase.centerY() - rawAnchorPreviewBase.centerY()) > 1.0;
+        if (anchorRowGeometry) {
+            Rect columnPreview{};
+            bool hasColumnPreview = false;
+            if (auto* scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling) {
+                const auto anchorTarget = anchorWindow ? anchorWindow->layoutTarget() : nullptr;
+                const auto anchorData = anchorTarget ? scrolling->dataFor(anchorTarget) : nullptr;
+                const auto anchorColumn = anchorData ? anchorData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+                if (anchorColumn) {
+                    for (const auto& candidate : m_state.windows) {
+                        if (!candidate.window || !candidate.window->m_isMapped || candidate.window->m_workspace != workspace ||
+                            candidate.window->m_pinned || isFloatingOverviewWindow(candidate.window))
+                            continue;
+
+                        const auto candidateTarget = candidate.window->layoutTarget();
+                        if (!candidateTarget || candidateTarget->floating())
+                            continue;
+
+                        const auto candidateData = scrolling->dataFor(candidateTarget);
+                        if (!candidateData || candidateData->column.lock() != anchorColumn)
+                            continue;
+
+                        const Rect candidatePreview = previewBaseForManaged(candidate);
+                        if (!hasColumnPreview) {
+                            columnPreview = candidatePreview;
+                            hasColumnPreview = true;
+                            continue;
+                        }
+
+                        const double minX = std::min(columnPreview.x, candidatePreview.x);
+                        const double minY = std::min(columnPreview.y, candidatePreview.y);
+                        const double maxX = std::max(columnPreview.x + columnPreview.width, candidatePreview.x + candidatePreview.width);
+                        const double maxY = std::max(columnPreview.y + columnPreview.height, candidatePreview.y + candidatePreview.height);
+                        columnPreview = makeRect(minX, minY, maxX - minX, maxY - minY);
+                    }
+                }
+            }
+
+            if (hasColumnPreview)
+                anchorPreviewBase = columnPreview;
         }
 
         struct DynamicResizeAnimation {
@@ -9730,7 +9765,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         // Keep the resize animation origin current while no live resize is happening.
         // This prevents a later grow animation from starting from an old stale position
         // after normal scrolling or focus movement.
-        if (!ownSizeChanged && !anchorSizeChanged && !anchorColumnPositionChanged) {
+        if (!ownSizeChanged && !anchorSizeChanged) {
             const Rect currentBase = activeBaseRect();
             animation.from = currentBase;
             animation.to = currentBase;
