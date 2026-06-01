@@ -273,7 +273,7 @@ std::optional<Rect> forcedNiriSwapPreviewRectForWindow(const PHLWINDOW& window) 
         return it->second.target;
 
     const double elapsedMs = std::chrono::duration<double, std::milli>(now - it->second.start).count();
-    const double progress = clampUnit(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS));
+    const double progress = std::clamp(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS), 0.0, 1.0);
     if (progress >= 1.0) {
         it->second.from = it->second.target;
         it->second.animate = false;
