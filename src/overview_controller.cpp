@@ -5035,6 +5035,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     m_state.relayoutActive = animateRefresh && targetChanged;
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
+    if (!m_state.relayoutActive)
+        m_niriColumnSwapClampRelayoutActive = false;
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -7522,6 +7524,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos);
+    const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher && dispatcherArgsLower.find("swapcol") != std::string::npos;
     const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
         dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
         dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
@@ -7692,6 +7695,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const auto result = (*original)(std::move(args));
+    if (overviewActive && usesDirectNiriScrollingOverview(m_state))
+        m_niriColumnSwapClampRelayoutActive = result.success && isSwapColumnLayoutMessage;
+    else if (overviewActive)
+        m_niriColumnSwapClampRelayoutActive = false;
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
@@ -9703,7 +9710,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
 
         Rect anchorPreviewBase = rawAnchorPreviewBase;
         bool anchorColumnPositionChanged = false;
-        if (m_state.relayoutActive && anchorRowGeometry && !ownSizeChanged && !anchorSizeChanged) {
+        if (m_niriColumnSwapClampRelayoutActive && m_state.relayoutActive && anchorRowGeometry && !ownSizeChanged && !anchorSizeChanged) {
             const double anchorCenterX =
                 rawAnchorPreviewBase.centerX() + (anchorRowGeometry->anchorGlobal.centerX() - anchorRowGeometry->sourceGlobal.centerX()) * scale;
             const double anchorCenterY =
@@ -12065,6 +12072,7 @@ void OverviewController::updateAnimation() {
         if (m_state.relayoutProgress >= 1.0) {
             m_state.relayoutProgress = 1.0;
             m_state.relayoutActive = false;
+            m_niriColumnSwapClampRelayoutActive = false;
             m_state.relayoutStart = {};
             latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
             if (debugLogsEnabled())

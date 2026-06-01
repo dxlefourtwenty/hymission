@@ -795,6 +795,7 @@ class OverviewController {
     std::string               m_layoutMessageDispatcherName = "layoutmsg";
     DispatcherHandler         m_moveFocusOriginal;
     std::unordered_map<std::string, DispatcherHandler> m_overviewEditingDispatchersOriginal;
+    bool                      m_niriColumnSwapClampRelayoutActive = false;
     bool                      m_fullscreenActiveDispatcherWrapped = false;
     bool                      m_fullscreenStateDispatcherWrapped = false;
     bool                      m_changeWorkspaceDispatcherWrapped = false;
