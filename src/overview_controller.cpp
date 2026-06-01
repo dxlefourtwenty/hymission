@@ -14169,6 +14169,97 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             }
         }
 
+        if (niriStripPreview && targetWorkspace && isScrollingWorkspace(targetWorkspace)) {
+            bool hasForcedSwapForWorkspace = false;
+            for (const auto& managed : previewState.windows) {
+                if (!managed.window || managed.window->m_workspace != targetWorkspace)
+                    continue;
+
+                if (forcedNiriSwapPreviewRectForWindow(managed.window)) {
+                    hasForcedSwapForWorkspace = true;
+                    break;
+                }
+            }
+
+            if (hasForcedSwapForWorkspace) {
+                auto* const scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
+                if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2) {
+                    struct StripColumnWindow {
+                        ManagedWindow* managed = nullptr;
+                        Rect           rect;
+                        std::size_t    columnIndex = 0;
+                    };
+
+                    std::array<Rect, 2> columnRects{};
+                    std::array<bool, 2> hasColumnRect{false, false};
+                    std::vector<StripColumnWindow> columnWindows;
+
+                    for (auto& managed : previewState.windows) {
+                        const auto window = managed.window;
+                        if (!window || !window->m_isMapped || window->m_workspace != targetWorkspace || window->m_pinned ||
+                            isFloatingOverviewWindow(window) || managed.isNiriFloatingOverlay)
+                            continue;
+
+                        const auto target = window->layoutTarget();
+                        if (!target || target->floating())
+                            continue;
+
+                        const auto targetData = scrolling->dataFor(target);
+                        const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+                        if (!column)
+                            continue;
+
+                        const int64_t rawColumnIndex = scrolling->m_scrollingData->idx(column);
+                        if (rawColumnIndex < 0 || rawColumnIndex > 1)
+                            continue;
+
+                        const auto columnIndex = static_cast<std::size_t>(rawColumnIndex);
+                        const Rect rect = managed.targetGlobal;
+                        columnWindows.push_back({
+                            .managed = &managed,
+                            .rect = rect,
+                            .columnIndex = columnIndex,
+                        });
+
+                        if (!hasColumnRect[columnIndex]) {
+                            columnRects[columnIndex] = rect;
+                            hasColumnRect[columnIndex] = true;
+                        } else {
+                            const double minX = std::min(columnRects[columnIndex].x, rect.x);
+                            const double minY = std::min(columnRects[columnIndex].y, rect.y);
+                            const double maxX = std::max(columnRects[columnIndex].x + columnRects[columnIndex].width, rect.x + rect.width);
+                            const double maxY = std::max(columnRects[columnIndex].y + columnRects[columnIndex].height, rect.y + rect.height);
+                            columnRects[columnIndex] = makeRect(minX, minY, maxX - minX, maxY - minY);
+                        }
+                    }
+
+                    if (hasColumnRect[0] && hasColumnRect[1] && !columnWindows.empty()) {
+                        for (const auto& entry : columnWindows) {
+                            if (!entry.managed)
+                                continue;
+
+                            const std::size_t otherColumnIndex = entry.columnIndex == 0 ? 1 : 0;
+                            const double dx = columnRects[otherColumnIndex].centerX() - columnRects[entry.columnIndex].centerX();
+                            const double dy = columnRects[otherColumnIndex].centerY() - columnRects[entry.columnIndex].centerY();
+                            const Rect target = translateRect(entry.rect, dx, dy);
+
+                            entry.managed->targetGlobal = target;
+                            entry.managed->relayoutFromGlobal = target;
+                            entry.managed->exitGlobal = target;
+                            if (entry.managed->targetMonitor) {
+                                entry.managed->slot.target = {
+                                    .x = target.x - entry.managed->targetMonitor->m_position.x,
+                                    .y = target.y - entry.managed->targetMonitor->m_position.y,
+                                    .width = target.width,
+                                    .height = target.height,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         renderWorkspaceContents = !previewState.windows.empty();
     }
 
