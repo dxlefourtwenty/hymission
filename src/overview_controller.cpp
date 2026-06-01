@@ -7656,43 +7656,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
             return preview;
 
-        const auto focusWindowForColumn = [&]() -> PHLWINDOW {
-            if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == workspace && !selectedBefore->m_pinned && !isFloatingOverviewWindow(selectedBefore))
-                return selectedBefore;
-            if (const auto focused = Desktop::focusState()->window(); focused && focused->m_isMapped && focused->m_workspace == workspace && !focused->m_pinned &&
-                !isFloatingOverviewWindow(focused))
-                return focused;
-            if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && m_state.focusDuringOverview->m_workspace == workspace &&
-                !m_state.focusDuringOverview->m_pinned && !isFloatingOverviewWindow(m_state.focusDuringOverview))
-                return m_state.focusDuringOverview;
-            return {};
-        };
-
-        const auto focusedWindow = focusWindowForColumn();
-        const auto focusedTarget = focusedWindow ? focusedWindow->layoutTarget() : nullptr;
-        const auto focusedData = focusedTarget ? scrolling->dataFor(focusedTarget) : nullptr;
-        const auto focusedColumn = focusedData ? focusedData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-        const int64_t currentIndex = focusedColumn ? scrolling->m_scrollingData->idx(focusedColumn) : -1;
-        if (currentIndex < 0)
-            return preview;
-
-        std::istringstream argsStream(dispatcherArgsLower);
-        std::string command;
-        std::string direction;
-        argsStream >> command >> direction;
-
-        const bool wrapSwap = getConfigInt(m_handle, "scrolling:wrap_swapcol", 0) == 1;
-        int64_t targetIndex = currentIndex == 0 ? 1 : 0;
-        if (direction == "l")
-            targetIndex = currentIndex == 0 ? (wrapSwap ? 1 : 0) : 0;
-        else if (direction == "r")
-            targetIndex = currentIndex == 1 ? (wrapSwap ? 0 : 1) : 1;
-        // With exactly two columns, any successful swapcol variant can only swap those two
-        // columns.  Do not require a directional argument here; Lua / custom binds often call
-        // layoutmsg swapcol directly, and the stale two-column path is exactly the one Hyprland
-        // does not expose through fresh live positions until the overview closes.
-        if (targetIndex == currentIndex)
-            return preview;
+        // With exactly two columns, any successful swapcol variant can only affect those two
+        // columns.  Do not gate the visual override on the currently focused column or on a
+        // parsed l/r argument: Hyprland accepts several swapcol forms, and in the broken
+        // two-column overview case the real swap can be committed even while the focused
+        // target / live geometry still reports the old column.  Capture both columns and let
+        // the post-dispatch path decide whether to apply the preview.
 
         std::array<bool, 2> hasColumnRect{false, false};
         for (const auto& managed : m_state.windows) {
