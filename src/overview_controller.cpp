@@ -1578,8 +1578,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
 
-        const double anchorX = horizontal ? targetColumn.virtualBounds.centerX() : baseGlobal.centerX();
-        const double anchorY = horizontal ? baseGlobal.centerY() : targetColumn.virtualBounds.centerY();
+        const double anchorX = targetColumn.virtualBounds.centerX();
+        const double anchorY = targetColumn.virtualBounds.centerY();
         targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
         break;
     }
