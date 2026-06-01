@@ -1574,7 +1574,14 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.empty())
         return std::nullopt;
 
-    std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
+    // Hyprland's scrolling layout updates the column vector order immediately for swapcol,
+    // but with exactly two columns the live target/layout boxes can keep their old x/y
+    // positions until the overview closes. Sorting by stale geometry erases the swap in
+    // the overview. For the two-column case, trust the scrolling column order instead.
+    // Keep the existing geometry sort for 3+ columns because that path already updates
+    // correctly and can contain partially visible / recentered columns.
+    if (columns.size() > 2)
+        std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
     std::optional<std::size_t> targetColumnIndex;
     std::optional<std::size_t> anchorColumnIndex;
@@ -3057,8 +3064,17 @@ void OverviewController::renderStage(eRenderStage stage) {
             const Rect stateGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry);
             if (managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window) || (window && window->m_pinned))
                 return floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
-            if (directNiriOverview)
-                return scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
+            if (directNiriOverview) {
+                const Rect scrollingSource = scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
+                PHLWINDOW layoutAnchorWindow;
+                if (window && state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace == window->m_workspace)
+                    layoutAnchorWindow = state.focusDuringOverview;
+                else
+                    layoutAnchorWindow = focusCandidateForWorkspace(window ? window->m_workspace : PHLWORKSPACE{});
+                if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, scrollingSource, layoutAnchorWindow))
+                    return rowGeometry->sourceGlobal;
+                return scrollingSource;
+            }
             return layoutAnchorGlobalRectForWindow(window, useGoalGeometry);
         };
 
