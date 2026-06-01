@@ -7624,6 +7624,59 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const TwoColumnSwapPreview twoColumnSwapPreview = captureTwoColumnSwapPreview();
 
+    const auto applyTwoColumnSwapPreview = [this](const TwoColumnSwapPreview& preview) -> bool {
+        if (!preview.valid || !isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+            return false;
+
+        bool applied = false;
+        for (auto& managed : m_state.windows) {
+            const auto originIt = std::find_if(preview.windows.begin(), preview.windows.end(),
+                                               [&](const TwoColumnSwapPreview::WindowOrigin& origin) { return origin.window == managed.window; });
+            if (originIt == preview.windows.end() || !managed.window || !managed.window->m_isMapped || managed.window->m_workspace != preview.workspace)
+                continue;
+
+            const std::size_t otherColumn = originIt->columnIndex == 0 ? 1 : 0;
+            const Rect& sourceColumn = preview.columnRects[originIt->columnIndex];
+            const Rect& otherColumnRect = preview.columnRects[otherColumn];
+            const double dx = otherColumnRect.centerX() - sourceColumn.centerX();
+            const double dy = otherColumnRect.centerY() - sourceColumn.centerY();
+            const Rect target = translateRect(originIt->rect, dx, dy);
+
+            managed.relayoutFromGlobal = originIt->rect;
+            managed.targetGlobal = target;
+            if (managed.targetMonitor) {
+                managed.slot.target = {
+                    .x = managed.targetGlobal.x - managed.targetMonitor->m_position.x,
+                    .y = managed.targetGlobal.y - managed.targetMonitor->m_position.y,
+                    .width = managed.targetGlobal.width,
+                    .height = managed.targetGlobal.height,
+                };
+            }
+
+            if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
+                applied = true;
+        }
+
+        if (!applied)
+            return false;
+
+        if (niriOverviewAnimationsEnabled()) {
+            m_state.relayoutActive = true;
+            m_state.relayoutProgress = 0.0;
+            m_state.relayoutStart = {};
+        } else {
+            m_state.relayoutActive = false;
+            m_state.relayoutProgress = 1.0;
+            for (auto& managed : m_state.windows)
+                managed.relayoutFromGlobal = managed.targetGlobal;
+        }
+
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+        damageOwnedMonitors();
+        return true;
+    };
+
     const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !usesDirectNiriScrollingOverview(m_state))
             return window;
@@ -7918,52 +7971,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         rebuildVisibleState(preferredSelected, true);
         refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
 
-        if (twoColumnSwapPreview.valid) {
-            bool seededTwoColumnSwap = false;
-            for (auto& managed : m_state.windows) {
-                const auto originIt = std::find_if(twoColumnSwapPreview.windows.begin(), twoColumnSwapPreview.windows.end(),
-                                                   [&](const TwoColumnSwapPreview::WindowOrigin& origin) { return origin.window == managed.window; });
-                if (originIt == twoColumnSwapPreview.windows.end() || !managed.window || managed.window->m_workspace != twoColumnSwapPreview.workspace)
-                    continue;
-                if (!rectApproxEqual(managed.targetGlobal, originIt->rect, 0.5))
-                    continue;
-
-                const std::size_t otherColumn = originIt->columnIndex == 0 ? 1 : 0;
-                const Rect& sourceColumn = twoColumnSwapPreview.columnRects[originIt->columnIndex];
-                const Rect& otherColumnRect = twoColumnSwapPreview.columnRects[otherColumn];
-                const double dx = otherColumnRect.centerX() - sourceColumn.centerX();
-                const double dy = otherColumnRect.centerY() - sourceColumn.centerY();
-                managed.relayoutFromGlobal = originIt->rect;
-                managed.targetGlobal = translateRect(originIt->rect, dx, dy);
-                if (managed.targetMonitor) {
-                    managed.slot.target = {
-                        .x = managed.targetGlobal.x - managed.targetMonitor->m_position.x,
-                        .y = managed.targetGlobal.y - managed.targetMonitor->m_position.y,
-                        .width = managed.targetGlobal.width,
-                        .height = managed.targetGlobal.height,
-                    };
-                }
-                if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
-                    seededTwoColumnSwap = true;
-            }
-
-            if (seededTwoColumnSwap && niriOverviewAnimationsEnabled()) {
-                m_state.relayoutActive = true;
-                m_state.relayoutProgress = 0.0;
-                m_state.relayoutStart = {};
-                damageOwnedMonitors();
-            } else if (seededTwoColumnSwap) {
-                m_state.relayoutActive = false;
-                m_state.relayoutProgress = 1.0;
-                for (auto& managed : m_state.windows)
-                    managed.relayoutFromGlobal = managed.targetGlobal;
-                damageOwnedMonitors();
-            }
-        }
+        (void)applyTwoColumnSwapPreview(twoColumnSwapPreview);
 
         if (g_pEventLoopManager && usesDirectNiriScrollingOverview(m_state)) {
             const auto deferredTarget = preferredSelected;
-            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus] {
+            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus, twoColumnSwapPreview, applyTwoColumnSwapPreview] {
                 if (g_controller != this || !isVisible() || m_state.phase != Phase::Active || m_workspaceTransition.active || m_beginCloseInProgress)
                     return;
 
@@ -8065,6 +8077,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 }
                 rebuildVisibleState(target, true);
                 refreshNiriScrollingOverviewAfterFocusDispatcher(source.c_str(), target);
+                (void)applyTwoColumnSwapPreview(twoColumnSwapPreview);
             });
         }
     }
