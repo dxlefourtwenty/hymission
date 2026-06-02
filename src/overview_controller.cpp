@@ -5110,6 +5110,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         SP<Layout::Tiled::SColumnData> column;
         Rect                           bounds;
         bool                           hasBounds = false;
+        double                         previousPrimary = 0.0;
+        double                         nextPrimary = 0.0;
+        bool                           hasPreviousPrimary = false;
+        bool                           hasNextPrimary = false;
     };
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
@@ -5130,6 +5134,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     };
 
     if (captureTwoColumnRefresh) {
+        const bool horizontal =
+            scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->isPrimaryHorizontal() : true;
         refreshGroups[0].column = scrolling->m_scrollingData->columns[0];
         refreshGroups[1].column = scrolling->m_scrollingData->columns[1];
         for (const auto& managed : m_state.windows) {
@@ -5152,6 +5158,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
                 const Rect rect = currentPreviewRect(managed);
                 expandRefreshGroupBounds(refreshGroups[index], rect);
+                const double previousPrimary = horizontal ? managed.naturalGlobal.centerX() : managed.naturalGlobal.centerY();
+                if (!refreshGroups[index].hasPreviousPrimary || previousPrimary < refreshGroups[index].previousPrimary) {
+                    refreshGroups[index].previousPrimary = previousPrimary;
+                    refreshGroups[index].hasPreviousPrimary = true;
+                }
                 refreshOrigins.emplace(window, TwoColumnRefreshOrigin{.rect = rect, .groupIndex = index});
                 break;
             }
@@ -5161,6 +5172,36 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
     if (next.windows.empty())
         return;
+
+    std::array<std::size_t, 2> refreshPreviousRankToGroup{0, 1};
+    std::array<std::size_t, 2> refreshGroupToNextRank{0, 1};
+    if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && refreshGroups[0].hasPreviousPrimary &&
+        refreshGroups[1].hasPreviousPrimary) {
+        const bool horizontal =
+            scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->isPrimaryHorizontal() : true;
+        for (const auto& nextManaged : next.windows) {
+            const auto originIt = refreshOrigins.find(nextManaged.window);
+            if (originIt == refreshOrigins.end())
+                continue;
+
+            auto& group = refreshGroups[originIt->second.groupIndex];
+            const double nextPrimary = horizontal ? nextManaged.naturalGlobal.centerX() : nextManaged.naturalGlobal.centerY();
+            if (!group.hasNextPrimary || nextPrimary < group.nextPrimary) {
+                group.nextPrimary = nextPrimary;
+                group.hasNextPrimary = true;
+            }
+        }
+
+        if (refreshGroups[1].previousPrimary < refreshGroups[0].previousPrimary)
+            std::swap(refreshPreviousRankToGroup[0], refreshPreviousRankToGroup[1]);
+
+        std::array<std::size_t, 2> nextRankToGroup{0, 1};
+        if (refreshGroups[1].hasNextPrimary && refreshGroups[1].nextPrimary < refreshGroups[0].nextPrimary)
+            std::swap(nextRankToGroup[0], nextRankToGroup[1]);
+
+        for (std::size_t rank = 0; rank < nextRankToGroup.size(); ++rank)
+            refreshGroupToNextRank[nextRankToGroup[rank]] = rank;
+    }
 
     std::size_t updated = 0;
     bool        targetChanged = false;
@@ -5180,44 +5221,41 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         managed.targetGlobal = it->targetGlobal;
         managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
-        if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && managed.window && managed.window->m_workspace == workspace) {
+        if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && refreshGroups[0].hasPreviousPrimary &&
+            refreshGroups[1].hasPreviousPrimary && refreshGroups[0].hasNextPrimary && refreshGroups[1].hasNextPrimary && managed.window &&
+            managed.window->m_workspace == workspace) {
             const auto originIt = refreshOrigins.find(managed.window);
-            const auto target = managed.window->layoutTarget();
-            const auto targetData = target ? scrolling->dataFor(target) : nullptr;
-            const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-            std::optional<std::size_t> newGroupIndex;
-            if (column && scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == refreshGroups.size()) {
-                for (std::size_t index = 0; index < refreshGroups.size(); ++index) {
-                    if (scrolling->m_scrollingData->columns[index] == column) {
-                        newGroupIndex = index;
-                        break;
+            if (originIt != refreshOrigins.end()) {
+                const std::size_t previousGroupIndex = originIt->second.groupIndex;
+                const std::size_t previousRank = refreshPreviousRankToGroup[0] == previousGroupIndex ? 0 : 1;
+                const std::size_t nextRank = refreshGroupToNextRank[previousGroupIndex];
+                if (nextRank != previousRank) {
+                    const std::size_t targetGroupIndex = refreshPreviousRankToGroup[nextRank];
+                    const Rect& fromGroup = refreshGroups[previousGroupIndex].bounds;
+                    const Rect& toGroup = refreshGroups[targetGroupIndex].bounds;
+                    const Rect targetRect = translateRect(originIt->second.rect, toGroup.centerX() - fromGroup.centerX(), toGroup.centerY() - fromGroup.centerY());
+                    managed.relayoutFromGlobal = originIt->second.rect;
+                    managed.targetGlobal = targetRect;
+                    if (managed.targetMonitor) {
+                        managed.slot.target = makeRect(targetRect.x - managed.targetMonitor->m_position.x, targetRect.y - managed.targetMonitor->m_position.y,
+                                                       targetRect.width, targetRect.height);
+                        if (managed.slot.natural.width > 1.0)
+                            managed.slot.scale = targetRect.width / managed.slot.natural.width;
+                        else if (managed.slot.natural.height > 1.0)
+                            managed.slot.scale = targetRect.height / managed.slot.natural.height;
                     }
-                }
-            }
-
-            if (originIt != refreshOrigins.end() && newGroupIndex && *newGroupIndex != originIt->second.groupIndex) {
-                const Rect& fromGroup = refreshGroups[originIt->second.groupIndex].bounds;
-                const Rect& toGroup = refreshGroups[*newGroupIndex].bounds;
-                const Rect targetRect = translateRect(originIt->second.rect, toGroup.centerX() - fromGroup.centerX(), toGroup.centerY() - fromGroup.centerY());
-                managed.relayoutFromGlobal = originIt->second.rect;
-                managed.targetGlobal = targetRect;
-                if (managed.targetMonitor) {
-                    managed.slot.target = makeRect(targetRect.x - managed.targetMonitor->m_position.x, targetRect.y - managed.targetMonitor->m_position.y,
-                                                   targetRect.width, targetRect.height);
-                    if (managed.slot.natural.width > 1.0)
-                        managed.slot.scale = targetRect.width / managed.slot.natural.width;
-                    else if (managed.slot.natural.height > 1.0)
-                        managed.slot.scale = targetRect.height / managed.slot.natural.height;
-                }
-                if (traceColumnRefresh) {
-                    std::ostringstream out;
-                    out << "[hymission] niri refresh exact-two repair"
-                        << " window=" << debugWindowLabel(managed.window)
-                        << " fromGroup=" << originIt->second.groupIndex
-                        << " toGroup=" << *newGroupIndex
-                        << " from=" << rectToString(originIt->second.rect)
-                        << " target=" << rectToString(targetRect);
-                    debugLog(out.str());
+                    if (traceColumnRefresh) {
+                        std::ostringstream out;
+                        out << "[hymission] niri refresh exact-two repair"
+                            << " window=" << debugWindowLabel(managed.window)
+                            << " fromGroup=" << previousGroupIndex
+                            << " toGroup=" << targetGroupIndex
+                            << " previousRank=" << previousRank
+                            << " nextRank=" << nextRank
+                            << " from=" << rectToString(originIt->second.rect)
+                            << " target=" << rectToString(targetRect);
+                        debugLog(out.str());
+                    }
                 }
             }
         }
