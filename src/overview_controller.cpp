@@ -7791,7 +7791,20 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         const auto swapWorkspace = activeLayoutWorkspace();
         auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
         if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
-            toggleNiriTwoColumnSwapVisualFlip(swapWorkspace);
+            clearNiriTwoColumnSwapVisualFlip(swapWorkspace);
+
+            // swapcol on exactly two scrolling columns updates Hyprland's column ownership,
+            // but it can leave the exported layout boxes in their old slots until some other
+            // geometry operation happens. A real colresize immediately makes the strip catch
+            // up, so perform a paired one-pixel resize as a net-zero geometry nudge. This keeps
+            // focus_fit_method untouched and avoids any overview-only fake ordering.
+            const auto nudgeColumnGeometry = [&](std::string args) {
+                if (!original || !*original)
+                    return;
+                (void)(*original)(std::move(args));
+            };
+            nudgeColumnGeometry("colresize 1");
+            nudgeColumnGeometry("colresize -1");
 
             if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == swapWorkspace && !selectedBefore->m_pinned &&
                 !isFloatingOverviewWindow(selectedBefore)) {
@@ -7799,11 +7812,20 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 selectWindowInState(m_state, selectedBefore);
             }
 
+            if (swapWorkspace->m_space)
+                swapWorkspace->m_space->recalculate();
+            if (swapScrolling->m_scrollingData)
+                swapScrolling->m_scrollingData->recalculate(true);
             refreshWorkspaceLayoutSnapshot(swapWorkspace);
+            if (const auto monitor = swapWorkspace->m_monitor.lock())
+                g_layoutManager->recalculateMonitor(monitor);
+            if (g_pAnimationManager)
+                g_pAnimationManager->frameTick();
+
             m_stripSnapshotsDirty = true;
             scheduleWorkspaceStripSnapshotRefresh();
             rebuildVisibleState(selectedBefore, true);
-            refreshNiriScrollingOverviewAfterLayoutScroll("swapcol-two-column-visual-order");
+            refreshNiriScrollingOverviewAfterLayoutScroll("swapcol-two-column-column-geometry-nudge");
             damageOwnedMonitors();
             return result;
         }
