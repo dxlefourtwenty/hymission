@@ -5117,6 +5117,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         double                         nextPrimary = 0.0;
         bool                           hasPreviousPrimary = false;
         bool                           hasNextPrimary = false;
+        bool                           hasSizeChangingOrigin = false;
     };
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
@@ -5161,6 +5162,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
                 const Rect rect = currentPreviewRect(managed);
                 expandRefreshGroupBounds(refreshGroups[index], rect);
+                if (std::abs(rect.width - managed.targetGlobal.width) > 1.0 || std::abs(rect.height - managed.targetGlobal.height) > 1.0)
+                    refreshGroups[index].hasSizeChangingOrigin = true;
                 const double previousPrimary = horizontal ? managed.naturalGlobal.centerX() : managed.naturalGlobal.centerY();
                 if (!refreshGroups[index].hasPreviousPrimary || previousPrimary < refreshGroups[index].previousPrimary) {
                     refreshGroups[index].previousPrimary = previousPrimary;
@@ -5232,7 +5235,9 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                 const std::size_t previousGroupIndex = originIt->second.groupIndex;
                 const std::size_t previousRank = refreshPreviousRankToGroup[0] == previousGroupIndex ? 0 : 1;
                 const std::size_t nextRank = refreshGroupToNextRank[previousGroupIndex];
-                if (nextRank != previousRank || forceSameFocusTwoColumnSwap) {
+                const bool sameFocusSwapRepairAllowed =
+                    forceSameFocusTwoColumnSwap && !refreshGroups[0].hasSizeChangingOrigin && !refreshGroups[1].hasSizeChangingOrigin;
+                if (nextRank != previousRank || sameFocusSwapRepairAllowed) {
                     const std::size_t targetGroupIndex = nextRank != previousRank ? refreshPreviousRankToGroup[nextRank] : (previousGroupIndex == 0 ? 1 : 0);
                     const Rect& fromGroup = refreshGroups[previousGroupIndex].bounds;
                     const Rect& toGroup = refreshGroups[targetGroupIndex].bounds;
@@ -5255,12 +5260,23 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                             << " window=" << debugWindowLabel(managed.window)
                             << " fromGroup=" << previousGroupIndex
                             << " toGroup=" << targetGroupIndex
+                            << " sizeChangingOrigin=" << (refreshGroups[previousGroupIndex].hasSizeChangingOrigin ? 1 : 0)
                             << " previousRank=" << previousRank
                             << " nextRank=" << nextRank
                             << " from=" << rectToString(originIt->second.rect)
                             << " target=" << rectToString(targetRect);
                         debugLog(out.str());
                     }
+                } else if (forceSameFocusTwoColumnSwap && traceColumnRefresh && (refreshGroups[0].hasSizeChangingOrigin || refreshGroups[1].hasSizeChangingOrigin)) {
+                    std::ostringstream out;
+                    out << "[hymission] niri refresh exact-two repair skip"
+                        << " reason=size-changing-origin"
+                        << " window=" << debugWindowLabel(managed.window)
+                        << " group0SizeChanging=" << (refreshGroups[0].hasSizeChangingOrigin ? 1 : 0)
+                        << " group1SizeChanging=" << (refreshGroups[1].hasSizeChangingOrigin ? 1 : 0)
+                        << " previousRank=" << previousRank
+                        << " nextRank=" << nextRank;
+                    debugLog(out.str());
                 }
             }
         }
