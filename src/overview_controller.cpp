@@ -1533,7 +1533,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.size() > 1)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
-    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 && niriTwoColumnSwapVisualFlipActive(window->m_workspace);
+    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 && !g_niriStripSnapshotSingleWorkspaceOnly &&
+        niriTwoColumnSwapVisualFlipActive(window->m_workspace);
     std::optional<double> preSwapTwoColumnGap;
     if (applyTwoColumnSwapVisualFlip) {
         const Rect& left = columns[0].bounds;
@@ -7770,7 +7771,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const auto result = (*original)(std::move(args));
 
-    if (overviewActive && result.success && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+    if (overviewActive && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
         const auto swapWorkspace = activeLayoutWorkspace();
         auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
         if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
@@ -13974,6 +13975,91 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             m_state.focusDuringOverview :
             focusCandidateForWorkspace(targetWorkspace);
         previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false, preferredPreviewFocus);
+
+        if (niriStripPreview && niriTwoColumnSwapVisualFlipActive(targetWorkspace)) {
+            auto* const scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
+            if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller && scrolling->m_scrollingData->columns.size() == 2) {
+                struct StripSwapColumnGroup {
+                    SP<Layout::Tiled::SColumnData> column;
+                    Rect                           bounds;
+                    std::vector<std::size_t>       indices;
+                    bool                           hasBounds = false;
+                    double                         primary = 0.0;
+                };
+
+                const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
+                const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+                const auto translateManaged = [&](ManagedWindow& managed, double delta) {
+                    const double dx = horizontal ? delta : 0.0;
+                    const double dy = horizontal ? 0.0 : delta;
+                    managed.targetGlobal = translateRect(managed.targetGlobal, dx, dy);
+                    managed.relayoutFromGlobal = translateRect(managed.relayoutFromGlobal, dx, dy);
+                    managed.exitGlobal = translateRect(managed.exitGlobal, dx, dy);
+                    managed.slot.target = makeRect(managed.slot.target.x + dx, managed.slot.target.y + dy, managed.slot.target.width, managed.slot.target.height);
+                };
+
+                std::vector<StripSwapColumnGroup> groups;
+                groups.reserve(2);
+                for (const auto& column : scrolling->m_scrollingData->columns) {
+                    if (column)
+                        groups.push_back({.column = column});
+                }
+
+                for (std::size_t index = 0; index < previewState.windows.size(); ++index) {
+                    auto& managed = previewState.windows[index];
+                    const auto window = managed.window;
+                    if (!window || window->m_workspace != targetWorkspace || window->m_pinned || isFloatingOverviewWindow(window))
+                        continue;
+
+                    const auto target = window->layoutTarget();
+                    if (!target || target->floating())
+                        continue;
+
+                    const auto targetData = scrolling->dataFor(target);
+                    if (!targetData)
+                        continue;
+
+                    const auto column = targetData->column.lock();
+                    if (!column)
+                        continue;
+
+                    auto groupIt = std::find_if(groups.begin(), groups.end(), [&](const StripSwapColumnGroup& group) { return group.column == column; });
+                    if (groupIt == groups.end())
+                        continue;
+
+                    const Rect rect = managed.targetGlobal;
+                    if (!groupIt->hasBounds) {
+                        groupIt->bounds = rect;
+                        groupIt->hasBounds = true;
+                    } else {
+                        const double minX = std::min(groupIt->bounds.x, rect.x);
+                        const double minY = std::min(groupIt->bounds.y, rect.y);
+                        const double maxX = std::max(groupIt->bounds.x + groupIt->bounds.width, rect.x + rect.width);
+                        const double maxY = std::max(groupIt->bounds.y + groupIt->bounds.height, rect.y + rect.height);
+                        groupIt->bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+                    }
+                    groupIt->indices.push_back(index);
+                }
+
+                std::erase_if(groups, [](const StripSwapColumnGroup& group) { return !group.hasBounds || group.indices.empty(); });
+                if (groups.size() == 2) {
+                    for (auto& group : groups)
+                        group.primary = primaryStart(group.bounds);
+
+                    std::stable_sort(groups.begin(), groups.end(), [](const StripSwapColumnGroup& lhs, const StripSwapColumnGroup& rhs) {
+                        return lhs.primary < rhs.primary;
+                    });
+
+                    const double firstDelta = groups[1].primary - groups[0].primary;
+                    const double secondDelta = groups[0].primary - groups[1].primary;
+                    for (const auto index : groups[0].indices)
+                        translateManaged(previewState.windows[index], firstDelta);
+                    for (const auto index : groups[1].indices)
+                        translateManaged(previewState.windows[index], secondDelta);
+                }
+            }
+        }
+
         previewState.phase = Phase::Active;
         previewState.animationProgress = 1.0;
         previewState.animationFromVisual = 1.0;
