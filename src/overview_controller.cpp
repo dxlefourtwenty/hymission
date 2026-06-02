@@ -4870,7 +4870,14 @@ bool OverviewController::niriPreviewDisabled() const {
 }
 
 bool OverviewController::niriOverviewAnimationsEnabled() const {
-    return getConfigInt(m_handle, "plugin:hymission:niri_overview_animations", 1) != 0 && getConfigInt(m_handle, "animations:enabled", 1) != 0;
+    const bool pluginAnimationsEnabled = getConfigInt(m_handle, "plugin:hymission:niri_overview_animations", 1) != 0;
+    if (!pluginAnimationsEnabled)
+        return false;
+
+    if (getConfigInt(m_handle, "animations:enabled", 1) != 0)
+        return true;
+
+    return m_animationsEnabledOverridden && m_animationsEnabledBackup != 0;
 }
 
 bool OverviewController::debugLogsEnabled() const {
