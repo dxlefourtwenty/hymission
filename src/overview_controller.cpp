@@ -1533,24 +1533,40 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.size() > 1)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
-    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 && !g_niriStripSnapshotSingleWorkspaceOnly &&
+    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 &&
         niriTwoColumnSwapVisualFlipActive(window->m_workspace);
     std::optional<double> preSwapTwoColumnGap;
     if (applyTwoColumnSwapVisualFlip) {
-        const Rect& left = columns[0].bounds;
-        const Rect& right = columns[1].bounds;
-        const double leftEnd = horizontal ? left.x + left.width : left.y + left.height;
-        const double rightStart = horizontal ? right.x : right.y;
-        const double measuredGap = rightStart - leftEnd;
+        const Rect firstVisualSlot = columns[0].bounds;
+        const Rect secondVisualSlot = columns[1].bounds;
+        const double firstEnd = horizontal ? firstVisualSlot.x + firstVisualSlot.width : firstVisualSlot.y + firstVisualSlot.height;
+        const double secondStart = horizontal ? secondVisualSlot.x : secondVisualSlot.y;
+        const double measuredGap = secondStart - firstEnd;
         if (measuredGap > 0.0)
             preSwapTwoColumnGap = measuredGap;
 
-        // Hyprland's scrolling layout can swap exactly two columns internally while
-        // leaving the exposed target boxes stale until the next focus movement.
-        // Preserve the real target boxes, but swap the logical column order used by
-        // the overview tape.  This moves whole stacked columns visually without
-        // touching Hyprland's real layout state.
+        // With exactly two scrolling columns, Hyprland's swapcol can update the
+        // column ownership/order without publishing fresh target boxes until the
+        // next focus movement.  Sorting by the still-stale boxes then reconstructs
+        // the original visual order, so the overview appears unchanged.  Keep the
+        // normal geometry path intact, but put each swapped column into the other
+        // column's previous visual slot.  This is deliberately scoped to the
+        // temporary swap visual flip and does not alter focus_fit_method behavior
+        // unless a two-column swap is actually pending.
         std::swap(columns[0], columns[1]);
+
+        const auto moveVirtualBoundsToSlot = [&](ColumnEntry& entry, const Rect& slot) {
+            Rect virtualBounds = entry.bounds;
+            if (horizontal) {
+                virtualBounds.x = slot.x;
+            } else {
+                virtualBounds.y = slot.y;
+            }
+            entry.virtualBounds = virtualBounds;
+        };
+
+        moveVirtualBoundsToSlot(columns[0], firstVisualSlot);
+        moveVirtualBoundsToSlot(columns[1], secondVisualSlot);
     }
 
     std::optional<std::size_t> targetColumnIndex;
@@ -13976,7 +13992,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             focusCandidateForWorkspace(targetWorkspace);
         previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false, preferredPreviewFocus);
 
-        if (niriStripPreview && niriTwoColumnSwapVisualFlipActive(targetWorkspace)) {
+        if (false && niriStripPreview && niriTwoColumnSwapVisualFlipActive(targetWorkspace)) {
             auto* const scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
             if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller && scrolling->m_scrollingData->columns.size() == 2) {
                 struct StripSwapColumnGroup {
