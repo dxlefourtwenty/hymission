@@ -7679,6 +7679,48 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         std::vector<CapturedColumn> capturedColumns;
         capturedColumns.reserve(2);
 
+        PHLWINDOW visualAnchorWindow = selectedBefore;
+        if (!visualAnchorWindow || !visualAnchorWindow->m_isMapped || visualAnchorWindow->m_workspace != workspace || visualAnchorWindow->m_pinned ||
+            isFloatingOverviewWindow(visualAnchorWindow))
+            visualAnchorWindow = focusCandidateForWorkspace(workspace);
+
+        const ManagedWindow* visualAnchorManaged =
+            visualAnchorWindow && visualAnchorWindow->m_isMapped ? managedWindowFor(m_state, visualAnchorWindow, true) : nullptr;
+        std::optional<ScrollingOverviewGeometry> visualAnchorGeometry;
+        Rect visualAnchorRect{};
+        if (visualAnchorManaged && visualAnchorManaged->window && visualAnchorManaged->targetMonitor) {
+            const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(visualAnchorManaged->window);
+            const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(visualAnchorManaged->window, anchorUseGoalGeometry);
+            const Rect anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(visualAnchorManaged->window, anchorNaturalGlobal);
+            visualAnchorGeometry = scrollingOverviewTapeRowGeometryForWindow(visualAnchorManaged->window, anchorSourceGlobal, visualAnchorManaged->window);
+            visualAnchorRect = currentPreviewRect(*visualAnchorManaged);
+        }
+
+        const auto visualRectForManaged = [&](const ManagedWindow& managed) {
+            Rect rect = currentPreviewRect(managed);
+            if (!visualAnchorManaged || !visualAnchorGeometry || !managed.window || !managed.targetMonitor || managed.targetMonitor != visualAnchorManaged->targetMonitor)
+                return rect;
+
+            const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(managed.window);
+            const Rect naturalGlobal = stateSnapshotGlobalRectForWindow(managed.window, useGoalGeometry);
+            const Rect sourceGlobal = scrollingOverviewSourceGlobalRectForWindow(managed.window, naturalGlobal);
+            const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(managed.window, sourceGlobal, visualAnchorManaged->window);
+            if (!rowGeometry)
+                return rect;
+
+            double scale = managed.slot.scale;
+            if (scale <= 0.0 && managed.naturalGlobal.width > 1.0)
+                scale = managed.targetGlobal.width / managed.naturalGlobal.width;
+            if (scale <= 0.0 && managed.naturalGlobal.height > 1.0)
+                scale = managed.targetGlobal.height / managed.naturalGlobal.height;
+            if (scale <= 0.0)
+                return rect;
+
+            const double centerX = visualAnchorRect.centerX() + (rowGeometry->sourceGlobal.centerX() - visualAnchorGeometry->sourceGlobal.centerX()) * scale;
+            const double centerY = visualAnchorRect.centerY() + (rowGeometry->sourceGlobal.centerY() - visualAnchorGeometry->sourceGlobal.centerY()) * scale;
+            return makeRect(centerX - rect.width * 0.5, centerY - rect.height * 0.5, rect.width, rect.height);
+        };
+
         const auto appendToColumn = [&](const SP<Layout::Tiled::SColumnData>& column, const PHLWINDOW& window, const Rect& rect) {
             auto it = std::find_if(capturedColumns.begin(), capturedColumns.end(), [&](const CapturedColumn& captured) { return captured.column == column; });
             if (it == capturedColumns.end()) {
@@ -7718,7 +7760,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (!column)
                 continue;
 
-            appendToColumn(column, window, currentPreviewRect(managed));
+            appendToColumn(column, window, visualRectForManaged(managed));
         }
 
         if (capturedColumns.size() != 2)
