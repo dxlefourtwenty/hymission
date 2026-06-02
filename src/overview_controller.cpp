@@ -213,13 +213,6 @@ struct ForcedNiriSwapPreviewState {
 
 std::unordered_map<const void*, ForcedNiriSwapPreviewState> g_forcedNiriSwapPreviewStates;
 
-// Some Hyprland scrolling-layout swapcol operations with exactly two columns update
-// the real layout only after a later focus/scroll refresh, even though the swap
-// command has already succeeded.  Track a lightweight visual parity per workspace
-// so the overview can immediately flip the two-column tape order without touching
-// Hyprland's real layout state.
-std::unordered_map<const void*, bool> g_twoColumnSwapVisualParityByWorkspace;
-
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
 }
@@ -234,35 +227,6 @@ void clearForcedNiriSwapPreviewStatesForWorkspace(const PHLWORKSPACE& workspace)
         return;
 
     std::erase_if(g_forcedNiriSwapPreviewStates, [&](const auto& entry) { return entry.second.workspaceKey == workspaceKey; });
-}
-
-bool twoColumnSwapVisualParityForWorkspace(const PHLWORKSPACE& workspace) {
-    const void* const workspaceKey = workspaceIdentityKey(workspace);
-    if (!workspaceKey)
-        return false;
-
-    const auto it = g_twoColumnSwapVisualParityByWorkspace.find(workspaceKey);
-    return it != g_twoColumnSwapVisualParityByWorkspace.end() && it->second;
-}
-
-void toggleTwoColumnSwapVisualParityForWorkspace(const PHLWORKSPACE& workspace) {
-    const void* const workspaceKey = workspaceIdentityKey(workspace);
-    if (!workspaceKey)
-        return;
-
-    g_twoColumnSwapVisualParityByWorkspace[workspaceKey] = !g_twoColumnSwapVisualParityByWorkspace[workspaceKey];
-}
-
-void clearTwoColumnSwapVisualParityForWorkspace(const PHLWORKSPACE& workspace) {
-    const void* const workspaceKey = workspaceIdentityKey(workspace);
-    if (!workspaceKey)
-        return;
-
-    g_twoColumnSwapVisualParityByWorkspace.erase(workspaceKey);
-}
-
-void clearTwoColumnSwapVisualParityStates() {
-    g_twoColumnSwapVisualParityByWorkspace.clear();
 }
 
 void armForcedNiriSwapPreviewForWindow(const PHLWINDOW& window, const PHLWORKSPACE& workspace, const Rect& from, const Rect& target, bool animate) {
@@ -1618,8 +1582,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     // correctly and can contain partially visible / recentered columns.
     if (columns.size() > 2)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
-    else if (columns.size() == 2 && twoColumnSwapVisualParityForWorkspace(window->m_workspace))
-        std::reverse(columns.begin(), columns.end());
 
     std::optional<std::size_t> targetColumnIndex;
     std::optional<std::size_t> anchorColumnIndex;
@@ -4232,15 +4194,11 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
         // with rapid repeated input and briefly leave the real focus on the
         // previous window, which makes exiting the overview activate the wrong
         // client. moveSelection already clamps at workspace edges.
-        if (const auto workspace = activeLayoutWorkspace(); workspace)
-            clearTwoColumnSwapVisualParityForWorkspace(workspace);
         moveSelection(*requestedDirection);
         return {};
     }
 
     const auto result = m_moveFocusOriginal(std::move(args));
-    if (const auto workspace = activeLayoutWorkspace(); workspace)
-        clearTwoColumnSwapVisualParityForWorkspace(workspace);
     refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus");
     return result;
 }
@@ -7653,7 +7611,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     if (!isVisible()) {
         clearForcedNiriSwapPreviewStates();
-        clearTwoColumnSwapVisualParityStates();
     }
 
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
@@ -8012,18 +7969,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const auto result = (*original)(std::move(args));
-
-    if (overviewActive && result.success && isSwapColumnLayoutMessage && niriSingleWorkspaceScrollingOverviewActive()) {
-        const auto swapWorkspace = activeLayoutWorkspace();
-        auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
-        if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
-            toggleTwoColumnSwapVisualParityForWorkspace(swapWorkspace);
-            refreshWorkspaceLayoutSnapshot(swapWorkspace);
-            m_stripSnapshotsDirty = true;
-            scheduleWorkspaceStripSnapshotRefresh();
-            damageOwnedMonitors();
-        }
-    }
 
     // swapcol is special in Hyprland's scrolling layout: with exactly two columns, the
     // column-order mutation can be committed while the exposed target boxes still look
