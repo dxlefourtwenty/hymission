@@ -7630,23 +7630,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
             isScrollingWorkspace(activeLayoutWorkspace());
     };
-    const auto exactTwoColumnNiriSwapcolActive = [&]() {
-        if (!isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive())
-            return false;
-
-        const auto workspace = activeLayoutWorkspace();
-        auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
-        return scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
-    };
-    const bool exactTwoColumnNiriSwapcol = exactTwoColumnNiriSwapcolActive();
     const bool forceGeometryRefocus =
-        !exactTwoColumnNiriSwapcol &&
-        (dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
-         dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
-         dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
-         dispatcherNameLower.starts_with("settiled") || dispatcherNameLower.starts_with("pin") ||
-         dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
-         dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage);
+        dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
+        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
+        dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
+        dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
+        dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
+        isScrollingGeometryLayoutMessage;
 
     struct TwoColumnSwapPreview {
         PHLWORKSPACE workspace;
