@@ -5102,6 +5102,62 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     }
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
+    struct TwoColumnRefreshOrigin {
+        Rect        rect;
+        std::size_t groupIndex = 0;
+    };
+    struct TwoColumnRefreshGroup {
+        SP<Layout::Tiled::SColumnData> column;
+        Rect                           bounds;
+        bool                           hasBounds = false;
+    };
+    std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
+    std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
+    const bool captureTwoColumnRefresh = animateRefresh && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
+        scrolling->m_scrollingData->columns.size() == 2;
+    const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
+        if (!group.hasBounds) {
+            group.bounds = rect;
+            group.hasBounds = true;
+            return;
+        }
+
+        const double minX = std::min(group.bounds.x, rect.x);
+        const double minY = std::min(group.bounds.y, rect.y);
+        const double maxX = std::max(group.bounds.x + group.bounds.width, rect.x + rect.width);
+        const double maxY = std::max(group.bounds.y + group.bounds.height, rect.y + rect.height);
+        group.bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+    };
+
+    if (captureTwoColumnRefresh) {
+        refreshGroups[0].column = scrolling->m_scrollingData->columns[0];
+        refreshGroups[1].column = scrolling->m_scrollingData->columns[1];
+        for (const auto& managed : m_state.windows) {
+            const auto window = managed.window;
+            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
+                continue;
+
+            const auto target = window->layoutTarget();
+            if (!target || target->floating())
+                continue;
+
+            const auto targetData = scrolling->dataFor(target);
+            const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+            if (!column)
+                continue;
+
+            for (std::size_t index = 0; index < refreshGroups.size(); ++index) {
+                if (refreshGroups[index].column != column)
+                    continue;
+
+                const Rect rect = currentPreviewRect(managed);
+                expandRefreshGroupBounds(refreshGroups[index], rect);
+                refreshOrigins.emplace(window, TwoColumnRefreshOrigin{.rect = rect, .groupIndex = index});
+                break;
+            }
+        }
+    }
+
     State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
     if (next.windows.empty())
         return;
@@ -5124,6 +5180,47 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         managed.targetGlobal = it->targetGlobal;
         managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
+        if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && managed.window && managed.window->m_workspace == workspace) {
+            const auto originIt = refreshOrigins.find(managed.window);
+            const auto target = managed.window->layoutTarget();
+            const auto targetData = target ? scrolling->dataFor(target) : nullptr;
+            const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+            std::optional<std::size_t> newGroupIndex;
+            if (column && scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == refreshGroups.size()) {
+                for (std::size_t index = 0; index < refreshGroups.size(); ++index) {
+                    if (scrolling->m_scrollingData->columns[index] == column) {
+                        newGroupIndex = index;
+                        break;
+                    }
+                }
+            }
+
+            if (originIt != refreshOrigins.end() && newGroupIndex && *newGroupIndex != originIt->second.groupIndex) {
+                const Rect& fromGroup = refreshGroups[originIt->second.groupIndex].bounds;
+                const Rect& toGroup = refreshGroups[*newGroupIndex].bounds;
+                const Rect targetRect = translateRect(originIt->second.rect, toGroup.centerX() - fromGroup.centerX(), toGroup.centerY() - fromGroup.centerY());
+                managed.relayoutFromGlobal = originIt->second.rect;
+                managed.targetGlobal = targetRect;
+                if (managed.targetMonitor) {
+                    managed.slot.target = makeRect(targetRect.x - managed.targetMonitor->m_position.x, targetRect.y - managed.targetMonitor->m_position.y,
+                                                   targetRect.width, targetRect.height);
+                    if (managed.slot.natural.width > 1.0)
+                        managed.slot.scale = targetRect.width / managed.slot.natural.width;
+                    else if (managed.slot.natural.height > 1.0)
+                        managed.slot.scale = targetRect.height / managed.slot.natural.height;
+                }
+                if (traceColumnRefresh) {
+                    std::ostringstream out;
+                    out << "[hymission] niri refresh exact-two repair"
+                        << " window=" << debugWindowLabel(managed.window)
+                        << " fromGroup=" << originIt->second.groupIndex
+                        << " toGroup=" << *newGroupIndex
+                        << " from=" << rectToString(originIt->second.rect)
+                        << " target=" << rectToString(targetRect);
+                    debugLog(out.str());
+                }
+            }
+        }
         m_state.slots.push_back(managed.slot);
         if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
             targetChanged = true;
