@@ -1530,27 +1530,18 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.empty())
         return std::nullopt;
 
-    if (columns.size() > 1)
+    // For the 2-column scrolling layout case, do not sort by the exposed target
+    // positions. Hyprland can commit `swapcol` by changing the scrolling column
+    // order while leaving the two target boxes at their old x/y coordinates until
+    // focus moves or the overview exits. Sorting by those stale coordinates hides
+    // the swap completely. Keep the scrolling algorithm's column vector order for
+    // exactly two columns, and continue using position sorting for 3+ columns where
+    // live geometry updates correctly.
+    if (columns.size() > 1 && !exactTwoColumns)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
-    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 && niriTwoColumnSwapVisualFlipActive(window->m_workspace);
+    constexpr bool applyTwoColumnSwapVisualFlip = false;
     std::optional<double> preSwapTwoColumnGap;
-    if (applyTwoColumnSwapVisualFlip) {
-        const Rect& left = columns[0].bounds;
-        const Rect& right = columns[1].bounds;
-        const double leftEnd = horizontal ? left.x + left.width : left.y + left.height;
-        const double rightStart = horizontal ? right.x : right.y;
-        const double measuredGap = rightStart - leftEnd;
-        if (measuredGap > 0.0)
-            preSwapTwoColumnGap = measuredGap;
-
-        // Hyprland's scrolling layout can swap exactly two columns internally while
-        // leaving the exposed target boxes stale until the next focus movement.
-        // Preserve the real target boxes, but swap the logical column order used by
-        // the overview tape.  This moves whole stacked columns visually without
-        // touching Hyprland's real layout state.
-        std::swap(columns[0], columns[1]);
-    }
 
     std::optional<std::size_t> targetColumnIndex;
     std::optional<std::size_t> anchorColumnIndex;
@@ -1602,7 +1593,10 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             rect.y = start;
     };
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
-    const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
+    // In fit mode, Hyprland's two-column target boxes can still be stale after
+    // swapcol. Treat exactly two columns like center mode here so the overview
+    // derives positions from the logical column order instead of those stale boxes.
+    const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1 && !exactTwoColumns;
 
     if (!fitFocusMethod) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
@@ -7768,13 +7762,44 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
     }
 
+    PHLWORKSPACE swapColumnWorkspaceBefore;
+    std::vector<const void*> swapColumnOrderBefore;
+    if (overviewActive && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        swapColumnWorkspaceBefore = activeLayoutWorkspace();
+        auto* const swapScrollingBefore =
+            swapColumnWorkspaceBefore && isScrollingWorkspace(swapColumnWorkspaceBefore) ? scrollingAlgorithmForWorkspace(swapColumnWorkspaceBefore) : nullptr;
+        if (swapScrollingBefore && swapScrollingBefore->m_scrollingData && swapScrollingBefore->m_scrollingData->columns.size() == 2) {
+            swapColumnOrderBefore.reserve(2);
+            for (const auto& column : swapScrollingBefore->m_scrollingData->columns)
+                swapColumnOrderBefore.push_back(column.get());
+        }
+    }
+
     const auto result = (*original)(std::move(args));
 
     if (overviewActive && result.success && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
-        const auto swapWorkspace = activeLayoutWorkspace();
+        const auto swapWorkspace = swapColumnWorkspaceBefore ? swapColumnWorkspaceBefore : activeLayoutWorkspace();
         auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
         if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
-            toggleNiriTwoColumnSwapVisualFlip(swapWorkspace);
+            auto& columns = swapScrolling->m_scrollingData->columns;
+            bool orderChanged = false;
+            if (swapColumnOrderBefore.size() == columns.size()) {
+                for (std::size_t index = 0; index < columns.size(); ++index) {
+                    if (columns[index].get() != swapColumnOrderBefore[index]) {
+                        orderChanged = true;
+                        break;
+                    }
+                }
+            }
+
+            // On the exact 2-column path Hyprland can accept swapcol without exposing
+            // the new column vector order until another focus/exit-side recalculation.
+            // The overview now uses that order to synthesize positions while the live
+            // target boxes are stale, so force the missing 2-column order flip here.
+            if (!orderChanged && columns.size() == 2)
+                std::swap(columns[0], columns[1]);
+
+            clearNiriTwoColumnSwapVisualFlip(swapWorkspace);
 
             if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == swapWorkspace && !selectedBefore->m_pinned &&
                 !isFloatingOverviewWindow(selectedBefore)) {
@@ -7782,11 +7807,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 selectWindowInState(m_state, selectedBefore);
             }
 
+            if (swapWorkspace->m_space)
+                swapWorkspace->m_space->recalculate();
+            swapScrolling->m_scrollingData->recalculate(true);
             refreshWorkspaceLayoutSnapshot(swapWorkspace);
             m_stripSnapshotsDirty = true;
             scheduleWorkspaceStripSnapshotRefresh();
             rebuildVisibleState(selectedBefore, true);
-            refreshNiriScrollingOverviewAfterLayoutScroll("swapcol-two-column-visual-order");
+            refreshNiriScrollingOverviewAfterLayoutScroll("swapcol-two-column-column-order");
             damageOwnedMonitors();
             return result;
         }
