@@ -8417,6 +8417,20 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     if (!hasSuper)
         return false;
 
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] niri arrow keybind"
+            << " direction=" << direction
+            << " super=" << (hasSuper ? 1 : 0)
+            << " shift=" << (hasShift ? 1 : 0)
+            << " ctrl=" << (hasCtrl ? 1 : 0)
+            << " alt=" << (hasAlt ? 1 : 0)
+            << " selected=" << debugWindowLabel(selectedWindow())
+            << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+            << " workspace=" << debugWorkspaceLabel(activeLayoutWorkspace());
+        debugLog(out.str());
+    }
+
     const auto runNamedEditingDispatcher = [&](std::string_view name, std::string args) {
         const auto original = m_overviewEditingDispatchersOriginal.find(std::string{name});
         if (original == m_overviewEditingDispatchersOriginal.end())
@@ -8433,8 +8447,29 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     };
 
     const auto runLayoutMessage = [&](std::string args) {
-        if (m_layoutMessageOriginal)
-            return runOverviewEditingDispatcher(m_layoutMessageDispatcherName.empty() ? "layoutmsg" : m_layoutMessageDispatcherName.c_str(), &m_layoutMessageOriginal, std::move(args)).success;
+        const std::string logArgs = args;
+        const auto logResult = [&](bool success, std::string_view source) {
+            if (!debugLogsEnabled())
+                return;
+            std::ostringstream out;
+            out << "[hymission] niri arrow layoutmsg"
+                << " source=" << source
+                << " args=" << logArgs
+                << " success=" << (success ? 1 : 0)
+                << " original=" << (m_layoutMessageOriginal ? 1 : 0)
+                << " dispatcherName=" << (m_layoutMessageDispatcherName.empty() ? "layoutmsg" : m_layoutMessageDispatcherName)
+                << " selected=" << debugWindowLabel(selectedWindow())
+                << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+                << " workspace=" << debugWorkspaceLabel(activeLayoutWorkspace());
+            debugLog(out.str());
+        };
+
+        if (m_layoutMessageOriginal) {
+            const bool success =
+                runOverviewEditingDispatcher(m_layoutMessageDispatcherName.empty() ? "layoutmsg" : m_layoutMessageDispatcherName.c_str(), &m_layoutMessageOriginal, std::move(args)).success;
+            logResult(success, "wrapped-original");
+            return success;
+        }
 
         if (!g_pKeybindManager)
             return false;
@@ -8443,9 +8478,12 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
             const auto dispatcher = g_pKeybindManager->m_dispatchers.find(std::string{name});
             if (dispatcher == g_pKeybindManager->m_dispatchers.end())
                 continue;
-            if (dispatcher->second(args).success)
+            if (const bool success = dispatcher->second(args).success; success) {
+                logResult(true, name);
                 return true;
+            }
         }
+        logResult(false, "fallback");
         return false;
     };
 
