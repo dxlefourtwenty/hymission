@@ -7626,16 +7626,27 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos || isSwapColumnLayoutMessage);
-    const bool forceGeometryRefocus = dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
-        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
-        dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
-        dispatcherNameLower.starts_with("settiled") || dispatcherNameLower.starts_with("pin") ||
-        dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
-        dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
     const auto niriSingleWorkspaceScrollingOverviewActive = [&]() {
         return isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
             isScrollingWorkspace(activeLayoutWorkspace());
     };
+    const auto exactTwoColumnNiriSwapcolActive = [&]() {
+        if (!isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive())
+            return false;
+
+        const auto workspace = activeLayoutWorkspace();
+        auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+        return scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
+    };
+    const bool exactTwoColumnNiriSwapcol = exactTwoColumnNiriSwapcolActive();
+    const bool forceGeometryRefocus =
+        !exactTwoColumnNiriSwapcol &&
+        (dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
+         dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
+         dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") ||
+         dispatcherNameLower.starts_with("settiled") || dispatcherNameLower.starts_with("pin") ||
+         dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
+         dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage);
 
     struct TwoColumnSwapPreview {
         PHLWORKSPACE workspace;
@@ -8045,22 +8056,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const auto result = (*original)(std::move(args));
-
-    // swapcol is special in Hyprland's scrolling layout: with exactly two columns, the
-    // column-order mutation can be committed while the exposed target boxes still look
-    // unchanged until a focus movement happens. Treat it like a geometry edit and force
-    // the same focus/recalculate path that fixes the stale state when the user manually
-    // moves focus inside the overview.
-    if (overviewActive && result.success && isSwapColumnLayoutMessage && selectedBefore && selectedBefore->m_isMapped &&
-        niriSingleWorkspaceScrollingOverviewActive()) {
-        const auto swapWorkspace = activeLayoutWorkspace();
-        auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
-        if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
-            const auto swapAnchor = closestTiledWindowInWorkspace(selectedBefore);
-            if (swapAnchor && swapAnchor->m_isMapped && hasManagedWindow(swapAnchor))
-                (void)forceDirectNiriGeometryFocus(swapAnchor, "swapcol-two-column-force-refocus");
-        }
-    }
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
