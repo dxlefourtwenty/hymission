@@ -10427,6 +10427,24 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 anchorPreviewBase = columnPreview;
         }
 
+        const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+
+        const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+        Rect dynamicRect = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
+
+        const double previewGap = niriWindowGapsForWorkspace(workspace, rowGeometry->primaryAxis);
+        if (previewGap > 0.0) {
+            if (rowGeometry->primaryAxis == GestureAxis::Horizontal) {
+                const double width = std::max(1.0, dynamicRect.width - previewGap);
+                dynamicRect = makeRect(dynamicRect.centerX() - width * 0.5, dynamicRect.y, width, dynamicRect.height);
+            } else {
+                const double height = std::max(1.0, dynamicRect.height - previewGap);
+                dynamicRect = makeRect(dynamicRect.x, dynamicRect.centerY() - height * 0.5, dynamicRect.width, height);
+            }
+        }
+
         struct DynamicResizeAnimation {
             Rect                               from;
             Rect                               to;
@@ -10440,11 +10458,17 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const void* const animationKey = window.window.get();
         const auto        now = std::chrono::steady_clock::now();
         auto&             animation = s_dynamicResizeAnimations[animationKey];
+        const bool        noSizePositionChanged = !ownSizeChanged && !anchorSizeChanged && !rectApproxEqual(dynamicRect, activeBaseRect(), 0.5);
+        bool              twoColumnWorkspace = false;
+        if (noSizePositionChanged) {
+            if (auto* scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
+                twoColumnWorkspace = scrolling->m_scrollingData->columns.size() == 2;
+        }
 
         // Keep the resize animation origin current while no live resize is happening.
         // This prevents a later grow animation from starting from an old stale position
         // after normal scrolling or focus movement.
-        if (!ownSizeChanged && !anchorSizeChanged) {
+        if (!ownSizeChanged && !anchorSizeChanged && !twoColumnWorkspace) {
             const Rect currentBase = activeBaseRect();
             animation.from = currentBase;
             animation.to = currentBase;
@@ -10463,24 +10487,6 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 debugLog(out.str());
             }
             return std::nullopt;
-        }
-
-        const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
-
-        const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
-        Rect dynamicRect = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
-
-        const double previewGap = niriWindowGapsForWorkspace(workspace, rowGeometry->primaryAxis);
-        if (previewGap > 0.0) {
-            if (rowGeometry->primaryAxis == GestureAxis::Horizontal) {
-                const double width = std::max(1.0, dynamicRect.width - previewGap);
-                dynamicRect = makeRect(dynamicRect.centerX() - width * 0.5, dynamicRect.y, width, dynamicRect.height);
-            } else {
-                const double height = std::max(1.0, dynamicRect.height - previewGap);
-                dynamicRect = makeRect(dynamicRect.x, dynamicRect.centerY() - height * 0.5, dynamicRect.width, height);
-            }
         }
 
         const auto progressFor = [&](const DynamicResizeAnimation& candidate) {
@@ -10504,6 +10510,26 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         };
 
         const bool directlyResizedWindow = ownSizeChanged;
+        if (twoColumnWorkspace && !ownSizeChanged && !anchorSizeChanged) {
+            animation.from = dynamicRect;
+            animation.to = dynamicRect;
+            animation.lastRendered = dynamicRect;
+            animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
+            animation.hasLastRendered = true;
+            if (traceTwoColumnSwap && consumeTwoColumnSwapPreviewTrace(workspace)) {
+                std::ostringstream out;
+                out << "[hymission] swapcol preview dynamic-tiled"
+                    << " reason=two-column-position"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " rect=" << rectToString(dynamicRect)
+                    << " activeBase=" << rectToString(activeBaseRect())
+                    << " source=" << rectToString(rowGeometry->sourceGlobal)
+                    << " ownSizeChanged=0 anchorSizeChanged=0";
+                debugLog(out.str());
+            }
+            return dynamicRect;
+        }
+
         if (animation.start == std::chrono::steady_clock::time_point{}) {
             const Rect visibleNow = currentVisibleRect();
             animation = {
