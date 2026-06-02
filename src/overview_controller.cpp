@@ -8298,6 +8298,22 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         debugLog(out.str());
     }
 
+    if (twoColumnOverviewSwap.valid && result.success) {
+        PHLWINDOW swapAnchor = selectedBefore && selectedBefore->m_isMapped ? selectedBefore : Desktop::focusState()->window();
+        swapAnchor = closestTiledWindowInWorkspace(swapAnchor);
+        if (hardRecalculateScrollingWorkspaceAroundWindow(swapAnchor, "swapcol-post-dispatch-hard-recalc")) {
+            clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two refreshed from layout"
+                    << " anchor=" << debugWindowLabel(swapAnchor)
+                    << " workspace=" << debugWorkspaceLabel(twoColumnOverviewSwap.workspace);
+                debugLog(out.str());
+            }
+            return result;
+        }
+    }
+
     if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
         clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
         return result;
