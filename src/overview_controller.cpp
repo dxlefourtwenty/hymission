@@ -7673,6 +7673,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             SP<Layout::Tiled::SColumnData> column;
             Rect                           rect;
             std::vector<TwoColumnSwapPreview::WindowOrigin> windows;
+            std::size_t                    orderIndex = 0;
             bool                           hasRect = false;
         };
 
@@ -7721,13 +7722,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return makeRect(centerX - rect.width * 0.5, centerY - rect.height * 0.5, rect.width, rect.height);
         };
 
-        const auto appendToColumn = [&](const SP<Layout::Tiled::SColumnData>& column, const PHLWINDOW& window, const Rect& rect) {
+        const auto appendToColumn = [&](const SP<Layout::Tiled::SColumnData>& column, std::size_t orderIndex, const PHLWINDOW& window, const Rect& rect) {
             auto it = std::find_if(capturedColumns.begin(), capturedColumns.end(), [&](const CapturedColumn& captured) { return captured.column == column; });
             if (it == capturedColumns.end()) {
                 capturedColumns.push_back({
                     .column = column,
                     .rect = rect,
                     .windows = {},
+                    .orderIndex = orderIndex,
                     .hasRect = true,
                 });
                 it = capturedColumns.end() - 1;
@@ -7760,7 +7762,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (!column)
                 continue;
 
-            appendToColumn(column, window, visualRectForManaged(managed));
+            const auto columnIt = std::find(scrolling->m_scrollingData->columns.begin(), scrolling->m_scrollingData->columns.end(), column);
+            const std::size_t orderIndex = columnIt != scrolling->m_scrollingData->columns.end() ?
+                static_cast<std::size_t>(std::distance(scrolling->m_scrollingData->columns.begin(), columnIt)) :
+                capturedColumns.size();
+
+            appendToColumn(column, orderIndex, window, visualRectForManaged(managed));
         }
 
         if (capturedColumns.size() != 2)
@@ -7774,6 +7781,33 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         if (!capturedColumns[0].hasRect || !capturedColumns[1].hasRect)
             return preview;
+
+        const double primaryDelta = std::abs(visualPrimary(capturedColumns[1]) - visualPrimary(capturedColumns[0]));
+        if (primaryDelta <= 1.0) {
+            std::stable_sort(capturedColumns.begin(), capturedColumns.end(), [](const CapturedColumn& lhs, const CapturedColumn& rhs) {
+                return lhs.orderIndex < rhs.orderIndex;
+            });
+
+            const double gap = niriWindowGapsForWorkspace(workspace, horizontal ? GestureAxis::Horizontal : GestureAxis::Vertical);
+            const double primarySpan = std::max(1.0, std::max(horizontal ? capturedColumns[0].rect.width : capturedColumns[0].rect.height,
+                                                              horizontal ? capturedColumns[1].rect.width : capturedColumns[1].rect.height) + gap);
+            const double centerX = (capturedColumns[0].rect.centerX() + capturedColumns[1].rect.centerX()) * 0.5;
+            const double centerY = (capturedColumns[0].rect.centerY() + capturedColumns[1].rect.centerY()) * 0.5;
+            const auto placeCollapsedColumn = [&](Rect rect, double offset) {
+                if (horizontal)
+                    return makeRect(centerX + offset - rect.width * 0.5, rect.y, rect.width, rect.height);
+                return makeRect(rect.x, centerY + offset - rect.height * 0.5, rect.width, rect.height);
+            };
+            for (std::size_t index = 0; index < capturedColumns.size(); ++index) {
+                const Rect oldRect = capturedColumns[index].rect;
+                const Rect newRect = placeCollapsedColumn(oldRect, index == 0 ? -primarySpan * 0.5 : primarySpan * 0.5);
+                const double dx = newRect.centerX() - oldRect.centerX();
+                const double dy = newRect.centerY() - oldRect.centerY();
+                capturedColumns[index].rect = newRect;
+                for (auto& origin : capturedColumns[index].windows)
+                    origin.rect = translateRect(origin.rect, dx, dy);
+            }
+        }
 
         preview.workspace = workspace;
         preview.columnRects[0] = capturedColumns[0].rect;
