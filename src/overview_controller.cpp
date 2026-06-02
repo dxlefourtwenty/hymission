@@ -8006,7 +8006,95 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
     }
 
-    const auto result = (*original)(std::move(args));
+    const auto exactTwoColumnSwapMoveArgs = [&]() -> std::optional<std::string> {
+        if (!overviewActive || !isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive() || !selectedBefore || !selectedBefore->m_isMapped)
+            return std::nullopt;
+
+        const auto workspace = activeLayoutWorkspace();
+        if (!workspace || selectedBefore->m_workspace != workspace || !isScrollingWorkspace(workspace))
+            return std::nullopt;
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
+            return std::nullopt;
+
+        std::size_t tiledWindowCount = 0;
+        bool        selectedIsInScrollingColumn = false;
+        for (const auto& column : scrolling->m_scrollingData->columns) {
+            if (!column || column->targetDatas.size() != 1)
+                return std::nullopt;
+
+            const auto targetData = column->targetDatas.front();
+            const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
+            const auto window = target ? target->window() : PHLWINDOW{};
+            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
+                return std::nullopt;
+
+            if (target->floating())
+                return std::nullopt;
+
+            ++tiledWindowCount;
+            if (window == selectedBefore)
+                selectedIsInScrollingColumn = true;
+        }
+
+        if (tiledWindowCount != 2 || !selectedIsInScrollingColumn)
+            return std::nullopt;
+
+        std::string direction = dispatcherArgsLower;
+        if (direction.starts_with("swapcol"))
+            direction.erase(0, std::string_view{"swapcol"}.size());
+        direction = trimCopy(direction);
+        if (!direction.empty() && direction.front() == ',')
+            direction = trimCopy(direction.substr(1));
+
+        if (direction == "left")
+            direction = "l";
+        else if (direction == "right")
+            direction = "r";
+        else if (direction == "up")
+            direction = "u";
+        else if (direction == "down")
+            direction = "d";
+
+        if (direction != "l" && direction != "r" && direction != "u" && direction != "d")
+            return std::nullopt;
+
+        return direction;
+    };
+
+    const auto runExactTwoColumnSwapAsMoveWindow = [&](const std::string& moveArgs) -> std::optional<SDispatchResult> {
+        for (const auto name : {std::string_view{"window.move"}, std::string_view{"movewindow"}, std::string_view{"movewindoworgroup"}}) {
+            const auto dispatcher = m_overviewEditingDispatchersOriginal.find(std::string{name});
+            if (dispatcher == m_overviewEditingDispatchersOriginal.end() || !dispatcher->second)
+                continue;
+
+            auto result = dispatcher->second(moveArgs);
+            if (result.success)
+                return result;
+        }
+
+        return std::nullopt;
+    };
+
+    SDispatchResult result;
+    if (const auto moveArgs = exactTwoColumnSwapMoveArgs()) {
+        if (const auto moveResult = runExactTwoColumnSwapAsMoveWindow(*moveArgs)) {
+            result = *moveResult;
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] exact two-column swapcol routed through movewindow"
+                    << " args=" << dispatcherArgsLower
+                    << " moveArgs=" << *moveArgs
+                    << " selected=" << debugWindowLabel(selectedBefore);
+                debugLog(out.str());
+            }
+        } else {
+            result = (*original)(std::move(args));
+        }
+    } else {
+        result = (*original)(std::move(args));
+    }
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
