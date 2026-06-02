@@ -7675,6 +7675,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.starts_with("settiled") || dispatcherNameLower.starts_with("pin") ||
         dispatcherNameLower.find("window.resize") != std::string::npos || dispatcherNameLower.find("window.float") != std::string::npos ||
         dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
+    const auto niriSingleWorkspaceScrollingOverviewActive = [&]() {
+        return isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
+            isScrollingWorkspace(activeLayoutWorkspace());
+    };
 
     struct TwoColumnSwapPreview {
         PHLWORKSPACE workspace;
@@ -7690,7 +7694,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const auto captureTwoColumnSwapPreview = [&]() {
         TwoColumnSwapPreview preview;
-        if (!overviewActive || !isSwapColumnLayoutMessage || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        if (!overviewActive || !isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive())
             return preview;
 
         const auto workspace = activeLayoutWorkspace();
@@ -7789,7 +7793,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const TwoColumnSwapPreview twoColumnSwapPreview = captureTwoColumnSwapPreview();
 
     const auto applyTwoColumnSwapPreview = [this](const TwoColumnSwapPreview& preview) -> bool {
-        if (!preview.valid || !isVisible() || m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state))
+        if (!preview.valid || !isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+            !isScrollingWorkspace(activeLayoutWorkspace()))
             return false;
 
         clearForcedNiriSwapPreviewStatesForWorkspace(preview.workspace);
@@ -8008,7 +8013,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const auto result = (*original)(std::move(args));
 
-    if (overviewActive && result.success && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+    if (overviewActive && result.success && isSwapColumnLayoutMessage && niriSingleWorkspaceScrollingOverviewActive()) {
         const auto swapWorkspace = activeLayoutWorkspace();
         auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
         if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
@@ -8026,7 +8031,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     // the same focus/recalculate path that fixes the stale state when the user manually
     // moves focus inside the overview.
     if (overviewActive && result.success && isSwapColumnLayoutMessage && selectedBefore && selectedBefore->m_isMapped &&
-        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        niriSingleWorkspaceScrollingOverviewActive()) {
         const auto swapWorkspace = activeLayoutWorkspace();
         auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
         if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
