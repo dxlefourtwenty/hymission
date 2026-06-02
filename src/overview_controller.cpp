@@ -9314,7 +9314,7 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
         // an empty workspace, using the opening snapshot geometry leaves hidden
         // workspaces at their off-screen render offsets and the thumbnail falls
         // back to wallpaper-only until another refresh happens.
-        current = managed->targetGlobal;
+        current = forcedNiriSwapPreviewRectForWindow(window).value_or(managed->targetGlobal);
     } else {
         current = workspaceTransitionRectForWindow(window).value_or(currentPreviewRect(*managed));
     }
