@@ -182,6 +182,12 @@ struct TwoColumnSwapTraceState {
 
 std::unordered_map<const void*, TwoColumnSwapTraceState> g_twoColumnSwapTraceStates;
 
+struct PendingTwoColumnSwapRepairState {
+    std::chrono::steady_clock::time_point until;
+};
+
+std::unordered_map<const void*, PendingTwoColumnSwapRepairState> g_pendingTwoColumnSwapRepairs;
+
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
 }
@@ -233,6 +239,38 @@ bool consumeTwoColumnSwapPreviewTrace(const PHLWORKSPACE& workspace) {
 
     --it->second.remainingPreviewLogs;
     return true;
+}
+
+void armPendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return;
+
+    g_pendingTwoColumnSwapRepairs[key] = PendingTwoColumnSwapRepairState{
+        .until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000),
+    };
+}
+
+void clearPendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return;
+
+    g_pendingTwoColumnSwapRepairs.erase(key);
+}
+
+bool consumePendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return false;
+
+    const auto it = g_pendingTwoColumnSwapRepairs.find(key);
+    if (it == g_pendingTwoColumnSwapRepairs.end())
+        return false;
+
+    const bool active = std::chrono::steady_clock::now() <= it->second.until;
+    g_pendingTwoColumnSwapRepairs.erase(it);
+    return active;
 }
 
 bool retileFillTransformActiveForWindow(const PHLWINDOW& window) {
@@ -5104,7 +5142,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     }
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
-    const bool forceSameFocusTwoColumnSwap = sourceView == "window-active-same";
     struct TwoColumnRefreshOrigin {
         Rect        rect;
         std::size_t groupIndex = 0;
@@ -5123,6 +5160,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
     const bool captureTwoColumnRefresh = usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() == 2;
+    const bool forceSameFocusTwoColumnSwap =
+        sourceView == "window-active-same" || (captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace));
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
         if (!group.hasBounds) {
             group.bounds = rect;
@@ -8244,7 +8283,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     };
 
     const TwoColumnOverviewSwapCapture twoColumnOverviewSwap = captureTwoColumnOverviewSwap();
+    if (twoColumnOverviewSwap.valid)
+        armPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+
     const auto result = (*original)(std::move(args));
+    if (!result.success)
+        clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
 
     if (debugLogsEnabled() && isSwapColumnLayoutMessage) {
         std::ostringstream out;
@@ -8254,8 +8298,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         debugLog(out.str());
     }
 
-    if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result))
+    if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
+        clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
         return result;
+    }
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
