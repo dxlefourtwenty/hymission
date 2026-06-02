@@ -5072,6 +5072,28 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
 
+    const auto workspace = activeLayoutWorkspace();
+    auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+    const std::size_t columnCount = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
+    const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
+    const bool traceColumnRefresh = debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && columnCount >= 2 && columnCount <= 3 &&
+        sourceView.find("opening-complete") == std::string_view::npos;
+    if (traceColumnRefresh) {
+        std::ostringstream out;
+        out << "[hymission] niri refresh begin"
+            << " source=" << (source ? source : "?")
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " columns=" << columnCount
+            << " offset=" << (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->getOffset() : 0.0)
+            << " selected=" << debugWindowLabel(selectedWindow())
+            << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+        debugLog(out.str());
+        logScrollingWorkspaceSpotState("niri-refresh-before", workspace, selectedWindow());
+        if (columnCount == 2)
+            armTwoColumnSwapTrace(workspace);
+    }
+
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
     State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
     if (next.windows.empty())
@@ -5088,6 +5110,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
 
         const Rect currentRect = currentPreviewRect(managed);
+        const Rect previousTarget = managed.targetGlobal;
+        const Rect previousRelayoutFrom = managed.relayoutFromGlobal;
         managed.naturalGlobal = it->naturalGlobal;
         managed.slot = it->slot;
         managed.targetGlobal = it->targetGlobal;
@@ -5096,6 +5120,20 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         m_state.slots.push_back(managed.slot);
         if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
             targetChanged = true;
+        if (traceColumnRefresh && managed.window && managed.window->m_workspace == workspace) {
+            std::ostringstream out;
+            out << "[hymission] niri refresh window"
+                << " source=" << (source ? source : "?")
+                << " window=" << debugWindowLabel(managed.window)
+                << " current=" << rectToString(currentRect)
+                << " oldTarget=" << rectToString(previousTarget)
+                << " oldRelayoutFrom=" << rectToString(previousRelayoutFrom)
+                << " nextNatural=" << rectToString(it->naturalGlobal)
+                << " nextTarget=" << rectToString(it->targetGlobal)
+                << " relayoutFrom=" << rectToString(managed.relayoutFromGlobal)
+                << " targetChanged=" << (!rectApproxEqual(previousTarget, managed.targetGlobal, 0.5) ? 1 : 0);
+            debugLog(out.str());
+        }
         ++updated;
     }
 
@@ -5109,8 +5147,14 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
-            << " animate=" << (m_state.relayoutActive ? 1 : 0);
+            << " animate=" << (m_state.relayoutActive ? 1 : 0)
+            << " targetChanged=" << (targetChanged ? 1 : 0)
+            << " columns=" << columnCount;
         debugLog(out.str());
+    }
+    if (traceColumnRefresh) {
+        logScrollingWorkspaceSpotState("niri-refresh-after", workspace, selectedWindow());
+        logOverviewLayoutState("niri-refresh-after", m_state);
     }
 
     updateHoveredFromPointer(false, false, false, false, source ? source : "niri-scroll");
