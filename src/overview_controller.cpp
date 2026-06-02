@@ -2274,8 +2274,10 @@ bool OverviewController::initialize() {
     });
     m_windowActiveListener = events.window.active.listen([this](PHLWINDOW window, Desktop::eFocusReason) {
         recordWindowActivation(window);
-        if (window && hasManagedWindow(window))
-            refreshNiriScrollingOverviewAfterFocusDispatcher("window-active");
+        if (window && hasManagedWindow(window)) {
+            const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
+            refreshNiriScrollingOverviewAfterFocusDispatcher(sameOverviewFocus ? "window-active-same" : "window-active");
+        }
     });
     m_windowMoveWorkspaceListener =
         events.window.moveToWorkspace.listen([this](PHLWINDOW window, PHLWORKSPACE) { handleWindowSetChange(window, WindowSetChangeKind::MoveToWorkspace); });
@@ -5102,6 +5104,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     }
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
+    const bool forceSameFocusTwoColumnSwap = sourceView == "window-active-same";
     struct TwoColumnRefreshOrigin {
         Rect        rect;
         std::size_t groupIndex = 0;
@@ -5117,7 +5120,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     };
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
-    const bool captureTwoColumnRefresh = animateRefresh && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
+    const bool captureTwoColumnRefresh = usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() == 2;
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
         if (!group.hasBounds) {
@@ -5229,8 +5232,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                 const std::size_t previousGroupIndex = originIt->second.groupIndex;
                 const std::size_t previousRank = refreshPreviousRankToGroup[0] == previousGroupIndex ? 0 : 1;
                 const std::size_t nextRank = refreshGroupToNextRank[previousGroupIndex];
-                if (nextRank != previousRank) {
-                    const std::size_t targetGroupIndex = refreshPreviousRankToGroup[nextRank];
+                if (nextRank != previousRank || forceSameFocusTwoColumnSwap) {
+                    const std::size_t targetGroupIndex = nextRank != previousRank ? refreshPreviousRankToGroup[nextRank] : (previousGroupIndex == 0 ? 1 : 0);
                     const Rect& fromGroup = refreshGroups[previousGroupIndex].bounds;
                     const Rect& toGroup = refreshGroups[targetGroupIndex].bounds;
                     const Rect targetRect = translateRect(originIt->second.rect, toGroup.centerX() - fromGroup.centerX(), toGroup.centerY() - fromGroup.centerY());
@@ -5244,9 +5247,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                         else if (managed.slot.natural.height > 1.0)
                             managed.slot.scale = targetRect.height / managed.slot.natural.height;
                     }
+                    targetChanged = true;
                     if (traceColumnRefresh) {
                         std::ostringstream out;
                         out << "[hymission] niri refresh exact-two repair"
+                            << " reason=" << (nextRank != previousRank ? "rank-change" : "same-focus")
                             << " window=" << debugWindowLabel(managed.window)
                             << " fromGroup=" << previousGroupIndex
                             << " toGroup=" << targetGroupIndex
@@ -5283,7 +5288,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         return;
 
     m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
-    m_state.relayoutActive = animateRefresh && targetChanged;
+    m_state.relayoutActive = targetChanged && (animateRefresh || captureTwoColumnRefresh);
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
     if (debugLogsEnabled()) {
