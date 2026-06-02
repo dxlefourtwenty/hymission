@@ -1456,8 +1456,7 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     CBox layoutBox = targetBox;
     if (auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace); scrolling) {
         if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0) {
-            const bool exactTwoColumns = scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
-            layoutBox = exactTwoColumns ? targetData->layoutBox : liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+            layoutBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
         }
     }
 
@@ -1482,8 +1481,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return std::nullopt;
-    const bool exactTwoColumns = scrolling->m_scrollingData->columns.size() == 2;
-
     const auto targetData = scrolling->dataFor(target);
     if (!targetData || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
         return std::nullopt;
@@ -1524,7 +1521,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox candidateLayoutBox = exactTwoColumns ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
             if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
                 continue;
 
@@ -1635,7 +1632,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (candidate != targetData)
             continue;
 
-        const CBox candidateLayoutBox = exactTwoColumns ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
         Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
         const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
