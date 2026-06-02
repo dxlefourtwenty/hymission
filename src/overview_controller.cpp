@@ -175,6 +175,66 @@ const void* windowIdentityKey(const PHLWINDOW& window) {
     return window ? window.get() : nullptr;
 }
 
+struct TwoColumnSwapTraceState {
+    std::chrono::steady_clock::time_point until;
+    std::size_t                          remainingPreviewLogs = 384;
+};
+
+std::unordered_map<const void*, TwoColumnSwapTraceState> g_twoColumnSwapTraceStates;
+
+const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
+    return workspace ? workspace.get() : nullptr;
+}
+
+void armTwoColumnSwapTrace(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return;
+
+    g_twoColumnSwapTraceStates[key] = TwoColumnSwapTraceState{
+        .until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500),
+        .remainingPreviewLogs = 384,
+    };
+}
+
+bool twoColumnSwapTraceActive(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return false;
+
+    const auto it = g_twoColumnSwapTraceStates.find(key);
+    if (it == g_twoColumnSwapTraceStates.end())
+        return false;
+
+    if (std::chrono::steady_clock::now() > it->second.until) {
+        g_twoColumnSwapTraceStates.erase(it);
+        return false;
+    }
+
+    return true;
+}
+
+bool consumeTwoColumnSwapPreviewTrace(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return false;
+
+    const auto it = g_twoColumnSwapTraceStates.find(key);
+    if (it == g_twoColumnSwapTraceStates.end())
+        return false;
+
+    if (std::chrono::steady_clock::now() > it->second.until) {
+        g_twoColumnSwapTraceStates.erase(it);
+        return false;
+    }
+
+    if (it->second.remainingPreviewLogs == 0)
+        return false;
+
+    --it->second.remainingPreviewLogs;
+    return true;
+}
+
 bool retileFillTransformActiveForWindow(const PHLWINDOW& window) {
     const void* const key = windowIdentityKey(window);
     if (!key)
@@ -7707,6 +7767,27 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
     }
 
+    if (debugLogsEnabled() && isSwapColumnLayoutMessage) {
+        const auto workspace = activeLayoutWorkspace();
+        auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+        std::ostringstream out;
+        out << "[hymission] swapcol dispatch begin"
+            << " dispatcher=" << (dispatcherName ? dispatcherName : "?")
+            << " args=" << dispatcherArgsLower
+            << " overviewActive=" << (overviewActive ? 1 : 0)
+            << " phase=" << static_cast<int>(m_state.phase)
+            << " onlyActiveWorkspace=" << (m_state.collectionPolicy.onlyActiveWorkspace ? 1 : 0)
+            << " directNiri=" << (usesDirectNiriScrollingOverview(m_state) ? 1 : 0)
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " scrolling=" << (scrolling ? 1 : 0)
+            << " columns=" << (scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0)
+            << " selected=" << debugWindowLabel(selectedBefore)
+            << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+        debugLog(out.str());
+        if (workspace)
+            logScrollingWorkspaceSpotState("swapcol-before-dispatch", workspace, selectedBefore);
+    }
+
     struct TwoColumnOverviewSwapCapture {
         struct WindowOrigin {
             PHLWINDOW window;
@@ -7722,13 +7803,38 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const auto captureTwoColumnOverviewSwap = [&]() {
         TwoColumnOverviewSwapCapture capture;
-        if (!overviewActive || !isSwapColumnLayoutMessage || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        const auto logSkip = [&](std::string_view reason) {
+            if (!debugLogsEnabled() || !isSwapColumnLayoutMessage)
+                return;
+            std::ostringstream out;
+            out << "[hymission] swapcol exact-two capture skip reason=" << reason
+                << " overviewActive=" << (overviewActive ? 1 : 0)
+                << " onlyActiveWorkspace=" << (m_state.collectionPolicy.onlyActiveWorkspace ? 1 : 0)
+                << " directNiri=" << (usesDirectNiriScrollingOverview(m_state) ? 1 : 0);
+            debugLog(out.str());
+        };
+
+        if (!overviewActive || !isSwapColumnLayoutMessage || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state)) {
+            logSkip("scope");
             return capture;
+        }
 
         const auto workspace = activeLayoutWorkspace();
         auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
-        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
+        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two capture skip reason=columns"
+                    << " workspace=" << debugWorkspaceLabel(workspace)
+                    << " scrolling=" << (scrolling ? 1 : 0)
+                    << " columns=" << (scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0);
+                debugLog(out.str());
+            }
             return capture;
+        }
+
+        if (debugLogsEnabled())
+            armTwoColumnSwapTrace(workspace);
 
         struct Group {
             SP<Layout::Tiled::SColumnData> column;
@@ -7786,27 +7892,80 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 .rect = rect,
                 .groupIndex = *groupIndex,
             });
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two capture window"
+                    << " group=" << *groupIndex
+                    << " window=" << debugWindowLabel(window)
+                    << " rect=" << rectToString(rect);
+                debugLog(out.str());
+            }
         }
 
-        if (!groups[0].hasBounds || !groups[1].hasBounds || capture.windows.empty())
+        if (!groups[0].hasBounds || !groups[1].hasBounds || capture.windows.empty()) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two capture skip reason=empty-groups"
+                    << " group0=" << (groups[0].hasBounds ? rectToString(groups[0].bounds) : "<empty>")
+                    << " group1=" << (groups[1].hasBounds ? rectToString(groups[1].bounds) : "<empty>")
+                    << " windows=" << capture.windows.size();
+                debugLog(out.str());
+            }
             return capture;
+        }
 
         capture.workspace = workspace;
         capture.groupBounds[0] = groups[0].bounds;
         capture.groupBounds[1] = groups[1].bounds;
         capture.valid = true;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] swapcol exact-two capture armed"
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " group0=" << rectToString(capture.groupBounds[0])
+                << " group1=" << rectToString(capture.groupBounds[1])
+                << " windows=" << capture.windows.size();
+            debugLog(out.str());
+        }
+
         return capture;
     };
 
     const auto applyTwoColumnOverviewSwap = [&](const TwoColumnOverviewSwapCapture& capture, const SDispatchResult& dispatchResult) {
-        if (!capture.valid || !dispatchResult.success || !isVisible() || m_state.phase != Phase::Active || activeLayoutWorkspace() != capture.workspace)
+        if (!capture.valid || !dispatchResult.success || !isVisible() || m_state.phase != Phase::Active || activeLayoutWorkspace() != capture.workspace) {
+            if (debugLogsEnabled() && isSwapColumnLayoutMessage) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two apply skip"
+                    << " captureValid=" << (capture.valid ? 1 : 0)
+                    << " resultSuccess=" << (dispatchResult.success ? 1 : 0)
+                    << " visible=" << (isVisible() ? 1 : 0)
+                    << " phase=" << static_cast<int>(m_state.phase)
+                    << " sameWorkspace=" << (activeLayoutWorkspace() == capture.workspace ? 1 : 0)
+                    << " activeWorkspace=" << debugWorkspaceLabel(activeLayoutWorkspace())
+                    << " captureWorkspace=" << debugWorkspaceLabel(capture.workspace);
+                debugLog(out.str());
+            }
             return false;
+        }
+
+        if (debugLogsEnabled())
+            logScrollingWorkspaceSpotState("swapcol-after-dispatch-before-apply", capture.workspace, selectedBefore);
 
         bool changed = false;
         for (const auto& origin : capture.windows) {
             auto it = std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == origin.window; });
-            if (it == m_state.windows.end() || !it->window || !it->window->m_isMapped || it->window->m_workspace != capture.workspace)
+            if (it == m_state.windows.end() || !it->window || !it->window->m_isMapped || it->window->m_workspace != capture.workspace) {
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] swapcol exact-two apply window skip"
+                        << " window=" << debugWindowLabel(origin.window)
+                        << " found=" << (it != m_state.windows.end() ? 1 : 0);
+                    debugLog(out.str());
+                }
                 continue;
+            }
 
             const std::size_t targetGroupIndex = origin.groupIndex == 0 ? 1 : 0;
             const Rect& fromGroup = capture.groupBounds[origin.groupIndex];
@@ -7827,10 +7986,26 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
             if (!rectApproxEqual(origin.rect, target, 0.5))
                 changed = true;
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] swapcol exact-two apply window"
+                    << " fromGroup=" << origin.groupIndex
+                    << " toGroup=" << targetGroupIndex
+                    << " dx=" << dx
+                    << " dy=" << dy
+                    << " window=" << debugWindowLabel(origin.window)
+                    << " from=" << rectToString(origin.rect)
+                    << " target=" << rectToString(target);
+                debugLog(out.str());
+            }
         }
 
-        if (!changed)
+        if (!changed) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] swapcol exact-two apply skip reason=unchanged-targets");
             return false;
+        }
 
         m_state.relayoutActive = niriOverviewAnimationsEnabled();
         m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
@@ -7858,6 +8033,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 << " windows=" << capture.windows.size()
                 << " animate=" << (m_state.relayoutActive ? 1 : 0);
             debugLog(out.str());
+            logOverviewLayoutState("swapcol-exact-two-applied", m_state);
         }
 
         return true;
@@ -7865,6 +8041,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const TwoColumnOverviewSwapCapture twoColumnOverviewSwap = captureTwoColumnOverviewSwap();
     const auto result = (*original)(std::move(args));
+
+    if (debugLogsEnabled() && isSwapColumnLayoutMessage) {
+        std::ostringstream out;
+        out << "[hymission] swapcol dispatch result"
+            << " success=" << (result.success ? 1 : 0)
+            << " captureValid=" << (twoColumnOverviewSwap.valid ? 1 : 0);
+        debugLog(out.str());
+    }
 
     if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result))
         return result;
@@ -9182,6 +9366,19 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     const double uniformScale = std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
     const Rect   fitted = makeRect(current.centerX() - actualWidth * uniformScale * 0.5, current.centerY() - actualHeight * uniformScale * 0.5,
                                    actualWidth * uniformScale, actualHeight * uniformScale);
+    if (debugLogsEnabled() && window->m_workspace && consumeTwoColumnSwapPreviewTrace(window->m_workspace)) {
+        std::ostringstream out;
+        out << "[hymission] swapcol window-transform"
+            << " window=" << debugWindowLabel(window)
+            << " current=" << rectToString(current)
+            << " actual=" << rectToString(actual)
+            << " fitted=" << rectToString(fitted)
+            << " targetGlobal=" << rectToString(managed->targetGlobal)
+            << " relayoutFrom=" << rectToString(managed->relayoutFromGlobal)
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+            << " stripPreview=" << (m_stripPreviewContext.active ? 1 : 0);
+        debugLog(out.str());
+    }
     return WindowTransform{
         .actualGlobal = actual,
         .targetGlobal = fitted,
@@ -9882,6 +10079,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const double anchorTargetHeight = std::max(1.0, anchorSourceGlobal.height * scale);
         const bool ownSizeChanged = std::abs(targetWidth - ownPreviewBase.width) > 1.0 || std::abs(targetHeight - ownPreviewBase.height) > 1.0;
         const bool anchorSizeChanged = std::abs(anchorTargetWidth - rawAnchorPreviewBase.width) > 1.0 || std::abs(anchorTargetHeight - rawAnchorPreviewBase.height) > 1.0;
+        const bool traceTwoColumnSwap = debugLogsEnabled() && twoColumnSwapTraceActive(workspace);
 
         Rect anchorPreviewBase = rawAnchorPreviewBase;
         if (anchorRowGeometry) {
@@ -9949,6 +10147,17 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             animation.lastRendered = currentBase;
             animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
             animation.hasLastRendered = true;
+            if (traceTwoColumnSwap && consumeTwoColumnSwapPreviewTrace(workspace)) {
+                std::ostringstream out;
+                out << "[hymission] swapcol preview dynamic-tiled null"
+                    << " reason=no-size-change"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " base=" << rectToString(currentBase)
+                    << " source=" << rectToString(rowGeometry->sourceGlobal)
+                    << " anchorSource=" << rectToString(anchorSourceGlobal)
+                    << " ownSizeChanged=0 anchorSizeChanged=0";
+                debugLog(out.str());
+            }
             return std::nullopt;
         }
 
@@ -10027,6 +10236,18 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             animation.lastRendered = dynamicRect;
             animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
             animation.hasLastRendered = true;
+            if (traceTwoColumnSwap && consumeTwoColumnSwapPreviewTrace(workspace)) {
+                std::ostringstream out;
+                out << "[hymission] swapcol preview dynamic-tiled"
+                    << " reason=complete"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " rect=" << rectToString(dynamicRect)
+                    << " activeBase=" << rectToString(activeBaseRect())
+                    << " source=" << rectToString(rowGeometry->sourceGlobal)
+                    << " ownSizeChanged=" << (ownSizeChanged ? 1 : 0)
+                    << " anchorSizeChanged=" << (anchorSizeChanged ? 1 : 0);
+                debugLog(out.str());
+            }
             return dynamicRect;
         }
 
@@ -10040,6 +10261,18 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             animation.lastRendered = dynamicRect;
             animation.start = now - std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS));
             animation.hasLastRendered = true;
+            if (traceTwoColumnSwap && consumeTwoColumnSwapPreviewTrace(workspace)) {
+                std::ostringstream out;
+                out << "[hymission] swapcol preview dynamic-tiled"
+                    << " reason=direct-resize"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " rect=" << rectToString(dynamicRect)
+                    << " activeBase=" << rectToString(activeBaseRect())
+                    << " source=" << rectToString(rowGeometry->sourceGlobal)
+                    << " ownSizeChanged=" << (ownSizeChanged ? 1 : 0)
+                    << " anchorSizeChanged=" << (anchorSizeChanged ? 1 : 0);
+                debugLog(out.str());
+            }
             return dynamicRect;
         }
 
@@ -10047,6 +10280,19 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
 
         animation.lastRendered = animatedRect;
         animation.hasLastRendered = true;
+        if (traceTwoColumnSwap && consumeTwoColumnSwapPreviewTrace(workspace)) {
+            std::ostringstream out;
+            out << "[hymission] swapcol preview dynamic-tiled"
+                << " reason=animated"
+                << " window=" << debugWindowLabel(window.window)
+                << " rect=" << rectToString(animatedRect)
+                << " target=" << rectToString(dynamicRect)
+                << " activeBase=" << rectToString(activeBaseRect())
+                << " source=" << rectToString(rowGeometry->sourceGlobal)
+                << " ownSizeChanged=" << (ownSizeChanged ? 1 : 0)
+                << " anchorSizeChanged=" << (anchorSizeChanged ? 1 : 0);
+            debugLog(out.str());
+        }
         return animatedRect;
     };
 
@@ -10140,10 +10386,43 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
-            if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
+            if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect) {
+                if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
+                    std::ostringstream out;
+                    out << "[hymission] swapcol preview source=floating-dynamic"
+                        << " window=" << debugWindowLabel(window.window)
+                        << " rect=" << rectToString(*dynamicRect)
+                        << " targetGlobal=" << rectToString(window.targetGlobal)
+                        << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
+                        << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+                    debugLog(out.str());
+                }
                 return *dynamicRect;
-            if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
+            }
+            if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect) {
+                if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
+                    std::ostringstream out;
+                    out << "[hymission] swapcol preview source=tiled-dynamic"
+                        << " window=" << debugWindowLabel(window.window)
+                        << " rect=" << rectToString(*dynamicRect)
+                        << " targetGlobal=" << rectToString(window.targetGlobal)
+                        << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
+                        << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+                    debugLog(out.str());
+                }
                 return *dynamicRect;
+            }
+            if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
+                const Rect base = activeBaseRect();
+                std::ostringstream out;
+                out << "[hymission] swapcol preview source=active-base"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " rect=" << rectToString(base)
+                    << " targetGlobal=" << rectToString(window.targetGlobal)
+                    << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
+                    << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+                debugLog(out.str());
+            }
             return activeBaseRect();
         case Phase::ClosingSettle:
             return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
