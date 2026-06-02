@@ -201,41 +201,6 @@ void armRetileFillTransformForWindow(const PHLWINDOW& window) {
     };
 }
 
-const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
-    return workspace ? workspace.get() : nullptr;
-}
-
-std::unordered_map<const void*, bool> g_niriTwoColumnSwapVisualFlips;
-
-bool niriTwoColumnSwapVisualFlipActive(const PHLWORKSPACE& workspace) {
-    const void* const key = workspaceIdentityKey(workspace);
-    if (!key)
-        return false;
-
-    const auto it = g_niriTwoColumnSwapVisualFlips.find(key);
-    return it != g_niriTwoColumnSwapVisualFlips.end() && it->second;
-}
-
-void toggleNiriTwoColumnSwapVisualFlip(const PHLWORKSPACE& workspace) {
-    const void* const key = workspaceIdentityKey(workspace);
-    if (!key)
-        return;
-
-    g_niriTwoColumnSwapVisualFlips[key] = !g_niriTwoColumnSwapVisualFlips[key];
-}
-
-void clearNiriTwoColumnSwapVisualFlip(const PHLWORKSPACE& workspace) {
-    const void* const key = workspaceIdentityKey(workspace);
-    if (!key)
-        return;
-
-    g_niriTwoColumnSwapVisualFlips.erase(key);
-}
-
-void clearNiriTwoColumnSwapVisualFlips() {
-    g_niriTwoColumnSwapVisualFlips.clear();
-}
-
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -1533,42 +1498,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.size() > 1)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
-    const bool applyTwoColumnSwapVisualFlip = exactTwoColumns && columns.size() == 2 &&
-        niriTwoColumnSwapVisualFlipActive(window->m_workspace);
-    std::optional<double> preSwapTwoColumnGap;
-    if (applyTwoColumnSwapVisualFlip) {
-        const Rect firstVisualSlot = columns[0].bounds;
-        const Rect secondVisualSlot = columns[1].bounds;
-        const double firstEnd = horizontal ? firstVisualSlot.x + firstVisualSlot.width : firstVisualSlot.y + firstVisualSlot.height;
-        const double secondStart = horizontal ? secondVisualSlot.x : secondVisualSlot.y;
-        const double measuredGap = secondStart - firstEnd;
-        if (measuredGap > 0.0)
-            preSwapTwoColumnGap = measuredGap;
-
-        // With exactly two scrolling columns, Hyprland's swapcol can update the
-        // column ownership/order without publishing fresh target boxes until the
-        // next focus movement.  Sorting by the still-stale boxes then reconstructs
-        // the original visual order, so the overview appears unchanged.  Keep the
-        // normal geometry path intact, but put each swapped column into the other
-        // column's previous visual slot.  This is deliberately scoped to the
-        // temporary swap visual flip and does not alter focus_fit_method behavior
-        // unless a two-column swap is actually pending.
-        std::swap(columns[0], columns[1]);
-
-        const auto moveVirtualBoundsToSlot = [&](ColumnEntry& entry, const Rect& slot) {
-            Rect virtualBounds = entry.bounds;
-            if (horizontal) {
-                virtualBounds.x = slot.x;
-            } else {
-                virtualBounds.y = slot.y;
-            }
-            entry.virtualBounds = virtualBounds;
-        };
-
-        moveVirtualBoundsToSlot(columns[0], firstVisualSlot);
-        moveVirtualBoundsToSlot(columns[1], secondVisualSlot);
-    }
-
     std::optional<std::size_t> targetColumnIndex;
     std::optional<std::size_t> anchorColumnIndex;
     for (std::size_t index = 0; index < columns.size(); ++index) {
@@ -1590,24 +1519,20 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const double configuredGap = static_cast<double>(std::max(0L, getConfigInt(nullptr, "general:gaps_in", 0)));
     double       gap = configuredGap;
     if (gap <= 0.0 && columns.size() > 1) {
-        if (applyTwoColumnSwapVisualFlip && preSwapTwoColumnGap) {
-            gap = *preSwapTwoColumnGap;
-        } else {
-            std::vector<double> positiveGaps;
-            positiveGaps.reserve(columns.size() - 1);
-            for (std::size_t index = 1; index < columns.size(); ++index) {
-                const Rect& previous = columns[index - 1].bounds;
-                const Rect& current = columns[index].bounds;
-                const double previousEnd = horizontal ? previous.x + previous.width : previous.y + previous.height;
-                const double currentStart = horizontal ? current.x : current.y;
-                const double candidateGap = currentStart - previousEnd;
-                if (candidateGap > 0.0)
-                    positiveGaps.push_back(candidateGap);
-            }
-            if (!positiveGaps.empty()) {
-                std::sort(positiveGaps.begin(), positiveGaps.end());
-                gap = positiveGaps[positiveGaps.size() / 2];
-            }
+        std::vector<double> positiveGaps;
+        positiveGaps.reserve(columns.size() - 1);
+        for (std::size_t index = 1; index < columns.size(); ++index) {
+            const Rect& previous = columns[index - 1].bounds;
+            const Rect& current = columns[index].bounds;
+            const double previousEnd = horizontal ? previous.x + previous.width : previous.y + previous.height;
+            const double currentStart = horizontal ? current.x : current.y;
+            const double candidateGap = currentStart - previousEnd;
+            if (candidateGap > 0.0)
+                positiveGaps.push_back(candidateGap);
+        }
+        if (!positiveGaps.empty()) {
+            std::sort(positiveGaps.begin(), positiveGaps.end());
+            gap = positiveGaps[positiveGaps.size() / 2];
         }
     }
 
@@ -7599,9 +7524,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (!original || !*original)
         return {};
 
-    if (!isVisible())
-        clearNiriTwoColumnSwapVisualFlips();
-
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
@@ -7785,51 +7707,167 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
     }
 
-    const auto result = (*original)(std::move(args));
+    struct TwoColumnOverviewSwapCapture {
+        struct WindowOrigin {
+            PHLWINDOW window;
+            Rect      rect;
+            std::size_t groupIndex = 0;
+        };
 
-    if (overviewActive && isSwapColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
-        const auto swapWorkspace = activeLayoutWorkspace();
-        auto* const swapScrolling = swapWorkspace && isScrollingWorkspace(swapWorkspace) ? scrollingAlgorithmForWorkspace(swapWorkspace) : nullptr;
-        if (swapScrolling && swapScrolling->m_scrollingData && swapScrolling->m_scrollingData->columns.size() == 2) {
-            clearNiriTwoColumnSwapVisualFlip(swapWorkspace);
+        PHLWORKSPACE workspace;
+        std::array<Rect, 2> groupBounds{};
+        std::vector<WindowOrigin> windows;
+        bool valid = false;
+    };
 
-            // swapcol on exactly two scrolling columns updates Hyprland's column ownership,
-            // but it can leave the exported layout boxes in their old slots until some other
-            // geometry operation happens. A real colresize immediately makes the strip catch
-            // up, so perform a paired one-pixel resize as a net-zero geometry nudge. This keeps
-            // focus_fit_method untouched and avoids any overview-only fake ordering.
-            const auto nudgeColumnGeometry = [&](std::string args) {
-                if (!original || !*original)
-                    return;
-                (void)(*original)(std::move(args));
-            };
-            nudgeColumnGeometry("colresize 1");
-            nudgeColumnGeometry("colresize -1");
+    const auto captureTwoColumnOverviewSwap = [&]() {
+        TwoColumnOverviewSwapCapture capture;
+        if (!overviewActive || !isSwapColumnLayoutMessage || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+            return capture;
 
-            if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == swapWorkspace && !selectedBefore->m_pinned &&
-                !isFloatingOverviewWindow(selectedBefore)) {
-                m_state.focusDuringOverview = selectedBefore;
-                selectWindowInState(m_state, selectedBefore);
+        const auto workspace = activeLayoutWorkspace();
+        auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
+            return capture;
+
+        struct Group {
+            SP<Layout::Tiled::SColumnData> column;
+            Rect                           bounds;
+            bool                           hasBounds = false;
+        };
+
+        std::array<Group, 2> groups{{
+            {.column = scrolling->m_scrollingData->columns[0]},
+            {.column = scrolling->m_scrollingData->columns[1]},
+        }};
+
+        const auto expandGroupBounds = [](Group& group, const Rect& rect) {
+            if (!group.hasBounds) {
+                group.bounds = rect;
+                group.hasBounds = true;
+                return;
             }
 
-            if (swapWorkspace->m_space)
-                swapWorkspace->m_space->recalculate();
-            if (swapScrolling->m_scrollingData)
-                swapScrolling->m_scrollingData->recalculate(true);
-            refreshWorkspaceLayoutSnapshot(swapWorkspace);
-            if (const auto monitor = swapWorkspace->m_monitor.lock())
-                g_layoutManager->recalculateMonitor(monitor);
-            if (g_pAnimationManager)
-                g_pAnimationManager->frameTick();
+            const double minX = std::min(group.bounds.x, rect.x);
+            const double minY = std::min(group.bounds.y, rect.y);
+            const double maxX = std::max(group.bounds.x + group.bounds.width, rect.x + rect.width);
+            const double maxY = std::max(group.bounds.y + group.bounds.height, rect.y + rect.height);
+            group.bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+        };
 
-            m_stripSnapshotsDirty = true;
-            scheduleWorkspaceStripSnapshotRefresh();
-            rebuildVisibleState(selectedBefore, true);
-            refreshNiriScrollingOverviewAfterLayoutScroll("swapcol-two-column-column-geometry-nudge");
-            damageOwnedMonitors();
-            return result;
+        for (const auto& managed : m_state.windows) {
+            const auto window = managed.window;
+            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
+                continue;
+
+            const auto target = window->layoutTarget();
+            if (!target || target->floating())
+                continue;
+
+            const auto targetData = scrolling->dataFor(target);
+            const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+            if (!column)
+                continue;
+
+            std::optional<std::size_t> groupIndex;
+            for (std::size_t index = 0; index < groups.size(); ++index) {
+                if (groups[index].column == column) {
+                    groupIndex = index;
+                    break;
+                }
+            }
+            if (!groupIndex)
+                continue;
+
+            const Rect rect = currentPreviewRect(managed);
+            expandGroupBounds(groups[*groupIndex], rect);
+            capture.windows.push_back({
+                .window = window,
+                .rect = rect,
+                .groupIndex = *groupIndex,
+            });
         }
-    }
+
+        if (!groups[0].hasBounds || !groups[1].hasBounds || capture.windows.empty())
+            return capture;
+
+        capture.workspace = workspace;
+        capture.groupBounds[0] = groups[0].bounds;
+        capture.groupBounds[1] = groups[1].bounds;
+        capture.valid = true;
+        return capture;
+    };
+
+    const auto applyTwoColumnOverviewSwap = [&](const TwoColumnOverviewSwapCapture& capture, const SDispatchResult& dispatchResult) {
+        if (!capture.valid || !dispatchResult.success || !isVisible() || m_state.phase != Phase::Active || activeLayoutWorkspace() != capture.workspace)
+            return false;
+
+        bool changed = false;
+        for (const auto& origin : capture.windows) {
+            auto it = std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == origin.window; });
+            if (it == m_state.windows.end() || !it->window || !it->window->m_isMapped || it->window->m_workspace != capture.workspace)
+                continue;
+
+            const std::size_t targetGroupIndex = origin.groupIndex == 0 ? 1 : 0;
+            const Rect& fromGroup = capture.groupBounds[origin.groupIndex];
+            const Rect& toGroup = capture.groupBounds[targetGroupIndex];
+            const double dx = toGroup.centerX() - fromGroup.centerX();
+            const double dy = toGroup.centerY() - fromGroup.centerY();
+            const Rect target = translateRect(origin.rect, dx, dy);
+
+            it->relayoutFromGlobal = origin.rect;
+            it->targetGlobal = target;
+            if (it->targetMonitor) {
+                it->slot.target = makeRect(target.x - it->targetMonitor->m_position.x, target.y - it->targetMonitor->m_position.y, target.width, target.height);
+                if (it->slot.natural.width > 1.0)
+                    it->slot.scale = target.width / it->slot.natural.width;
+                else if (it->slot.natural.height > 1.0)
+                    it->slot.scale = target.height / it->slot.natural.height;
+            }
+
+            if (!rectApproxEqual(origin.rect, target, 0.5))
+                changed = true;
+        }
+
+        if (!changed)
+            return false;
+
+        m_state.relayoutActive = niriOverviewAnimationsEnabled();
+        m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
+        m_state.relayoutStart = {};
+        if (!m_state.relayoutActive) {
+            for (auto& managed : m_state.windows)
+                managed.relayoutFromGlobal = managed.targetGlobal;
+        }
+
+        if (selectedBefore && selectedBefore->m_isMapped && selectedBefore->m_workspace == capture.workspace && !selectedBefore->m_pinned &&
+            !isFloatingOverviewWindow(selectedBefore)) {
+            m_state.focusDuringOverview = selectedBefore;
+            selectWindowInState(m_state, selectedBefore);
+        }
+
+        refreshWorkspaceLayoutSnapshot(capture.workspace);
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+        damageOwnedMonitors();
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] applied exact two-column overview swap"
+                << " workspace=" << capture.workspace->m_id
+                << " windows=" << capture.windows.size()
+                << " animate=" << (m_state.relayoutActive ? 1 : 0);
+            debugLog(out.str());
+        }
+
+        return true;
+    };
+
+    const TwoColumnOverviewSwapCapture twoColumnOverviewSwap = captureTwoColumnOverviewSwap();
+    const auto result = (*original)(std::move(args));
+
+    if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result))
+        return result;
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
@@ -13031,9 +13069,6 @@ void OverviewController::moveSelection(Direction direction) {
             if (*sameWorkspaceNeighbor == *m_state.selectedIndex)
                 return;
 
-            if (const auto selectedWindow = m_state.windows[*m_state.selectedIndex].window; selectedWindow && selectedWindow->m_workspace)
-                clearNiriTwoColumnSwapVisualFlip(selectedWindow->m_workspace);
-
             m_state.selectedIndex = *sameWorkspaceNeighbor;
             syncFocusDuringOverviewFromSelection(true, "keyboard-nav");
             damageOwnedMonitors();
@@ -14013,90 +14048,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             m_state.focusDuringOverview :
             focusCandidateForWorkspace(targetWorkspace);
         previewState = buildState(monitor, ScopeOverride::OnlyCurrentWorkspace, workspaceOverrides, true, false, preferredPreviewFocus);
-
-        if (false && niriStripPreview && niriTwoColumnSwapVisualFlipActive(targetWorkspace)) {
-            auto* const scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
-            if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller && scrolling->m_scrollingData->columns.size() == 2) {
-                struct StripSwapColumnGroup {
-                    SP<Layout::Tiled::SColumnData> column;
-                    Rect                           bounds;
-                    std::vector<std::size_t>       indices;
-                    bool                           hasBounds = false;
-                    double                         primary = 0.0;
-                };
-
-                const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
-                const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
-                const auto translateManaged = [&](ManagedWindow& managed, double delta) {
-                    const double dx = horizontal ? delta : 0.0;
-                    const double dy = horizontal ? 0.0 : delta;
-                    managed.targetGlobal = translateRect(managed.targetGlobal, dx, dy);
-                    managed.relayoutFromGlobal = translateRect(managed.relayoutFromGlobal, dx, dy);
-                    managed.exitGlobal = translateRect(managed.exitGlobal, dx, dy);
-                    managed.slot.target = makeRect(managed.slot.target.x + dx, managed.slot.target.y + dy, managed.slot.target.width, managed.slot.target.height);
-                };
-
-                std::vector<StripSwapColumnGroup> groups;
-                groups.reserve(2);
-                for (const auto& column : scrolling->m_scrollingData->columns) {
-                    if (column)
-                        groups.push_back({.column = column});
-                }
-
-                for (std::size_t index = 0; index < previewState.windows.size(); ++index) {
-                    auto& managed = previewState.windows[index];
-                    const auto window = managed.window;
-                    if (!window || window->m_workspace != targetWorkspace || window->m_pinned || isFloatingOverviewWindow(window))
-                        continue;
-
-                    const auto target = window->layoutTarget();
-                    if (!target || target->floating())
-                        continue;
-
-                    const auto targetData = scrolling->dataFor(target);
-                    if (!targetData)
-                        continue;
-
-                    const auto column = targetData->column.lock();
-                    if (!column)
-                        continue;
-
-                    auto groupIt = std::find_if(groups.begin(), groups.end(), [&](const StripSwapColumnGroup& group) { return group.column == column; });
-                    if (groupIt == groups.end())
-                        continue;
-
-                    const Rect rect = managed.targetGlobal;
-                    if (!groupIt->hasBounds) {
-                        groupIt->bounds = rect;
-                        groupIt->hasBounds = true;
-                    } else {
-                        const double minX = std::min(groupIt->bounds.x, rect.x);
-                        const double minY = std::min(groupIt->bounds.y, rect.y);
-                        const double maxX = std::max(groupIt->bounds.x + groupIt->bounds.width, rect.x + rect.width);
-                        const double maxY = std::max(groupIt->bounds.y + groupIt->bounds.height, rect.y + rect.height);
-                        groupIt->bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
-                    }
-                    groupIt->indices.push_back(index);
-                }
-
-                std::erase_if(groups, [](const StripSwapColumnGroup& group) { return !group.hasBounds || group.indices.empty(); });
-                if (groups.size() == 2) {
-                    for (auto& group : groups)
-                        group.primary = primaryStart(group.bounds);
-
-                    std::stable_sort(groups.begin(), groups.end(), [](const StripSwapColumnGroup& lhs, const StripSwapColumnGroup& rhs) {
-                        return lhs.primary < rhs.primary;
-                    });
-
-                    const double firstDelta = groups[1].primary - groups[0].primary;
-                    const double secondDelta = groups[0].primary - groups[1].primary;
-                    for (const auto index : groups[0].indices)
-                        translateManaged(previewState.windows[index], firstDelta);
-                    for (const auto index : groups[1].indices)
-                        translateManaged(previewState.windows[index], secondDelta);
-                }
-            }
-        }
 
         previewState.phase = Phase::Active;
         previewState.animationProgress = 1.0;
