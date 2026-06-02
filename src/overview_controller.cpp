@@ -201,88 +201,6 @@ void armRetileFillTransformForWindow(const PHLWINDOW& window) {
     };
 }
 
-
-struct ForcedNiriSwapPreviewState {
-    const void* workspaceKey = nullptr;
-    Rect        from;
-    Rect        target;
-    std::chrono::steady_clock::time_point start;
-    std::chrono::steady_clock::time_point until;
-    bool        animate = false;
-};
-
-std::unordered_map<const void*, ForcedNiriSwapPreviewState> g_forcedNiriSwapPreviewStates;
-
-const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
-    return workspace ? workspace.get() : nullptr;
-}
-
-void clearForcedNiriSwapPreviewStates() {
-    g_forcedNiriSwapPreviewStates.clear();
-}
-
-void clearForcedNiriSwapPreviewStatesForWorkspace(const PHLWORKSPACE& workspace) {
-    const void* const workspaceKey = workspaceIdentityKey(workspace);
-    if (!workspaceKey)
-        return;
-
-    std::erase_if(g_forcedNiriSwapPreviewStates, [&](const auto& entry) { return entry.second.workspaceKey == workspaceKey; });
-}
-
-void armForcedNiriSwapPreviewForWindow(const PHLWINDOW& window, const PHLWORKSPACE& workspace, const Rect& from, const Rect& target, bool animate) {
-    const void* const windowKey = windowIdentityKey(window);
-    const void* const workspaceKey = workspaceIdentityKey(workspace);
-    if (!windowKey || !workspaceKey)
-        return;
-
-    const auto now = std::chrono::steady_clock::now();
-    g_forcedNiriSwapPreviewStates[windowKey] = ForcedNiriSwapPreviewState{
-        .workspaceKey = workspaceKey,
-        .from = animate ? from : target,
-        .target = target,
-        .start = now,
-        // Keep this override for the whole visible stale-layout window. Hyprland's scrolling
-        // data can continue to report the old two-column geometry until the overview exits,
-        // so a short animation-only lifetime makes the preview snap back while still open.
-        .until = now + std::chrono::seconds(30),
-        .animate = animate,
-    };
-}
-
-std::optional<Rect> forcedNiriSwapPreviewRectForWindow(const PHLWINDOW& window) {
-    const void* const windowKey = windowIdentityKey(window);
-    if (!windowKey)
-        return std::nullopt;
-
-    const auto it = g_forcedNiriSwapPreviewStates.find(windowKey);
-    if (it == g_forcedNiriSwapPreviewStates.end())
-        return std::nullopt;
-
-    if (!window || workspaceIdentityKey(window->m_workspace) != it->second.workspaceKey) {
-        g_forcedNiriSwapPreviewStates.erase(it);
-        return std::nullopt;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now > it->second.until) {
-        g_forcedNiriSwapPreviewStates.erase(it);
-        return std::nullopt;
-    }
-
-    if (!it->second.animate)
-        return it->second.target;
-
-    const double elapsedMs = std::chrono::duration<double, std::milli>(now - it->second.start).count();
-    const double progress = std::clamp(elapsedMs / std::max(1.0, RELAYOUT_DURATION_MS), 0.0, 1.0);
-    if (progress >= 1.0) {
-        it->second.from = it->second.target;
-        it->second.animate = false;
-        return it->second.target;
-    }
-
-    return lerpRect(it->second.from, it->second.target, easeOutCubic(progress));
-}
-
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -1477,8 +1395,10 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
 
     CBox layoutBox = targetBox;
     if (auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace); scrolling) {
-        if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
-            layoutBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+        if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0) {
+            const bool exactTwoColumns = scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
+            layoutBox = exactTwoColumns ? targetData->layoutBox : liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+        }
     }
 
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
@@ -1502,6 +1422,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return std::nullopt;
+    const bool exactTwoColumns = scrolling->m_scrollingData->columns.size() == 2;
 
     const auto targetData = scrolling->dataFor(target);
     if (!targetData || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
@@ -1543,7 +1464,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            const CBox candidateLayoutBox = exactTwoColumns ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
             if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
                 continue;
 
@@ -1574,13 +1495,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     if (columns.empty())
         return std::nullopt;
 
-    // Hyprland's scrolling layout updates the column vector order immediately for swapcol,
-    // but with exactly two columns the live target/layout boxes can keep their old x/y
-    // positions until the overview closes. Sorting by stale geometry erases the swap in
-    // the overview. For the two-column case, trust the scrolling column order instead.
-    // Keep the existing geometry sort for 3+ columns because that path already updates
-    // correctly and can contain partially visible / recentered columns.
-    if (columns.size() > 2)
+    if (columns.size() > 1)
         std::stable_sort(columns.begin(), columns.end(), [](const ColumnEntry& lhs, const ColumnEntry& rhs) { return lhs.primary < rhs.primary; });
 
     std::optional<std::size_t> targetColumnIndex;
@@ -1630,9 +1545,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     };
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
-    const bool useVirtualColumnOrder = !fitFocusMethod || columns.size() == 2;
 
-    if (useVirtualColumnOrder) {
+    if (!fitFocusMethod) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
         setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
 
@@ -1661,7 +1575,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (candidate != targetData)
             continue;
 
-        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+        const CBox candidateLayoutBox = exactTwoColumns ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
         Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
         const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
@@ -7610,10 +7524,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (!original || !*original)
         return {};
 
-    if (!isVisible()) {
-        clearForcedNiriSwapPreviewStates();
-    }
-
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
@@ -7627,10 +7537,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos || isSwapColumnLayoutMessage);
-    const auto niriSingleWorkspaceScrollingOverviewActive = [&]() {
-        return isVisible() && m_state.phase == Phase::Active && niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace &&
-            isScrollingWorkspace(activeLayoutWorkspace());
-    };
     const bool forceGeometryRefocus =
         dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
         dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
@@ -7638,211 +7544,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
         isScrollingGeometryLayoutMessage;
-
-    struct TwoColumnSwapPreview {
-        PHLWORKSPACE workspace;
-        std::array<Rect, 2> columnRects{};
-        struct WindowOrigin {
-            PHLWINDOW window;
-            Rect      rect;
-            std::size_t columnIndex = 0;
-        };
-        std::vector<WindowOrigin> windows;
-        bool valid = false;
-    };
-
-    const auto captureTwoColumnSwapPreview = [&]() {
-        TwoColumnSwapPreview preview;
-        if (!overviewActive || !isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive())
-            return preview;
-
-        const auto workspace = activeLayoutWorkspace();
-        if (!workspace || !isScrollingWorkspace(workspace))
-            return preview;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
-            return preview;
-
-        struct CapturedColumn {
-            Rect                                           rect;
-            std::vector<TwoColumnSwapPreview::WindowOrigin> windows;
-            bool                                           hasRect = false;
-        };
-
-        std::array<CapturedColumn, 2> capturedColumns{};
-        const auto columnIndexForWindow = [&](const PHLWINDOW& window) -> std::optional<std::size_t> {
-            if (!window)
-                return std::nullopt;
-
-            const auto target = window->layoutTarget();
-            if (!target || target->floating())
-                return std::nullopt;
-
-            const auto targetData = scrolling->dataFor(target);
-            if (!targetData)
-                return std::nullopt;
-
-            const auto targetColumn = targetData->column.lock();
-            if (!targetColumn)
-                return std::nullopt;
-
-            for (std::size_t index = 0; index < scrolling->m_scrollingData->columns.size(); ++index) {
-                if (scrolling->m_scrollingData->columns[index] == targetColumn)
-                    return index;
-            }
-
-            return std::nullopt;
-        };
-
-        const auto appendToVisualColumn = [&](std::size_t columnIndex, const PHLWINDOW& window, const Rect& rect) {
-            auto& column = capturedColumns[columnIndex];
-            if (!column.hasRect) {
-                column.rect = rect;
-                column.hasRect = true;
-            } else {
-                const double minX = std::min(column.rect.x, rect.x);
-                const double minY = std::min(column.rect.y, rect.y);
-                const double maxX = std::max(column.rect.x + column.rect.width, rect.x + rect.width);
-                const double maxY = std::max(column.rect.y + column.rect.height, rect.y + rect.height);
-                column.rect = makeRect(minX, minY, maxX - minX, maxY - minY);
-            }
-
-            column.windows.push_back({
-                .window = window,
-                .rect = rect,
-                .columnIndex = columnIndex,
-            });
-        };
-
-        for (const auto& managed : m_state.windows) {
-            const auto window = managed.window;
-            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
-                continue;
-
-            const auto columnIndex = columnIndexForWindow(window);
-            if (!columnIndex || *columnIndex >= capturedColumns.size())
-                continue;
-
-            appendToVisualColumn(*columnIndex, window, currentPreviewRect(managed));
-        }
-
-        if (!capturedColumns[0].hasRect || !capturedColumns[1].hasRect)
-            return preview;
-
-        preview.workspace = workspace;
-        preview.columnRects[0] = capturedColumns[0].rect;
-        preview.columnRects[1] = capturedColumns[1].rect;
-        for (std::size_t visualColumnIndex = 0; visualColumnIndex < capturedColumns.size(); ++visualColumnIndex) {
-            for (auto origin : capturedColumns[visualColumnIndex].windows) {
-                origin.columnIndex = visualColumnIndex;
-                preview.windows.push_back(origin);
-            }
-        }
-
-        preview.valid = !preview.windows.empty();
-        return preview;
-    };
-
-    const TwoColumnSwapPreview twoColumnSwapPreview = captureTwoColumnSwapPreview();
-
-    const auto applyTwoColumnSwapPreview = [this](const TwoColumnSwapPreview& preview) -> bool {
-        if (!preview.valid || !isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace ||
-            !isScrollingWorkspace(activeLayoutWorkspace()))
-            return false;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(preview.workspace);
-        const bool canReadPostSwapColumns = scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
-        std::vector<std::optional<std::size_t>> postSwapColumnIndices(preview.windows.size());
-        bool postSwapMovedAnyWindow = false;
-
-        if (canReadPostSwapColumns) {
-            for (std::size_t originIndex = 0; originIndex < preview.windows.size(); ++originIndex) {
-                const auto& origin = preview.windows[originIndex];
-                if (!origin.window)
-                    continue;
-
-                const auto target = origin.window->layoutTarget();
-                if (!target || target->floating())
-                    continue;
-
-                const auto targetData = scrolling->dataFor(target);
-                const auto targetColumn = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-                if (!targetColumn)
-                    continue;
-
-                for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size(); ++columnIndex) {
-                    if (scrolling->m_scrollingData->columns[columnIndex] != targetColumn)
-                        continue;
-
-                    postSwapColumnIndices[originIndex] = columnIndex;
-                    if (columnIndex != origin.columnIndex)
-                        postSwapMovedAnyWindow = true;
-                    break;
-                }
-            }
-        }
-
-        clearForcedNiriSwapPreviewStatesForWorkspace(preview.workspace);
-
-        bool applied = false;
-        for (std::size_t originIndex = 0; originIndex < preview.windows.size(); ++originIndex) {
-            const auto& origin = preview.windows[originIndex];
-            auto originIt = std::find_if(m_state.windows.begin(), m_state.windows.end(),
-                                         [&](const ManagedWindow& managed) { return managed.window == origin.window; });
-            if (originIt == m_state.windows.end())
-                continue;
-
-            auto& managed = *originIt;
-            if (!managed.window || !managed.window->m_isMapped || managed.window->m_workspace != preview.workspace)
-                continue;
-
-            const std::size_t targetColumn = postSwapMovedAnyWindow && postSwapColumnIndices[originIndex] ? *postSwapColumnIndices[originIndex] :
-                (origin.columnIndex == 0 ? 1 : 0);
-            if (targetColumn >= preview.columnRects.size())
-                continue;
-
-            const Rect& sourceColumn = preview.columnRects[origin.columnIndex];
-            const Rect& otherColumnRect = preview.columnRects[targetColumn];
-            const double dx = otherColumnRect.centerX() - sourceColumn.centerX();
-            const double dy = otherColumnRect.centerY() - sourceColumn.centerY();
-            const Rect target = translateRect(origin.rect, dx, dy);
-
-            managed.relayoutFromGlobal = origin.rect;
-            managed.targetGlobal = target;
-            armForcedNiriSwapPreviewForWindow(managed.window, preview.workspace, origin.rect, target, niriOverviewAnimationsEnabled());
-            if (managed.targetMonitor) {
-                managed.slot.target = {
-                    .x = managed.targetGlobal.x - managed.targetMonitor->m_position.x,
-                    .y = managed.targetGlobal.y - managed.targetMonitor->m_position.y,
-                    .width = managed.targetGlobal.width,
-                    .height = managed.targetGlobal.height,
-                };
-            }
-
-            if (!rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5))
-                applied = true;
-        }
-
-        if (!applied)
-            return false;
-
-        if (niriOverviewAnimationsEnabled()) {
-            m_state.relayoutActive = true;
-            m_state.relayoutProgress = 0.0;
-            m_state.relayoutStart = {};
-        } else {
-            m_state.relayoutActive = false;
-            m_state.relayoutProgress = 1.0;
-            for (auto& managed : m_state.windows)
-                managed.relayoutFromGlobal = managed.targetGlobal;
-        }
-
-        m_stripSnapshotsDirty = true;
-        scheduleWorkspaceStripSnapshotRefresh();
-        damageOwnedMonitors();
-        return true;
-    };
 
     const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !usesDirectNiriScrollingOverview(m_state))
@@ -8006,95 +7707,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (void)syncScrollingWorkspaceSpotOnWindow(selectedBefore);
     }
 
-    const auto exactTwoColumnSwapMoveArgs = [&]() -> std::optional<std::string> {
-        if (!overviewActive || !isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive() || !selectedBefore || !selectedBefore->m_isMapped)
-            return std::nullopt;
-
-        const auto workspace = activeLayoutWorkspace();
-        if (!workspace || selectedBefore->m_workspace != workspace || !isScrollingWorkspace(workspace))
-            return std::nullopt;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
-            return std::nullopt;
-
-        std::size_t tiledWindowCount = 0;
-        bool        selectedIsInScrollingColumn = false;
-        for (const auto& column : scrolling->m_scrollingData->columns) {
-            if (!column || column->targetDatas.size() != 1)
-                return std::nullopt;
-
-            const auto targetData = column->targetDatas.front();
-            const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
-            const auto window = target ? target->window() : PHLWINDOW{};
-            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
-                return std::nullopt;
-
-            if (target->floating())
-                return std::nullopt;
-
-            ++tiledWindowCount;
-            if (window == selectedBefore)
-                selectedIsInScrollingColumn = true;
-        }
-
-        if (tiledWindowCount != 2 || !selectedIsInScrollingColumn)
-            return std::nullopt;
-
-        std::string direction = dispatcherArgsLower;
-        if (direction.starts_with("swapcol"))
-            direction.erase(0, std::string_view{"swapcol"}.size());
-        direction = trimCopy(direction);
-        if (!direction.empty() && direction.front() == ',')
-            direction = trimCopy(direction.substr(1));
-
-        if (direction == "left")
-            direction = "l";
-        else if (direction == "right")
-            direction = "r";
-        else if (direction == "up")
-            direction = "u";
-        else if (direction == "down")
-            direction = "d";
-
-        if (direction != "l" && direction != "r" && direction != "u" && direction != "d")
-            return std::nullopt;
-
-        return direction;
-    };
-
-    const auto runExactTwoColumnSwapAsMoveWindow = [&](const std::string& moveArgs) -> std::optional<SDispatchResult> {
-        for (const auto name : {std::string_view{"window.move"}, std::string_view{"movewindow"}, std::string_view{"movewindoworgroup"}}) {
-            const auto dispatcher = m_overviewEditingDispatchersOriginal.find(std::string{name});
-            if (dispatcher == m_overviewEditingDispatchersOriginal.end() || !dispatcher->second)
-                continue;
-
-            auto result = dispatcher->second(moveArgs);
-            if (result.success)
-                return result;
-        }
-
-        return std::nullopt;
-    };
-
-    SDispatchResult result;
-    if (const auto moveArgs = exactTwoColumnSwapMoveArgs()) {
-        if (const auto moveResult = runExactTwoColumnSwapAsMoveWindow(*moveArgs)) {
-            result = *moveResult;
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] exact two-column swapcol routed through movewindow"
-                    << " args=" << dispatcherArgsLower
-                    << " moveArgs=" << *moveArgs
-                    << " selected=" << debugWindowLabel(selectedBefore);
-                debugLog(out.str());
-            }
-        } else {
-            result = (*original)(std::move(args));
-        }
-    } else {
-        result = (*original)(std::move(args));
-    }
+    const auto result = (*original)(std::move(args));
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
         if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
@@ -8226,11 +7839,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         rebuildVisibleState(preferredSelected, true);
         refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
 
-        (void)applyTwoColumnSwapPreview(twoColumnSwapPreview);
-
         if (g_pEventLoopManager && usesDirectNiriScrollingOverview(m_state)) {
             const auto deferredTarget = preferredSelected;
-            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus, twoColumnSwapPreview, applyTwoColumnSwapPreview] {
+            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus] {
                 if (g_controller != this || !isVisible() || m_state.phase != Phase::Active || m_workspaceTransition.active || m_beginCloseInProgress)
                     return;
 
@@ -8332,7 +7943,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 }
                 rebuildVisibleState(target, true);
                 refreshNiriScrollingOverviewAfterFocusDispatcher(source.c_str(), target);
-                (void)applyTwoColumnSwapPreview(twoColumnSwapPreview);
             });
         }
     }
@@ -9382,7 +8992,7 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
         // an empty workspace, using the opening snapshot geometry leaves hidden
         // workspaces at their off-screen render offsets and the thumbnail falls
         // back to wallpaper-only until another refresh happens.
-        current = forcedNiriSwapPreviewRectForWindow(window).value_or(managed->targetGlobal);
+        current = managed->targetGlobal;
     } else {
         current = workspaceTransitionRectForWindow(window).value_or(currentPreviewRect(*managed));
     }
@@ -10370,8 +9980,6 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
-            if (const auto forcedSwapRect = forcedNiriSwapPreviewRectForWindow(window.window); forcedSwapRect)
-                return *forcedSwapRect;
             if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
                 return *dynamicRect;
             if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
