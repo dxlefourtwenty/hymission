@@ -1630,8 +1630,9 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     };
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
+    const bool useVirtualColumnOrder = !fitFocusMethod || columns.size() == 2;
 
-    if (!fitFocusMethod) {
+    if (useVirtualColumnOrder) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
         setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
 
@@ -7843,43 +7844,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return true;
     };
 
-    const auto exactTwoColumnSwapFocusTarget = [&]() -> PHLWINDOW {
-        if (!overviewActive || !isSwapColumnLayoutMessage || !niriSingleWorkspaceScrollingOverviewActive() || !selectedBefore || !selectedBefore->m_isMapped)
-            return {};
-
-        const auto workspace = selectedBefore->m_workspace;
-        if (!workspace || workspace != activeLayoutWorkspace() || !isScrollingWorkspace(workspace))
-            return {};
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-        if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
-            return {};
-
-        std::vector<PHLWINDOW> tiledWindows;
-        tiledWindows.reserve(2);
-        for (const auto& managed : m_state.windows) {
-            const auto window = managed.window;
-            if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
-                continue;
-
-            const auto target = window->layoutTarget();
-            if (!target || target->floating())
-                continue;
-
-            tiledWindows.push_back(window);
-        }
-
-        if (tiledWindows.size() != 2 || !containsHandle(tiledWindows, selectedBefore))
-            return {};
-
-        for (const auto& window : tiledWindows) {
-            if (window != selectedBefore)
-                return window;
-        }
-
-        return {};
-    };
-
     const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !usesDirectNiriScrollingOverview(m_state))
             return window;
@@ -8126,9 +8090,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
         PHLWINDOW forcedGeometryAnchor;
         if (forceGeometryRefocus) {
-            PHLWINDOW editedWindow = exactTwoColumnSwapFocusTarget();
-            if (!editedWindow)
-                editedWindow = selectedBefore;
+            PHLWINDOW editedWindow = selectedBefore;
             if ((!editedWindow || !editedWindow->m_isMapped) && Desktop::focusState()->window())
                 editedWindow = Desktop::focusState()->window();
             forcedGeometryAnchor = closestTiledWindowInWorkspace(editedWindow);
