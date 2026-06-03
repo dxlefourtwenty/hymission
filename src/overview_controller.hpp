@@ -583,6 +583,7 @@ class OverviewController {
     [[nodiscard]] PHLWINDOW    hoveredWindow() const;
     [[nodiscard]] PHLWINDOW    directNiriFocusedOverviewWindow(const State& state) const;
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
+    void                       stabilizeDirectNiriExitSnapshot(const PHLWINDOW& target);
     void                       enforceDirectNiriExitFocusGuard();
     void                       reconcileNiriCenteredSelectionForExit();
     [[nodiscard]] Rect         liveGlobalRectForWindow(const PHLWINDOW& window) const;

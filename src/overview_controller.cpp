@@ -9177,6 +9177,72 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
     return {};
 }
 
+void OverviewController::stabilizeDirectNiriExitSnapshot(const PHLWINDOW& target) {
+    if (!target || !target->m_isMapped || !usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
+        return;
+
+    auto monitor = m_state.ownerMonitor ? m_state.ownerMonitor : target->m_monitor.lock();
+    if (!monitor)
+        return;
+
+    State stable = buildState(monitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, target);
+    if (stable.windows.empty() || !selectWindowInState(stable, target))
+        return;
+
+    std::vector<WindowSlot> stableSlots;
+    stableSlots.reserve(m_state.windows.size());
+    std::size_t updated = 0;
+    for (auto& managed : m_state.windows) {
+        auto stableIt = std::find_if(stable.windows.begin(), stable.windows.end(), [&](const ManagedWindow& candidate) {
+            return candidate.window == managed.window;
+        });
+        if (stableIt == stable.windows.end()) {
+            stableSlots.push_back(managed.slot);
+            continue;
+        }
+
+        managed.targetMonitor = stableIt->targetMonitor;
+        managed.naturalGlobal = stableIt->naturalGlobal;
+        managed.exitGlobal = stableIt->exitGlobal;
+        managed.targetGlobal = stableIt->targetGlobal;
+        managed.relayoutFromGlobal = stableIt->targetGlobal;
+        managed.slot = stableIt->slot;
+        managed.isNiriFloatingOverlay = stableIt->isNiriFloatingOverlay;
+        stableSlots.push_back(managed.slot);
+        ++updated;
+    }
+
+    if (updated == 0)
+        return;
+
+    m_state.slots = std::move(stableSlots);
+    m_state.emptyWorkspacePlaceholders = stable.emptyWorkspacePlaceholders;
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders)
+        placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+
+    m_state.stripEntries = stable.stripEntries;
+    for (auto& entry : m_state.stripEntries) {
+        entry.relayoutFromRect = entry.rect;
+        entry.hasRelayoutFromRect = false;
+    }
+
+    selectWindowInState(m_state, target);
+    m_state.focusDuringOverview = target;
+    m_state.relayoutActive = false;
+    m_state.relayoutProgress = 1.0;
+    m_state.relayoutStart = {};
+
+    if (debugLogsEnabled()) {
+        const auto* managed = managedWindowFor(m_state, target, true);
+        std::ostringstream out;
+        out << "[hymission] niri exit snapshot stabilize target=" << debugWindowLabel(target)
+            << " updated=" << updated;
+        if (managed)
+            out << " targetGlobal=" << rectToString(managed->targetGlobal);
+        debugLog(out.str());
+    }
+}
+
 void OverviewController::enforceDirectNiriExitFocusGuard() {
     if (!usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
         return;
@@ -9210,6 +9276,7 @@ void OverviewController::enforceDirectNiriExitFocusGuard() {
     if (target->m_workspace)
         refreshWorkspaceLayoutSnapshot(target->m_workspace);
     refreshNiriScrollingOverviewAfterLayoutScroll("exit-focus-guard");
+    stabilizeDirectNiriExitSnapshot(target);
 
     if (debugLogsEnabled() && previousSelected != target) {
         std::ostringstream out;
@@ -9417,7 +9484,12 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     if (!selectedManaged)
         return false;
 
-    const Rect selectedPreview = currentPreviewRect(*selectedManaged);
+    const bool useStableExitPreview = m_beginCloseInProgress && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
+    const auto exitPreviewRect = [&](const ManagedWindow& managed) {
+        return useStableExitPreview ? managed.targetGlobal : currentPreviewRect(managed);
+    };
+
+    const Rect selectedPreview = exitPreviewRect(*selectedManaged);
     const Rect selectedExit = goalGlobalRectForWindow(window);
     if (selectedPreview.width <= 1.0 || selectedPreview.height <= 1.0 || selectedExit.width <= 1.0 || selectedExit.height <= 1.0)
         return false;
@@ -9431,13 +9503,15 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
         if (!managed.window || !managed.window->m_isMapped)
             continue;
 
-        const Rect preview = currentPreviewRect(managed);
+        const Rect preview = exitPreviewRect(managed);
         managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
                                       selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
                                       preview.width * scaleX, preview.height * scaleY);
     }
 
     const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& placeholder) {
+        if (useStableExitPreview)
+            return placeholder.targetGlobal;
         if (m_state.phase == Phase::Active && m_state.relayoutActive)
             return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
         return placeholder.targetGlobal;
