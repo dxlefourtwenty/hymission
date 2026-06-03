@@ -581,7 +581,9 @@ class OverviewController {
     [[nodiscard]] const FullscreenWorkspaceBackup* fullscreenBackupForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] const FullscreenWorkspaceBackup* fullscreenBackupForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWINDOW    hoveredWindow() const;
+    [[nodiscard]] PHLWINDOW    directNiriFocusedOverviewWindow(const State& state) const;
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
+    void                       enforceDirectNiriExitFocusGuard();
     void                       reconcileNiriCenteredSelectionForExit();
     [[nodiscard]] Rect         liveGlobalRectForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] Rect         goalGlobalRectForWindow(const PHLWINDOW& window) const;

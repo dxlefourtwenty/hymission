@@ -9133,7 +9133,32 @@ PHLWINDOW OverviewController::hoveredWindow() const {
     return m_state.windows[*m_state.hoveredIndex].window;
 }
 
+PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state) const {
+    if (!usesDirectNiriScrollingOverview(state))
+        return {};
+
+    const auto validManagedFocus = [&](const PHLWINDOW& window) -> PHLWINDOW {
+        if (!window || !window->m_isMapped)
+            return {};
+
+        return managedWindowFor(state, window, true) ? window : PHLWINDOW{};
+    };
+
+    if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
+        if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected)
+            return selected;
+    }
+
+    if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
+        return overviewFocus;
+
+    return validManagedFocus(Desktop::focusState()->window());
+}
+
 PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
+    if (const auto directNiriFocus = directNiriFocusedOverviewWindow(m_state); directNiriFocus)
+        return directNiriFocus;
+
     const auto focusDuringOverview = m_state.focusDuringOverview && hasManagedWindow(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
     const auto selected = selectedWindow();
     const auto hovered = hoveredWindow();
@@ -9150,6 +9175,48 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
         return selected;
 
     return {};
+}
+
+void OverviewController::enforceDirectNiriExitFocusGuard() {
+    if (!usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
+        return;
+
+    if (m_workspaceTransition.active) {
+        if (m_workspaceTransition.mode != WorkspaceTransitionMode::TimedCommit)
+            return;
+
+        commitOverviewWorkspaceTransition(false);
+        if (!isVisible() || !usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
+            return;
+    }
+
+    const auto target = directNiriFocusedOverviewWindow(m_state);
+    if (!target || !target->m_isMapped)
+        return;
+
+    const auto previousSelected = selectedWindow();
+    selectWindowInState(m_state, target);
+    m_state.focusDuringOverview = target;
+    m_queuedOverviewSelectionTarget.reset();
+    m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
+    m_queuedOverviewLiveFocusTarget.reset();
+    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
+
+    if (target->m_workspace)
+        target->m_workspace->m_lastFocusedWindow = target;
+    (void)syncScrollingWorkspaceSpotOnWindow(target);
+    if (target->m_workspace)
+        refreshWorkspaceLayoutSnapshot(target->m_workspace);
+    refreshNiriScrollingOverviewAfterLayoutScroll("exit-focus-guard");
+
+    if (debugLogsEnabled() && previousSelected != target) {
+        std::ostringstream out;
+        out << "[hymission] niri exit focus guard target=" << debugWindowLabel(target)
+            << " previousSelected=" << debugWindowLabel(previousSelected);
+        debugLog(out.str());
+    }
 }
 
 void OverviewController::reconcileNiriCenteredSelectionForExit() {
@@ -12279,6 +12346,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     clearToggleSwitchSession();
     if (mode != CloseMode::Abort)
+        enforceDirectNiriExitFocusGuard();
+    if (mode != CloseMode::Abort)
         reconcileNiriCenteredSelectionForExit();
 
     clearPendingWindowGeometryRetry();
@@ -14436,7 +14505,9 @@ void OverviewController::renderSelectionChrome() const {
 }
 
 const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
-    auto focusedWindow = state.focusDuringOverview;
+    auto focusedWindow = directNiriFocusedOverviewWindow(state);
+    if (!focusedWindow)
+        focusedWindow = state.focusDuringOverview;
     auto focusedManaged = managedWindowFor(state, focusedWindow, true);
     if (!focusedManaged) {
         focusedWindow = Desktop::focusState()->window();
