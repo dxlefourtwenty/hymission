@@ -48,6 +48,7 @@ class OverviewController {
   public:
     enum class WindowSetChangeKind {
         General,
+        Open,
         MoveToWorkspace,
     };
 
@@ -582,6 +583,9 @@ class OverviewController {
     [[nodiscard]] const FullscreenWorkspaceBackup* fullscreenBackupForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWINDOW    hoveredWindow() const;
     [[nodiscard]] PHLWINDOW    directNiriFocusedOverviewWindow(const State& state) const;
+    [[nodiscard]] bool         directNiriOverviewHasSingleColumnAnchor(const PHLWINDOW& anchor) const;
+    [[nodiscard]] PHLWINDOW    directNiriOneToTwoColumnOpenAnchor(const PHLWINDOW& openedWindow) const;
+    void                       stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& anchor);
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
     [[nodiscard]] PHLWORKSPACE directNiriTwoColumnExitWorkspace() const;
     void                       freezeDirectNiriTwoColumnExitPreviewTargets();

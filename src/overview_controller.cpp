@@ -2301,7 +2301,7 @@ bool OverviewController::initialize() {
             info.cancelled = true;
     });
     m_keyboardListener = events.input.keyboard.key.listen([this](const IKeyboard::SKeyEvent& event, Event::SCallbackInfo& info) { handleKeyboard(event, info); });
-    m_windowOpenListener = events.window.open.listen([this](PHLWINDOW window) { handleWindowSetChange(window, WindowSetChangeKind::General); });
+    m_windowOpenListener = events.window.open.listen([this](PHLWINDOW window) { handleWindowSetChange(window, WindowSetChangeKind::Open); });
     m_windowDestroyListener = events.window.destroy.listen([this](PHLWINDOW window) {
         pruneWindowActivationHistory(window);
         handleWindowSetChange(window, WindowSetChangeKind::General, true);
@@ -3871,11 +3871,16 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
         return;
     }
 
+    const auto directNiriOneToTwoOpenAnchor =
+        kind == WindowSetChangeKind::Open ? directNiriOneToTwoColumnOpenAnchor(window) : PHLWINDOW{};
+    if (directNiriOneToTwoOpenAnchor)
+        stabilizeDirectNiriOneToTwoColumnOpen(directNiriOneToTwoOpenAnchor);
+
     if (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) {
         if (shouldDeferRebuild) {
             scheduleVisibleStateRebuild();
         } else {
-            rebuildVisibleState();
+            rebuildVisibleState(directNiriOneToTwoOpenAnchor, static_cast<bool>(directNiriOneToTwoOpenAnchor));
             updatePendingWindowGeometryRetry(window);
         }
         return;
@@ -9181,6 +9186,97 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
     }
 
     return validManagedFocus(Desktop::focusState()->window());
+}
+
+bool OverviewController::directNiriOverviewHasSingleColumnAnchor(const PHLWINDOW& anchor) const {
+    if (!anchor || !anchor->m_isMapped || !anchor->m_workspace || !isScrollingWorkspace(anchor->m_workspace))
+        return false;
+
+    auto* scrolling = scrollingAlgorithmForWorkspace(anchor->m_workspace);
+    if (!scrolling || !scrolling->m_scrollingData)
+        return false;
+
+    const auto anchorTarget = anchor->layoutTarget();
+    if (!anchorTarget || anchorTarget->floating())
+        return false;
+
+    const auto anchorData = scrolling->dataFor(anchorTarget);
+    const auto anchorColumn = anchorData ? anchorData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+    if (!anchorColumn)
+        return false;
+
+    const auto workspace = anchor->m_workspace;
+    std::vector<SP<Layout::Tiled::SColumnData>> overviewColumns;
+    for (const auto& managed : m_state.windows) {
+        const auto window = managed.window;
+        if (!window || !window->m_isMapped || window->m_workspace != workspace || window->m_pinned || isFloatingOverviewWindow(window))
+            continue;
+
+        const auto target = window->layoutTarget();
+        if (!target || target->floating())
+            continue;
+
+        const auto targetData = scrolling->dataFor(target);
+        const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+        if (!column || std::ranges::find(overviewColumns, column) != overviewColumns.end())
+            continue;
+
+        overviewColumns.push_back(column);
+    }
+
+    return overviewColumns.size() == 1 && overviewColumns.front() == anchorColumn;
+}
+
+PHLWINDOW OverviewController::directNiriOneToTwoColumnOpenAnchor(const PHLWINDOW& openedWindow) const {
+    if (!openedWindow || !openedWindow->m_isMapped || hasManagedWindow(openedWindow))
+        return {};
+
+    if (!isVisible() || m_workspaceTransition.active || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) ||
+        !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return {};
+
+    const auto workspace = openedWindow->m_workspace;
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return {};
+
+    if (m_state.ownerWorkspace && m_state.ownerWorkspace != workspace)
+        return {};
+
+    auto* scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
+        return {};
+
+    const auto anchor = directNiriFocusedOverviewWindow(m_state);
+    if (!anchor || anchor == openedWindow || anchor->m_workspace != workspace || !directNiriOverviewHasSingleColumnAnchor(anchor))
+        return {};
+
+    return anchor;
+}
+
+void OverviewController::stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& anchor) {
+    if (!anchor || !anchor->m_isMapped || !anchor->m_workspace)
+        return;
+
+    selectWindowInState(m_state, anchor);
+    m_state.focusDuringOverview = anchor;
+    anchor->m_workspace->m_lastFocusedWindow = anchor;
+
+    if (Desktop::focusState()->window() != anchor) {
+        m_pendingLiveFocusWorkspaceChangeTarget = anchor;
+        focusWindowCompat(anchor, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == anchor)
+            m_pendingLiveFocusWorkspaceChangeTarget.reset();
+    }
+
+    (void)syncScrollingWorkspaceSpotOnWindow(anchor);
+    refreshWorkspaceLayoutSnapshot(anchor->m_workspace);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] niri one-to-two open anchor=" << debugWindowLabel(anchor)
+            << " workspace=" << debugWorkspaceLabel(anchor->m_workspace);
+        debugLog(out.str());
+    }
 }
 
 PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
