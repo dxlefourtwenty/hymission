@@ -5175,8 +5175,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
     const bool captureTwoColumnRefresh = usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() == 2;
-    const bool forceSameFocusTwoColumnSwap =
-        sourceView == "window-active-same" || (captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace));
+    const bool forceSameFocusTwoColumnSwap = captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace);
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
         if (!group.hasBounds) {
             group.bounds = rect;
