@@ -490,7 +490,7 @@ class OverviewController {
     [[nodiscard]] double       scrollLayoutPrimaryDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale) const;
     [[nodiscard]] bool         scrollActiveLayoutByGestureDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale);
     void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source);
-    void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {});
+    void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {}, bool syncScrollingSpot = true);
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
     [[nodiscard]] bool         handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers);
@@ -577,6 +577,8 @@ class OverviewController {
     [[nodiscard]] const ManagedWindow* managedWindowFor(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWINDOW     selectedWindow() const;
     [[nodiscard]] float        managedPreviewAlphaFor(const PHLWINDOW& window, float fallback = 1.0F) const;
+    [[nodiscard]] PHLMONITOR   focusMonitorForWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] bool         shouldSuppressNiriFocusScrollForMonitorReturn(const PHLWINDOW& window, const PHLMONITOR& previousFocusMonitor) const;
     [[nodiscard]] PHLMONITOR   preferredMonitorForWindow(const PHLWINDOW& window, const State& state) const;
     [[nodiscard]] PHLMONITOR   previewMonitorForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] const FullscreenWorkspaceBackup* fullscreenBackupForWorkspace(const PHLWORKSPACE& workspace) const;
@@ -832,6 +834,7 @@ class OverviewController {
     bool                      m_scrollingFollowFocusOverridden = false;
     long                      m_scrollingFollowFocusBackup = 1;
     bool                      m_restoreScrollingFollowFocusAfterScrollMouseMove = false;
+    PHLMONITOR                m_lastActiveWindowMonitor;
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;

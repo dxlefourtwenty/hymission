@@ -2311,10 +2311,15 @@ bool OverviewController::initialize() {
         handleWindowSetChange(window, WindowSetChangeKind::General, true);
     });
     m_windowActiveListener = events.window.active.listen([this](PHLWINDOW window, Desktop::eFocusReason) {
+        const auto previousActiveMonitor = m_lastActiveWindowMonitor;
+        m_lastActiveWindowMonitor = focusMonitorForWindow(window);
+        if (!m_lastActiveWindowMonitor)
+            m_lastActiveWindowMonitor = Desktop::focusState()->monitor();
         recordWindowActivation(window);
         if (window && hasManagedWindow(window)) {
             const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
-            refreshNiriScrollingOverviewAfterFocusDispatcher(sameOverviewFocus ? "window-active-same" : "window-active");
+            const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(window, previousActiveMonitor);
+            refreshNiriScrollingOverviewAfterFocusDispatcher(sameOverviewFocus ? "window-active-same" : "window-active", {}, syncScrollingSpot);
         }
     });
     m_windowMoveWorkspaceListener =
@@ -4215,8 +4220,13 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
         return {};
     }
 
+    auto previousFocusMonitor = focusMonitorForWindow(Desktop::focusState()->window());
+    if (!previousFocusMonitor)
+        previousFocusMonitor = Desktop::focusState()->monitor();
+
     const auto result = m_moveFocusOriginal(std::move(args));
-    refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus");
+    const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(Desktop::focusState()->window(), previousFocusMonitor);
+    refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus", {}, syncScrollingSpot);
     return result;
 }
 
@@ -5368,7 +5378,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     damageOwnedMonitors();
 }
 
-void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow) {
+void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow, bool syncScrollingSpot) {
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
 
@@ -5380,7 +5390,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
 
     if (focusTarget) {
         selectWindowInState(m_state, focusTarget);
-        (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
+        if (syncScrollingSpot)
+            (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
@@ -9116,6 +9127,33 @@ PHLWINDOW OverviewController::selectedWindow() const {
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
     const auto* managed = managedWindowFor(window);
     return managed ? managed->previewAlpha : fallback;
+}
+
+PHLMONITOR OverviewController::focusMonitorForWindow(const PHLWINDOW& window) const {
+    if (!window)
+        return {};
+
+    if (const auto monitor = window->m_monitor.lock(); monitor)
+        return monitor;
+
+    if (window->m_workspace) {
+        if (const auto workspaceMonitor = window->m_workspace->m_monitor.lock(); workspaceMonitor)
+            return workspaceMonitor;
+    }
+
+    return g_pCompositor->getMonitorFromID(window->monitorID());
+}
+
+bool OverviewController::shouldSuppressNiriFocusScrollForMonitorReturn(const PHLWINDOW& window, const PHLMONITOR& previousFocusMonitor) const {
+    if (!window || !previousFocusMonitor || !m_state.ownerMonitor)
+        return false;
+
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+        !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    const auto currentMonitor = focusMonitorForWindow(window);
+    return currentMonitor && currentMonitor == m_state.ownerMonitor && previousFocusMonitor != m_state.ownerMonitor;
 }
 
 PHLMONITOR OverviewController::preferredMonitorForWindow(const PHLWINDOW& window, const State& state) const {
