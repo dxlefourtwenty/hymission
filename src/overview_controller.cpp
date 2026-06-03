@@ -9180,6 +9180,80 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
     return {};
 }
 
+PHLWORKSPACE OverviewController::directNiriTwoColumnExitWorkspace() const {
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return {};
+
+    PHLWORKSPACE workspace;
+    if (const auto target = directNiriFocusedOverviewWindow(m_state); target && target->m_workspace)
+        workspace = target->m_workspace;
+    if (!workspace)
+        workspace = m_state.ownerWorkspace;
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return {};
+
+    auto* scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2)
+        return {};
+
+    return workspace;
+}
+
+void OverviewController::freezeDirectNiriTwoColumnExitPreviewTargets() {
+    if (m_state.phase != Phase::Active)
+        return;
+
+    const auto workspace = directNiriTwoColumnExitWorkspace();
+    if (!workspace)
+        return;
+
+    std::vector<std::pair<std::size_t, Rect>> previews;
+    previews.reserve(m_state.windows.size());
+    for (std::size_t index = 0; index < m_state.windows.size(); ++index) {
+        auto& managed = m_state.windows[index];
+        if (!managed.window || !managed.window->m_isMapped)
+            continue;
+
+        const bool belongsToWorkspace = managed.window->m_workspace == workspace || managed.window->m_pinned || managed.isPinned;
+        if (!belongsToWorkspace)
+            continue;
+
+        previews.emplace_back(index, currentPreviewRect(managed));
+    }
+
+    for (const auto& [index, preview] : previews) {
+        auto& managed = m_state.windows[index];
+        managed.targetGlobal = preview;
+        managed.relayoutFromGlobal = preview;
+        managed.exitGlobal = preview;
+        if (managed.targetMonitor) {
+            managed.slot.target = makeRect(preview.x - managed.targetMonitor->m_position.x,
+                                           preview.y - managed.targetMonitor->m_position.y,
+                                           preview.width,
+                                           preview.height);
+            for (auto& slot : m_state.slots) {
+                if (slot.index == managed.slot.index) {
+                    slot = managed.slot;
+                    break;
+                }
+            }
+        }
+    }
+
+    m_state.relayoutActive = false;
+    m_state.relayoutProgress = 1.0;
+    m_state.relayoutStart = {};
+
+    if (debugLogsEnabled() && !previews.empty()) {
+        std::ostringstream out;
+        out << "[hymission] niri two-column exit preview freeze workspace=" << debugWorkspaceLabel(workspace)
+            << " updated=" << previews.size();
+        if (const auto selected = selectedWindow())
+            out << " selected=" << debugWindowLabel(selected);
+        debugLog(out.str());
+    }
+}
+
 void OverviewController::stabilizeDirectNiriExitSnapshot(const PHLWINDOW& target) {
     if (!target || !target->m_isMapped || !usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
         return;
@@ -12426,6 +12500,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         enforceDirectNiriExitFocusGuard();
     if (mode != CloseMode::Abort)
         reconcileNiriCenteredSelectionForExit();
+    if (mode != CloseMode::Abort)
+        freezeDirectNiriTwoColumnExitPreviewTargets();
 
     clearPendingWindowGeometryRetry();
     m_visibleStateRebuildScheduled = false;
