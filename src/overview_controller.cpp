@@ -6920,7 +6920,19 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
     {
         ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
 
-        const bool targetHasFocusCandidateBeforeSwitch = static_cast<bool>(targetWorkspace->getFocusCandidate());
+        PHLWINDOW intendedTargetFocus;
+        if (next.focusDuringOverview && next.focusDuringOverview->m_isMapped && next.focusDuringOverview->m_workspace == targetWorkspace)
+            intendedTargetFocus = next.focusDuringOverview;
+
+        bool preserveDirectNiriTwoColumnFocus = false;
+        if (intendedTargetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace)) {
+            auto* scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
+            preserveDirectNiriTwoColumnFocus = scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
+        }
+        if (preserveDirectNiriTwoColumnFocus)
+            targetWorkspace->m_lastFocusedWindow = intendedTargetFocus;
+
+        const bool targetHasFocusCandidateBeforeSwitch = preserveDirectNiriTwoColumnFocus || static_cast<bool>(targetWorkspace->getFocusCandidate());
         transitionMonitor->changeWorkspace(targetWorkspace, true, true, targetHasFocusCandidateBeforeSwitch);
 
         if (oldWorkspace && oldWorkspace != targetWorkspace) {
@@ -6941,7 +6953,20 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         targetWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
         g_layoutManager->recalculateMonitor(transitionMonitor);
-        const auto targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        PHLWINDOW targetFocus;
+        if (preserveDirectNiriTwoColumnFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
+            targetFocus = intendedTargetFocus;
+        else
+            targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        if (preserveDirectNiriTwoColumnFocus && targetFocus) {
+            targetWorkspace->m_lastFocusedWindow = targetFocus;
+            if (Desktop::focusState()->window() != targetFocus) {
+                m_pendingLiveFocusWorkspaceChangeTarget = targetFocus;
+                focusWindowCompat(targetFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+                if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetFocus)
+                    m_pendingLiveFocusWorkspaceChangeTarget.reset();
+            }
+        }
         if (targetFocus)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         else
