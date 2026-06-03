@@ -562,6 +562,7 @@ class OverviewController {
     [[nodiscard]] bool         ownsWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         hasManagedWindow(const PHLWINDOW& window) const;
     [[nodiscard]] bool         usesDirectNiriScrollingOverview(const State& state) const;
+    [[nodiscard]] bool         activeDirectNiriSingleWorkspaceOverview() const;
     [[nodiscard]] bool         windowHasUsableStateGeometry(const PHLWINDOW& window) const;
     [[nodiscard]] bool         windowMatchesOverviewScope(const PHLWINDOW& window, const State& state, bool requireUsableGeometry) const;
     [[nodiscard]] bool         shouldAutoCloseFor(const PHLWINDOW& window) const;
@@ -677,6 +678,7 @@ class OverviewController {
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true);
     void                       syncFocusDuringOverviewFromSelection(bool syncScrollingSpot = true, const char* source = "?", bool centerCursor = false);
+    [[nodiscard]] bool         refocusDirectNiriSelectionWithoutScroll(const char* source = "?");
     void                       recordWindowActivation(const PHLWINDOW& window, bool allowWhileVisible = false);
     void                       pruneWindowActivationHistory(const PHLWINDOW& removedWindow = {});
     [[nodiscard]] bool         shouldUseRecentWindowOrdering(const State& state) const;

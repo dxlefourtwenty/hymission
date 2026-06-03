@@ -4209,13 +4209,13 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
         return std::nullopt;
     }();
 
-    if (isVisible() && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) && niriModeAppliesToState(m_state) && requestedDirection &&
-        (*requestedDirection == Direction::Left || *requestedDirection == Direction::Right)) {
-        // In niri mode, horizontal movefocus should be owned by the overview
-        // selection model. Calling Hyprland's original movefocus here can race
-        // with rapid repeated input and briefly leave the real focus on the
-        // previous window, which makes exiting the overview activate the wrong
-        // client. moveSelection already clamps at workspace edges.
+    if (requestedDirection && activeDirectNiriSingleWorkspaceOverview()) {
+        const auto focusedWindow = Desktop::focusState()->window();
+        const bool focusIsInOverview = focusedWindow && hasManagedWindow(focusedWindow);
+
+        if (!focusIsInOverview && refocusDirectNiriSelectionWithoutScroll("movefocus-return"))
+            return {};
+
         moveSelection(*requestedDirection);
         return {};
     }
@@ -8858,6 +8858,11 @@ bool OverviewController::usesDirectNiriScrollingOverview(const State& state) con
     });
 }
 
+bool OverviewController::activeDirectNiriSingleWorkspaceOverview() const {
+    return isVisible() && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) && m_state.collectionPolicy.onlyActiveWorkspace &&
+        usesDirectNiriScrollingOverview(m_state);
+}
+
 bool OverviewController::windowHasUsableStateGeometry(const PHLWINDOW& window) const {
     if (!window)
         return false;
@@ -11701,6 +11706,22 @@ void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrolling
     if (centerCursor)
         centerCursorOnOverviewWindow(selected, source);
     updateSelectedWindowLayout(previousSelected);
+}
+
+bool OverviewController::refocusDirectNiriSelectionWithoutScroll(const char* source) {
+    if (!activeDirectNiriSingleWorkspaceOverview())
+        return false;
+
+    auto target = directNiriFocusedOverviewWindow(m_state);
+    if (!target || !target->m_isMapped || !hasManagedWindow(target))
+        return false;
+
+    if (!selectWindowInState(m_state, target))
+        return false;
+
+    syncFocusDuringOverviewFromSelection(false, source);
+    damageOwnedMonitors();
+    return true;
 }
 
 void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
