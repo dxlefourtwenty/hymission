@@ -6949,7 +6949,10 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
-        if (targetWorkspaceSyntheticEmpty || !containsHandle(next.managedWorkspaces, targetWorkspace) || next.ownerWorkspace != targetWorkspace) {
+        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
+            isScrollingWorkspace(targetWorkspace);
+        if (rebuildDirectNiriTargetAfterFocusSync || targetWorkspaceSyntheticEmpty || !containsHandle(next.managedWorkspaces, targetWorkspace) ||
+            next.ownerWorkspace != targetWorkspace) {
             const auto rebuildMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : transitionMonitor;
             const std::vector<WorkspaceOverride> overrides = {{
                 .monitorId = transitionMonitor->m_id,
