@@ -9144,13 +9144,13 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
         return managedWindowFor(state, window, true) ? window : PHLWINDOW{};
     };
 
+    if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
+        return overviewFocus;
+
     if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
         if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected)
             return selected;
     }
-
-    if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
-        return overviewFocus;
 
     return validManagedFocus(Desktop::focusState()->window());
 }
