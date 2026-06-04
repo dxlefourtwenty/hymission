@@ -13614,10 +13614,13 @@ void OverviewController::updateAnimation() {
             m_state.relayoutProgress = 1.0;
             m_state.relayoutActive = false;
             m_state.relayoutStart = {};
-            m_pendingSwapColumnRelayoutCommitWorkspace.reset();
-            m_swapColumnBackendPreviewFreezeWorkspace.reset();
-            m_swapColumnBackendPreviewFreezeUntil = {};
-            m_swapColumnBackendPreviewFrozenLayout.clear();
+            if (!m_pendingSwapColumnRelayoutCommitWorkspace.lock()) {
+                m_swapColumnBackendPreviewFreezeWorkspace.reset();
+                m_swapColumnBackendPreviewFreezeUntil = {};
+                m_swapColumnBackendPreviewFrozenLayout.clear();
+            } else if (debugLogsEnabled()) {
+                debugLog("[hymission] keep pending swapcol relayout after animation complete");
+            }
             latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
             if (debugLogsEnabled())
                 debugLog("[hymission] relayout anim complete");
