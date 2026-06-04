@@ -5173,8 +5173,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     };
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
-    const bool captureTwoColumnRefresh = usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
-        scrolling->m_scrollingData->columns.size() == 2;
+    const bool fitModeViewportRefresh =
+        m_state.collectionPolicy.onlyActiveWorkspace && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
+    const bool captureTwoColumnRefresh = !fitModeViewportRefresh && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling &&
+        scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
     const bool forceSameFocusTwoColumnSwap = captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace);
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
         if (!group.hasBounds) {
