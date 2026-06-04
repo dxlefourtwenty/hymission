@@ -800,6 +800,14 @@ bool rectFitsInsideBounds(const Rect& rect, const Rect& bounds, double epsilon =
         rect.y + rect.height <= bounds.y + bounds.height + epsilon;
 }
 
+Rect rectUnion(const Rect& lhs, const Rect& rhs) {
+    const double minX = std::min(lhs.x, rhs.x);
+    const double minY = std::min(lhs.y, rhs.y);
+    const double maxX = std::max(lhs.x + lhs.width, rhs.x + rhs.width);
+    const double maxY = std::max(lhs.y + lhs.height, rhs.y + rhs.height);
+    return makeRect(minX, minY, maxX - minX, maxY - minY);
+}
+
 double maxCenteredScaleForBounds(const Rect& rect, const Rect& bounds) {
     if (rect.width <= 1.0 || rect.height <= 1.0)
         return 1.0;
@@ -1507,6 +1515,52 @@ struct ScrollingOverviewGeometry {
     Rect        baseGlobal;
     GestureAxis primaryAxis = GestureAxis::Horizontal;
 };
+
+std::optional<Rect> twoColumnFitViewportSourceGlobal(Layout::Tiled::CScrollingAlgorithm* scrolling, const Rect& baseGlobal, GestureAxis primaryAxis) {
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.size() != 2 || baseGlobal.width <= 1.0 || baseGlobal.height <= 1.0)
+        return std::nullopt;
+
+    Rect        fitBounds;
+    bool        hasFitBounds = false;
+    std::size_t populatedColumns = 0;
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column || column->targetDatas.empty())
+            return std::nullopt;
+
+        Rect columnBounds;
+        bool hasColumnBounds = false;
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
+                continue;
+
+            const CBox layoutBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+            if (layoutBox.width <= 1.0 || layoutBox.height <= 1.0)
+                continue;
+
+            const Rect targetBounds = makeRect(layoutBox.x, layoutBox.y, layoutBox.width, layoutBox.height);
+            columnBounds = hasColumnBounds ? rectUnion(columnBounds, targetBounds) : targetBounds;
+            hasColumnBounds = true;
+        }
+
+        if (!hasColumnBounds)
+            return std::nullopt;
+
+        fitBounds = hasFitBounds ? rectUnion(fitBounds, columnBounds) : columnBounds;
+        hasFitBounds = true;
+        ++populatedColumns;
+    }
+
+    if (!hasFitBounds || populatedColumns != 2)
+        return std::nullopt;
+
+    const double fitPrimary = primaryAxis == GestureAxis::Horizontal ? fitBounds.width : fitBounds.height;
+    const double basePrimary = primaryAxis == GestureAxis::Horizontal ? baseGlobal.width : baseGlobal.height;
+    const double allowance = std::max(8.0, basePrimary * 0.08);
+    if (fitPrimary > basePrimary + allowance)
+        return std::nullopt;
+
+    return fitBounds;
+}
 
 std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
@@ -10841,11 +10895,12 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const void* const animationKey = window.window.get();
         const auto        now = std::chrono::steady_clock::now();
         auto&             animation = s_dynamicResizeAnimations[animationKey];
+        const bool        fitModeViewport = getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
         const bool        noSizePositionChanged = !ownSizeChanged && !anchorSizeChanged && !rectApproxEqual(dynamicRect, activeBaseRect(), 0.5);
         bool              twoColumnWorkspace = false;
         if (noSizePositionChanged) {
             if (auto* scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
-                twoColumnWorkspace = scrolling->m_scrollingData->columns.size() == 2;
+                twoColumnWorkspace = !fitModeViewport && scrolling->m_scrollingData->columns.size() == 2;
         }
 
         // Keep the resize animation origin current while no live resize is happening.
@@ -16392,9 +16447,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
                                           baseGlobal.height * viewportScale);
+            const auto fitViewportSourceGlobal = twoColumnFitViewportSourceGlobal(scrolling, baseGlobal, *overflowAxis);
+            const double sourceCenterX = fitViewportSourceGlobal && *overflowAxis == GestureAxis::Horizontal ? fitViewportSourceGlobal->centerX() : baseGlobal.centerX();
+            const double sourceCenterY = fitViewportSourceGlobal && *overflowAxis == GestureAxis::Vertical ? fitViewportSourceGlobal->centerY() : baseGlobal.centerY();
             workspaceViewportLocal = viewportLocal;
-            targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - baseGlobal.centerX()) * scale - targetWidth * 0.5,
-                                   viewportLocal.centerY() + (sourceGlobal.centerY() - baseGlobal.centerY()) * scale - targetHeight * 0.5,
+            targetLocal = makeRect(viewportLocal.centerX() + (sourceGlobal.centerX() - sourceCenterX) * scale - targetWidth * 0.5,
+                                   viewportLocal.centerY() + (sourceGlobal.centerY() - sourceCenterY) * scale - targetHeight * 0.5,
                                    targetWidth,
                                    targetHeight);
 
