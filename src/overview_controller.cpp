@@ -4254,6 +4254,8 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     }();
 
     if (requestedDirection && activeDirectNiriSingleWorkspaceOverview()) {
+        (void)commitPendingSwapColumnRelayout("movefocus-before-selection");
+
         const auto focusedWindow = Desktop::focusState()->window();
         const bool focusIsInOverview = focusedWindow && hasManagedWindow(focusedWindow);
 
@@ -7935,6 +7937,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
         isScrollingGeometryLayoutMessage;
 
+    if (overviewActive)
+        (void)commitPendingSwapColumnRelayout("overview-edit-before-dispatch");
+
     const auto closestTiledWindowInWorkspace = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !usesDirectNiriScrollingOverview(m_state))
             return window;
@@ -8354,6 +8359,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         refreshWorkspaceLayoutSnapshot(capture.workspace);
         m_stripSnapshotsDirty = true;
         scheduleWorkspaceStripSnapshotRefresh();
+        armPendingSwapColumnRelayoutCommit(capture.workspace);
         damageOwnedMonitors();
 
         if (debugLogsEnabled()) {
@@ -8390,6 +8396,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         swapAnchor = closestTiledWindowInWorkspace(swapAnchor);
         if (hardRecalculateScrollingWorkspaceAroundWindow(swapAnchor, "swapcol-post-dispatch-hard-recalc")) {
             clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+            armPendingSwapColumnRelayoutCommit(twoColumnOverviewSwap.workspace);
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] swapcol exact-two refreshed from layout"
@@ -8535,11 +8542,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         rebuildVisibleState(preferredSelected, true);
         refreshNiriScrollingOverviewAfterFocusDispatcher(dispatcherName, preferredSelected);
+        if (isSwapColumnLayoutMessage && result.success)
+            armPendingSwapColumnRelayoutCommit(activeLayoutWorkspace());
 
         if (g_pEventLoopManager && usesDirectNiriScrollingOverview(m_state)) {
             const auto deferredTarget = preferredSelected;
-            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus] {
+            g_pEventLoopManager->doLater([this, deferredTarget, source = std::string(dispatcherName ? dispatcherName : "overview-edit"), forceGeometryRefocus,
+                                          deferredFromSwapcol = isSwapColumnLayoutMessage] {
                 if (g_controller != this || !isVisible() || m_state.phase != Phase::Active || m_workspaceTransition.active || m_beginCloseInProgress)
+                    return;
+
+                if (deferredFromSwapcol && !hasPendingSwapColumnRelayoutCommit(activeLayoutWorkspace()))
                     return;
 
                 PHLWINDOW target = deferredTarget;
@@ -11767,6 +11780,54 @@ bool OverviewController::refocusDirectNiriSelectionWithoutScroll(const char* sou
     return true;
 }
 
+void OverviewController::armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) {
+    if (!workspace || !activeDirectNiriSingleWorkspaceOverview() || !m_state.relayoutActive)
+        return;
+
+    m_pendingSwapColumnRelayoutCommitWorkspace = workspace;
+}
+
+bool OverviewController::hasPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) const {
+    const auto pendingWorkspace = m_pendingSwapColumnRelayoutCommitWorkspace.lock();
+    return pendingWorkspace && workspace && pendingWorkspace == workspace;
+}
+
+bool OverviewController::commitPendingSwapColumnRelayout(const char* source) {
+    const auto workspace = m_pendingSwapColumnRelayoutCommitWorkspace.lock();
+    if (!workspace)
+        return false;
+
+    m_pendingSwapColumnRelayoutCommitWorkspace.reset();
+
+    if (!activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != workspace)
+        return false;
+
+    for (auto& managed : m_state.windows)
+        managed.relayoutFromGlobal = managed.targetGlobal;
+
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders)
+        placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+
+    const bool wasActive = m_state.relayoutActive;
+    m_state.relayoutActive = false;
+    m_state.relayoutProgress = 1.0;
+    m_state.relayoutStart = {};
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] commit pending swapcol relayout"
+            << " source=" << (source ? source : "?")
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " wasActive=" << (wasActive ? 1 : 0);
+        debugLog(out.str());
+    }
+
+    if (wasActive)
+        damageOwnedMonitors();
+
+    return wasActive;
+}
+
 void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
@@ -12589,6 +12650,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     const double fromVisual = isVisible() ? visualProgress() : 0.0;
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
+    m_pendingSwapColumnRelayoutCommitWorkspace.reset();
     recordWindowActivation(Desktop::focusState()->window());
     closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
@@ -12739,6 +12801,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
     m_queuedOverviewLiveFocusCenterCursor = false;
+    m_pendingSwapColumnRelayoutCommitWorkspace.reset();
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
         for (auto& managed : m_state.windows) {
@@ -13030,6 +13093,7 @@ void OverviewController::deactivate() {
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
     m_queuedOverviewLiveFocusCenterCursor = false;
     m_pendingLiveFocusWorkspaceChangeTarget.reset();
+    m_pendingSwapColumnRelayoutCommitWorkspace.reset();
     m_pendingWorkspaceChange.reset();
     m_pendingWorkspaceChangeAction.reset();
     m_workspaceChangeHandlingScheduled = false;
@@ -13332,6 +13396,7 @@ void OverviewController::updateAnimation() {
             m_state.relayoutProgress = 1.0;
             m_state.relayoutActive = false;
             m_state.relayoutStart = {};
+            m_pendingSwapColumnRelayoutCommitWorkspace.reset();
             latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
             if (debugLogsEnabled())
                 debugLog("[hymission] relayout anim complete");

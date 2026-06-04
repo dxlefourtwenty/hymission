@@ -679,6 +679,9 @@ class OverviewController {
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true);
     void                       syncFocusDuringOverviewFromSelection(bool syncScrollingSpot = true, const char* source = "?", bool centerCursor = false);
     [[nodiscard]] bool         refocusDirectNiriSelectionWithoutScroll(const char* source = "?");
+    void                       armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace);
+    [[nodiscard]] bool         hasPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) const;
+    [[nodiscard]] bool         commitPendingSwapColumnRelayout(const char* source = "?");
     void                       recordWindowActivation(const PHLWINDOW& window, bool allowWhileVisible = false);
     void                       pruneWindowActivationHistory(const PHLWINDOW& removedWindow = {});
     [[nodiscard]] bool         shouldUseRecentWindowOrdering(const State& state) const;
@@ -871,6 +874,7 @@ class OverviewController {
     bool                      m_queuedOverviewLiveFocusSyncScrollingSpot = false;
     bool                      m_queuedOverviewLiveFocusCenterCursor = false;
     PHLWINDOWREF              m_pendingLiveFocusWorkspaceChangeTarget;
+    PHLWORKSPACEREF           m_pendingSwapColumnRelayoutCommitWorkspace;
     PHLWINDOWREF              m_pendingWindowGeometryRetryTarget;
     PHLWORKSPACEREF           m_pendingWorkspaceChange;
     std::optional<OverviewWorkspaceChangeAction> m_pendingWorkspaceChangeAction;
