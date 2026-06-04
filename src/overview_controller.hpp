@@ -683,7 +683,12 @@ class OverviewController {
     [[nodiscard]] bool         hasPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         commitPendingSwapColumnRelayout(const char* source = "?");
     void                       freezeSwapColumnBackendPreview(const PHLWORKSPACE& workspace, const char* source = "?");
+    [[nodiscard]] bool         swapColumnBackendPreviewFreezeActiveFor(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const;
+    [[nodiscard]] const ManagedWindow* frozenSwapColumnBackendPreviewManagedFor(const PHLWINDOW& window) const;
+    [[nodiscard]] bool         shouldCarryFrozenSwapColumnBackendPreview(const ManagedWindow& managed, const PHLWORKSPACE& workspace) const;
+    bool                       carryFrozenSwapColumnBackendPreviewLayout(ManagedWindow& managed, std::size_t index, const PHLWORKSPACE& workspace) const;
+    bool                       carryFrozenSwapColumnBackendPreviewLayout(State& state, const PHLWORKSPACE& workspace, const char* source) const;
     void                       recordWindowActivation(const PHLWINDOW& window, bool allowWhileVisible = false);
     void                       pruneWindowActivationHistory(const PHLWINDOW& removedWindow = {});
     [[nodiscard]] bool         shouldUseRecentWindowOrdering(const State& state) const;
@@ -879,6 +884,7 @@ class OverviewController {
     PHLWORKSPACEREF           m_pendingSwapColumnRelayoutCommitWorkspace;
     PHLWORKSPACEREF           m_swapColumnBackendPreviewFreezeWorkspace;
     std::chrono::steady_clock::time_point m_swapColumnBackendPreviewFreezeUntil = {};
+    std::vector<ManagedWindow> m_swapColumnBackendPreviewFrozenLayout;
     PHLWINDOWREF              m_pendingWindowGeometryRetryTarget;
     PHLWORKSPACEREF           m_pendingWorkspaceChange;
     std::optional<OverviewWorkspaceChangeAction> m_pendingWorkspaceChangeAction;

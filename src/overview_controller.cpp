@@ -5219,7 +5219,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     };
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
-    const bool captureTwoColumnRefresh = usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
+    const bool swapColumnFreezeActive = swapColumnBackendPreviewFreezeActiveFor(workspace);
+    const bool captureTwoColumnRefresh = !swapColumnFreezeActive && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() == 2;
     const bool forceSameFocusTwoColumnSwap = captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace);
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
@@ -5277,6 +5278,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
     if (next.windows.empty())
         return;
+    const bool carriedFrozenSwapColumnLayout = carryFrozenSwapColumnBackendPreviewLayout(next, workspace, source);
 
     std::array<std::size_t, 2> refreshPreviousRankToGroup{0, 1};
     std::array<std::size_t, 2> refreshGroupToNextRank{0, 1};
@@ -5326,6 +5328,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         managed.targetGlobal = it->targetGlobal;
         managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
+        if (carriedFrozenSwapColumnLayout)
+            (void)carryFrozenSwapColumnBackendPreviewLayout(managed, static_cast<std::size_t>(&managed - m_state.windows.data()), workspace);
         if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && refreshGroups[0].hasPreviousPrimary &&
             refreshGroups[1].hasPreviousPrimary && refreshGroups[0].hasNextPrimary && refreshGroups[1].hasNextPrimary && managed.window &&
             managed.window->m_workspace == workspace) {
@@ -11839,23 +11843,37 @@ void OverviewController::freezeSwapColumnBackendPreview(const PHLWORKSPACE& work
     m_swapColumnBackendPreviewFreezeWorkspace = workspace;
     m_swapColumnBackendPreviewFreezeUntil =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(std::ceil(RELAYOUT_DURATION_MS)));
+    m_swapColumnBackendPreviewFrozenLayout.clear();
+    for (const auto& managed : m_state.windows) {
+        if (shouldCarryFrozenSwapColumnBackendPreview(managed, workspace))
+            m_swapColumnBackendPreviewFrozenLayout.push_back(managed);
+    }
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] freeze swapcol backend preview"
             << " source=" << (source ? source : "?")
-            << " workspace=" << debugWorkspaceLabel(workspace);
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " frozen=" << m_swapColumnBackendPreviewFrozenLayout.size();
         debugLog(out.str());
     }
 }
 
-bool OverviewController::swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const {
-    const auto workspace = m_swapColumnBackendPreviewFreezeWorkspace.lock();
-    if (!workspace || m_swapColumnBackendPreviewFreezeUntil == std::chrono::steady_clock::time_point{} ||
+bool OverviewController::swapColumnBackendPreviewFreezeActiveFor(const PHLWORKSPACE& workspace) const {
+    const auto frozenWorkspace = m_swapColumnBackendPreviewFreezeWorkspace.lock();
+    if (!workspace || !frozenWorkspace || m_swapColumnBackendPreviewFreezeUntil == std::chrono::steady_clock::time_point{} ||
         std::chrono::steady_clock::now() >= m_swapColumnBackendPreviewFreezeUntil)
         return false;
 
-    if (!activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != workspace)
+    if (!activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != frozenWorkspace)
+        return false;
+
+    return frozenWorkspace == workspace;
+}
+
+bool OverviewController::swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const {
+    const auto workspace = m_swapColumnBackendPreviewFreezeWorkspace.lock();
+    if (!swapColumnBackendPreviewFreezeActiveFor(workspace))
         return false;
 
     if (!window.window || !window.window->m_isMapped)
@@ -11865,6 +11883,83 @@ bool OverviewController::swapColumnBackendPreviewFrozenFor(const ManagedWindow& 
         return true;
 
     return (window.window->m_pinned || window.isPinned) && activeLayoutWorkspace() == workspace;
+}
+
+const OverviewController::ManagedWindow* OverviewController::frozenSwapColumnBackendPreviewManagedFor(const PHLWINDOW& window) const {
+    if (!window)
+        return nullptr;
+
+    const auto it = std::find_if(m_swapColumnBackendPreviewFrozenLayout.begin(), m_swapColumnBackendPreviewFrozenLayout.end(),
+                                 [&](const ManagedWindow& managed) { return managed.window == window; });
+    return it == m_swapColumnBackendPreviewFrozenLayout.end() ? nullptr : &*it;
+}
+
+bool OverviewController::shouldCarryFrozenSwapColumnBackendPreview(const ManagedWindow& managed, const PHLWORKSPACE& workspace) const {
+    if (!workspace || !managed.window || !managed.window->m_isMapped || managed.window->m_workspace != workspace)
+        return false;
+
+    if (managed.window->m_pinned || managed.isPinned || managed.isFloating || managed.isNiriFloatingOverlay || isFloatingOverviewWindow(managed.window))
+        return false;
+
+    const auto target = managed.window->layoutTarget();
+    return target && !target->floating();
+}
+
+bool OverviewController::carryFrozenSwapColumnBackendPreviewLayout(ManagedWindow& managed, std::size_t index, const PHLWORKSPACE& workspace) const {
+    if (!swapColumnBackendPreviewFreezeActiveFor(workspace) || !shouldCarryFrozenSwapColumnBackendPreview(managed, workspace))
+        return false;
+
+    const auto* frozen = frozenSwapColumnBackendPreviewManagedFor(managed.window);
+    if (!frozen)
+        return false;
+
+    managed.targetMonitor = frozen->targetMonitor ? frozen->targetMonitor : managed.targetMonitor;
+    managed.targetGlobal = frozen->targetGlobal;
+    managed.relayoutFromGlobal = frozen->targetGlobal;
+    managed.exitGlobal = frozen->exitGlobal;
+    managed.slot = frozen->slot;
+    managed.slot.index = index;
+    if (managed.targetMonitor)
+        managed.slot.target = makeRect(managed.targetGlobal.x - managed.targetMonitor->m_position.x,
+                                       managed.targetGlobal.y - managed.targetMonitor->m_position.y,
+                                       managed.targetGlobal.width,
+                                       managed.targetGlobal.height);
+
+    return true;
+}
+
+bool OverviewController::carryFrozenSwapColumnBackendPreviewLayout(State& state, const PHLWORKSPACE& workspace, const char* source) const {
+    if (!swapColumnBackendPreviewFreezeActiveFor(workspace) || m_swapColumnBackendPreviewFrozenLayout.empty())
+        return false;
+
+    std::size_t carried = 0;
+    for (std::size_t index = 0; index < state.windows.size(); ++index) {
+        if (carryFrozenSwapColumnBackendPreviewLayout(state.windows[index], index, workspace))
+            ++carried;
+    }
+
+    if (carried == 0)
+        return false;
+
+    state.slots.clear();
+    for (const auto& managed : state.windows) {
+        if (managed.targetMonitor)
+            state.slots.push_back(managed.slot);
+    }
+
+    for (auto& placeholder : state.emptyWorkspacePlaceholders)
+        placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] carry frozen swapcol backend preview"
+            << " source=" << (source ? source : "?")
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " windows=" << carried;
+        debugLog(out.str());
+    }
+
+    return true;
 }
 
 void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
@@ -12692,6 +12787,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
     m_swapColumnBackendPreviewFreezeWorkspace.reset();
     m_swapColumnBackendPreviewFreezeUntil = {};
+    m_swapColumnBackendPreviewFrozenLayout.clear();
     recordWindowActivation(Desktop::focusState()->window());
     closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
@@ -12845,6 +12941,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
     m_swapColumnBackendPreviewFreezeWorkspace.reset();
     m_swapColumnBackendPreviewFreezeUntil = {};
+    m_swapColumnBackendPreviewFrozenLayout.clear();
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
         for (auto& managed : m_state.windows) {
@@ -13139,6 +13236,7 @@ void OverviewController::deactivate() {
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
     m_swapColumnBackendPreviewFreezeWorkspace.reset();
     m_swapColumnBackendPreviewFreezeUntil = {};
+    m_swapColumnBackendPreviewFrozenLayout.clear();
     m_pendingWorkspaceChange.reset();
     m_pendingWorkspaceChangeAction.reset();
     m_workspaceChangeHandlingScheduled = false;
@@ -13444,6 +13542,7 @@ void OverviewController::updateAnimation() {
             m_pendingSwapColumnRelayoutCommitWorkspace.reset();
             m_swapColumnBackendPreviewFreezeWorkspace.reset();
             m_swapColumnBackendPreviewFreezeUntil = {};
+            m_swapColumnBackendPreviewFrozenLayout.clear();
             latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
             if (debugLogsEnabled())
                 debugLog("[hymission] relayout anim complete");
@@ -13798,6 +13897,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 
     if (!m_state.collectionPolicy.onlyActiveWorkspace && previousOwnerWorkspace)
         next.ownerWorkspace = previousOwnerWorkspace;
+    const bool carriedFrozenSwapColumnLayout =
+        carryFrozenSwapColumnBackendPreviewLayout(next, activeLayoutWorkspace(), forceRelayout ? "rebuild-visible-forced" : "rebuild-visible");
 
     next.phase = previousPhase;
     next.animationProgress = previousAnimationProgress;
@@ -14022,6 +14123,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         out << " frozenLayout=" << ((sameWindowSet && sameMonitorSet) ? 1 : 0);
         out << " forcedSelectionRelayout=" << (selectionRelayoutForced ? 1 : 0);
         out << " forcedLayoutRelayout=" << (layoutRelayoutForced ? 1 : 0);
+        out << " carriedSwapcolSettle=" << (carriedFrozenSwapColumnLayout ? 1 : 0);
         debugLog(out.str());
         if (forceRelayout || selectionRelayoutForced) {
             logOverviewLayoutState("rebuild-before", m_state);
