@@ -5438,6 +5438,18 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         focusTarget = focused;
 
     if (focusTarget) {
+        const auto focusWorkspace = focusTarget->m_pinned ? activeLayoutWorkspace() : focusTarget->m_workspace;
+        if (!focusWorkspace || !isScrollingWorkspace(focusWorkspace)) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] skip niri focus refresh source=" << (source ? source : "?")
+                    << " target=" << debugWindowLabel(focusTarget)
+                    << " workspace=" << debugWorkspaceLabel(focusWorkspace);
+                debugLog(out.str());
+            }
+            return;
+        }
+
         selectWindowInState(m_state, focusTarget);
         if (syncScrollingSpot)
             (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
@@ -10713,6 +10725,24 @@ std::optional<Rect> OverviewController::workspaceTransitionRectForWindow(const P
         return translateRect(sourceManaged->targetGlobal, sourceDx, sourceDy);
 
     return translateRect(targetManaged->targetGlobal, targetDx, targetDy);
+}
+
+Rect OverviewController::stablePreviewOrderRect(const ManagedWindow& window) const {
+    switch (m_state.phase) {
+        case Phase::Opening:
+            return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
+        case Phase::Active:
+            if (m_state.relayoutActive)
+                return lerpRect(window.relayoutFromGlobal, window.targetGlobal, relayoutVisualProgress());
+            return window.targetGlobal;
+        case Phase::ClosingSettle:
+        case Phase::Closing:
+            return lerpRect(window.exitGlobal, window.targetGlobal, visualProgress());
+        case Phase::Inactive:
+            return window.naturalGlobal;
+    }
+
+    return window.targetGlobal;
 }
 
 Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
@@ -16252,8 +16282,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (lhsMonitorId != rhsMonitorId)
                 return lhsMonitorId < rhsMonitorId;
 
-            const Rect lhsRect = currentPreviewRect(lhs);
-            const Rect rhsRect = currentPreviewRect(rhs);
+            const Rect lhsRect = stablePreviewOrderRect(lhs);
+            const Rect rhsRect = stablePreviewOrderRect(rhs);
             if (std::abs(lhsRect.y - rhsRect.y) > 0.5)
                 return lhsRect.y < rhsRect.y;
             if (std::abs(lhsRect.x - rhsRect.x) > 0.5)
