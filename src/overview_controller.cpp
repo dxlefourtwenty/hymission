@@ -11188,8 +11188,21 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
-            if (swapColumnBackendPreviewFrozenFor(window))
+            if (swapColumnBackendPreviewFrozenFor(window) || pendingSwapColumnRelayoutOwnsPreviewFor(window)) {
+                if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
+                    std::ostringstream out;
+                    out << "[hymission] swapcol preview source=overview-owned"
+                        << " window=" << debugWindowLabel(window.window)
+                        << " rect=" << rectToString(activeBaseRect())
+                        << " targetGlobal=" << rectToString(window.targetGlobal)
+                        << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
+                        << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                        << " pendingCommit=" << (pendingSwapColumnRelayoutOwnsPreviewFor(window) ? 1 : 0)
+                        << " frozen=" << (swapColumnBackendPreviewFrozenFor(window) ? 1 : 0);
+                    debugLog(out.str());
+                }
                 return activeBaseRect();
+            }
             if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect) {
                 if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
                     std::ostringstream out;
@@ -11923,6 +11936,17 @@ bool OverviewController::swapColumnBackendPreviewFrozenFor(const ManagedWindow& 
         return true;
 
     return (window.window->m_pinned || window.isPinned) && activeLayoutWorkspace() == workspace;
+}
+
+bool OverviewController::pendingSwapColumnRelayoutOwnsPreviewFor(const ManagedWindow& window) const {
+    if (!window.window || !window.window->m_isMapped)
+        return false;
+
+    const auto workspace = window.window->m_pinned ? activeLayoutWorkspace() : window.window->m_workspace;
+    if (!workspace || !hasPendingSwapColumnRelayoutCommit(workspace))
+        return false;
+
+    return shouldCarryFrozenSwapColumnBackendPreview(window, workspace);
 }
 
 const OverviewController::ManagedWindow* OverviewController::frozenSwapColumnBackendPreviewManagedFor(const PHLWINDOW& window) const {

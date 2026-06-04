@@ -686,6 +686,7 @@ class OverviewController {
     void                       freezeSwapColumnBackendPreview(const PHLWORKSPACE& workspace, const char* source = "?");
     [[nodiscard]] bool         swapColumnBackendPreviewFreezeActiveFor(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const;
+    [[nodiscard]] bool         pendingSwapColumnRelayoutOwnsPreviewFor(const ManagedWindow& window) const;
     [[nodiscard]] const ManagedWindow* frozenSwapColumnBackendPreviewManagedFor(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldCarryFrozenSwapColumnBackendPreview(const ManagedWindow& managed, const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         shouldSuppressSwapColumnFollowupFocusScroll(const PHLWINDOW& window) const;
