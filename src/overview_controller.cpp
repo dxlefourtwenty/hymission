@@ -8395,6 +8395,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         debugLog(out.str());
     }
 
+    if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
+        clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+        return result;
+    }
+
     if (twoColumnOverviewSwap.valid && result.success) {
         PHLWINDOW swapAnchor = selectedBefore && selectedBefore->m_isMapped ? selectedBefore : Desktop::focusState()->window();
         swapAnchor = closestTiledWindowInWorkspace(swapAnchor);
@@ -8410,11 +8415,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             }
             return result;
         }
-    }
-
-    if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
-        clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
-        return result;
     }
 
     const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
@@ -11668,14 +11668,16 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
 
+    const bool suppressSwapColumnFollowupScroll = syncScrollingSpot && shouldSuppressSwapColumnFollowupFocusScroll(window);
+
     if (!shouldSyncRealFocusDuringOverview()) {
-        if (syncScrollingSpot)
+        if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
             (void)syncScrollingWorkspaceSpotOnWindow(window);
         return;
     }
 
     if (Desktop::focusState()->window() == window) {
-        if (syncScrollingSpot)
+        if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
             (void)syncScrollingWorkspaceSpotOnWindow(window);
         return;
     }
@@ -11697,7 +11699,15 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
             logScrollingWorkspaceSpotState("before live focus", window->m_workspace, window);
     }
 
-    const bool syncOverviewScrollingSpot = syncScrollingSpot && shouldSyncScrollingLayoutDuringOverviewFocus();
+    if (suppressSwapColumnFollowupScroll && debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] suppress swapcol follow-up focus scroll"
+            << " target=" << debugWindowLabel(window)
+            << " workspace=" << debugWorkspaceLabel(window->m_workspace);
+        debugLog(out.str());
+    }
+
+    const bool syncOverviewScrollingSpot = syncScrollingSpot && !suppressSwapColumnFollowupScroll && shouldSyncScrollingLayoutDuringOverviewFocus();
     const bool keepNativeAnimations = syncOverviewScrollingSpot && niriOverviewAnimationsEnabled();
     const bool temporarilyDisabledAnimations = !keepNativeAnimations && !m_animationsEnabledOverridden;
     if (temporarilyDisabledAnimations)
@@ -11903,6 +11913,17 @@ bool OverviewController::shouldCarryFrozenSwapColumnBackendPreview(const Managed
 
     const auto target = managed.window->layoutTarget();
     return target && !target->floating();
+}
+
+bool OverviewController::shouldSuppressSwapColumnFollowupFocusScroll(const PHLWINDOW& window) const {
+    if (!window || !window->m_isMapped)
+        return false;
+
+    PHLWORKSPACE workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return false;
+
+    return swapColumnBackendPreviewFreezeActiveFor(workspace);
 }
 
 bool OverviewController::carryFrozenSwapColumnBackendPreviewLayout(ManagedWindow& managed, std::size_t index, const PHLWORKSPACE& workspace) const {

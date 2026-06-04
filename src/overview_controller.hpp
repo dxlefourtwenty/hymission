@@ -687,6 +687,7 @@ class OverviewController {
     [[nodiscard]] bool         swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const;
     [[nodiscard]] const ManagedWindow* frozenSwapColumnBackendPreviewManagedFor(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldCarryFrozenSwapColumnBackendPreview(const ManagedWindow& managed, const PHLWORKSPACE& workspace) const;
+    [[nodiscard]] bool         shouldSuppressSwapColumnFollowupFocusScroll(const PHLWINDOW& window) const;
     bool                       carryFrozenSwapColumnBackendPreviewLayout(ManagedWindow& managed, std::size_t index, const PHLWORKSPACE& workspace) const;
     bool                       carryFrozenSwapColumnBackendPreviewLayout(State& state, const PHLWORKSPACE& workspace, const char* source) const;
     void                       recordWindowActivation(const PHLWINDOW& window, bool allowWhileVisible = false);
