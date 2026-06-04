@@ -11154,6 +11154,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
+            if (swapColumnBackendPreviewFrozenFor(window))
+                return activeBaseRect();
             if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect) {
                 if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
                     std::ostringstream out;
@@ -11802,6 +11804,8 @@ bool OverviewController::commitPendingSwapColumnRelayout(const char* source) {
     if (!activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != workspace)
         return false;
 
+    freezeSwapColumnBackendPreview(workspace, source);
+
     for (auto& managed : m_state.windows)
         managed.relayoutFromGlobal = managed.targetGlobal;
 
@@ -11826,6 +11830,41 @@ bool OverviewController::commitPendingSwapColumnRelayout(const char* source) {
         damageOwnedMonitors();
 
     return wasActive;
+}
+
+void OverviewController::freezeSwapColumnBackendPreview(const PHLWORKSPACE& workspace, const char* source) {
+    if (!workspace || !activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != workspace)
+        return;
+
+    m_swapColumnBackendPreviewFreezeWorkspace = workspace;
+    m_swapColumnBackendPreviewFreezeUntil =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(std::ceil(RELAYOUT_DURATION_MS)));
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] freeze swapcol backend preview"
+            << " source=" << (source ? source : "?")
+            << " workspace=" << debugWorkspaceLabel(workspace);
+        debugLog(out.str());
+    }
+}
+
+bool OverviewController::swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const {
+    const auto workspace = m_swapColumnBackendPreviewFreezeWorkspace.lock();
+    if (!workspace || m_swapColumnBackendPreviewFreezeUntil == std::chrono::steady_clock::time_point{} ||
+        std::chrono::steady_clock::now() >= m_swapColumnBackendPreviewFreezeUntil)
+        return false;
+
+    if (!activeDirectNiriSingleWorkspaceOverview() || m_state.phase != Phase::Active || activeLayoutWorkspace() != workspace)
+        return false;
+
+    if (!window.window || !window.window->m_isMapped)
+        return false;
+
+    if (window.window->m_workspace == workspace)
+        return true;
+
+    return (window.window->m_pinned || window.isPinned) && activeLayoutWorkspace() == workspace;
 }
 
 void OverviewController::queueSelectionRetargetDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const char* source, bool centerCursor) {
@@ -12651,6 +12690,8 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeUntil = {};
     recordWindowActivation(Desktop::focusState()->window());
     closeActiveSpecialWorkspaces();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
@@ -12802,6 +12843,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
     m_queuedOverviewLiveFocusCenterCursor = false;
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeUntil = {};
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
         for (auto& managed : m_state.windows) {
@@ -13094,6 +13137,8 @@ void OverviewController::deactivate() {
     m_queuedOverviewLiveFocusCenterCursor = false;
     m_pendingLiveFocusWorkspaceChangeTarget.reset();
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeWorkspace.reset();
+    m_swapColumnBackendPreviewFreezeUntil = {};
     m_pendingWorkspaceChange.reset();
     m_pendingWorkspaceChangeAction.reset();
     m_workspaceChangeHandlingScheduled = false;
@@ -13397,6 +13442,8 @@ void OverviewController::updateAnimation() {
             m_state.relayoutActive = false;
             m_state.relayoutStart = {};
             m_pendingSwapColumnRelayoutCommitWorkspace.reset();
+            m_swapColumnBackendPreviewFreezeWorkspace.reset();
+            m_swapColumnBackendPreviewFreezeUntil = {};
             latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
             if (debugLogsEnabled())
                 debugLog("[hymission] relayout anim complete");

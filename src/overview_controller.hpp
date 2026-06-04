@@ -682,6 +682,8 @@ class OverviewController {
     void                       armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace);
     [[nodiscard]] bool         hasPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         commitPendingSwapColumnRelayout(const char* source = "?");
+    void                       freezeSwapColumnBackendPreview(const PHLWORKSPACE& workspace, const char* source = "?");
+    [[nodiscard]] bool         swapColumnBackendPreviewFrozenFor(const ManagedWindow& window) const;
     void                       recordWindowActivation(const PHLWINDOW& window, bool allowWhileVisible = false);
     void                       pruneWindowActivationHistory(const PHLWINDOW& removedWindow = {});
     [[nodiscard]] bool         shouldUseRecentWindowOrdering(const State& state) const;
@@ -875,6 +877,8 @@ class OverviewController {
     bool                      m_queuedOverviewLiveFocusCenterCursor = false;
     PHLWINDOWREF              m_pendingLiveFocusWorkspaceChangeTarget;
     PHLWORKSPACEREF           m_pendingSwapColumnRelayoutCommitWorkspace;
+    PHLWORKSPACEREF           m_swapColumnBackendPreviewFreezeWorkspace;
+    std::chrono::steady_clock::time_point m_swapColumnBackendPreviewFreezeUntil = {};
     PHLWINDOWREF              m_pendingWindowGeometryRetryTarget;
     PHLWORKSPACEREF           m_pendingWorkspaceChange;
     std::optional<OverviewWorkspaceChangeAction> m_pendingWorkspaceChangeAction;
