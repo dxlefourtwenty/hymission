@@ -2360,7 +2360,7 @@ bool OverviewController::initialize() {
         if (!m_lastActiveWindowMonitor)
             m_lastActiveWindowMonitor = Desktop::focusState()->monitor();
         recordWindowActivation(window);
-        if (window && hasManagedWindow(window)) {
+        if (window && hasManagedWindow(window) && windowMatchesOverviewScope(window, m_state, false)) {
             const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
             const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(window, previousActiveMonitor);
             refreshNiriScrollingOverviewAfterFocusDispatcher(sameOverviewFocus ? "window-active-same" : "window-active", {}, syncScrollingSpot);
@@ -3624,7 +3624,27 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
                     if (g_pAnimationManager)
                         g_pAnimationManager->frameTick();
 
-                    rebuildVisibleState(window, true);
+                    if (g_pEventLoopManager) {
+                        if (!m_visibleStateRebuildScheduled) {
+                            m_visibleStateRebuildScheduled = true;
+                            const auto generation = ++m_visibleStateRebuildGeneration;
+                            g_pEventLoopManager->doLater([this, generation, window] {
+                                if (g_controller != this || generation != m_visibleStateRebuildGeneration)
+                                    return;
+
+                                m_visibleStateRebuildScheduled = false;
+                                if (!isVisible() || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
+                                    return;
+
+                                rebuildVisibleState(window, true);
+                                m_stripSnapshotsDirty = true;
+                                scheduleWorkspaceStripSnapshotRefresh();
+                                damageOwnedMonitors();
+                            });
+                        }
+                    } else {
+                        rebuildVisibleState(window, true);
+                    }
                     m_stripSnapshotsDirty = true;
                     scheduleWorkspaceStripSnapshotRefresh();
                 }
@@ -3901,7 +3921,7 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
         return;
     }
 
-    const bool shouldDeferRebuild = preferDeferredRebuild || insideRenderLifecycle();
+    const bool shouldDeferRebuild = preferDeferredRebuild || insideRenderLifecycle() || kind == WindowSetChangeKind::MoveToWorkspace;
 
     if (m_workspaceTransition.active) {
         if (shouldDeferRebuild) {
@@ -4039,7 +4059,7 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
     if (!m_shouldRenderWindowOriginal)
         return false;
 
-    if (isVisible() && window && monitor && ownsMonitor(monitor) && hasManagedWindow(window) && previewMonitorForWindow(window) == monitor) {
+    if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] shouldRenderWindow override " << debugWindowLabel(window) << " monitor=" << monitor->m_name;
@@ -4121,7 +4141,7 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
-    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !hasManagedWindow(window) || previewMonitorForWindow(window) != monitor) {
+    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor)) {
         m_borderDrawOriginal(borderDecorationThisptr, monitor, alpha);
         return;
     }
@@ -4133,7 +4153,7 @@ void OverviewController::shadowDrawHook(void* shadowDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
-    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !hasManagedWindow(window) || previewMonitorForWindow(window) != monitor) {
+    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor)) {
         m_shadowDrawOriginal(shadowDecorationThisptr, monitor, alpha);
         return;
     }
@@ -4148,7 +4168,7 @@ void OverviewController::calculateUVForSurfaceHook(const PHLWINDOW& window, SP<C
     Vector2D adjustedProjSizeUnscaled = projSizeUnscaled;
     bool     adjusted = false;
 
-    if (isVisible() && window && surface && monitor && ownsMonitor(monitor) && hasManagedWindow(window) && previewMonitorForWindow(window) == monitor && !window->m_isX11) {
+    if (isVisible() && window && surface && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor) && !window->m_isX11) {
         const auto expected = expectedSurfaceSizeForUV(window, surface, monitor, main);
         const bool windowSizeMisalign = main && window->wlSurface() && window->wlSurface()->resource() &&
             window->getReportedSize() != window->wlSurface()->resource()->m_current.size;
@@ -4516,8 +4536,8 @@ bool OverviewController::surfaceNeedsLiveBlurHook(void* surfacePassThisptr) {
 
     auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
     auto  monitor = renderData ? renderData->pMonitor.lock() : PHLMONITOR{};
-    if (!renderData || !renderData->pWindow || !monitor || !isVisible() || !ownsMonitor(monitor) || !hasManagedWindow(renderData->pWindow) ||
-        previewMonitorForWindow(renderData->pWindow) != monitor)
+    if (!renderData || !renderData->pWindow || !monitor || !isVisible() || !ownsMonitor(monitor) ||
+        !renderableManagedWindowFor(renderData->pWindow, monitor))
         return m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
 
     const float savedAlpha = renderData->alpha;
@@ -4536,8 +4556,8 @@ bool OverviewController::surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr
 
     auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
     auto  monitor = renderData ? renderData->pMonitor.lock() : PHLMONITOR{};
-    if (!renderData || !renderData->pWindow || !monitor || !isVisible() || !ownsMonitor(monitor) || !hasManagedWindow(renderData->pWindow) ||
-        previewMonitorForWindow(renderData->pWindow) != monitor)
+    if (!renderData || !renderData->pWindow || !monitor || !isVisible() || !ownsMonitor(monitor) ||
+        !renderableManagedWindowFor(renderData->pWindow, monitor))
         return m_surfaceNeedsPrecomputeBlurOriginal(surfacePassThisptr);
 
     const float savedAlpha = renderData->alpha;
@@ -4610,7 +4630,7 @@ CRegion OverviewController::surfaceOpaqueRegionHook(void* surfacePassThisptr) {
     // Overview already damages the full monitor while animating, and the transformed preview
     // geometry is temporary. Returning an empty opaque region avoids pass simplification
     // incorrectly occluding lower previews and causing one-frame flashes.
-    if (isVisible() && monitor && ownsMonitor(monitor) && hasManagedWindow(renderData->pWindow)) {
+    if (isVisible() && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(renderData->pWindow, monitor)) {
         restoreSurfaceRenderData(renderData, snapshot);
         return {};
     }
@@ -9194,6 +9214,36 @@ const OverviewController::ManagedWindow* OverviewController::managedWindowFor(co
     return nullptr;
 }
 
+const OverviewController::ManagedWindow* OverviewController::renderableManagedWindowFor(const PHLWINDOW& window, const PHLMONITOR& monitor) const {
+    if (!window || !monitor)
+        return nullptr;
+
+    const auto matchesTargetMonitor = [&](const ManagedWindow* managed) {
+        return managed && managed->targetMonitor && managed->targetMonitor == monitor;
+    };
+
+    if (m_stripPreviewContext.active) {
+        const auto* managed = managedWindowFor(m_stripPreviewContext.state, window, true);
+        if (!matchesTargetMonitor(managed) || !windowMatchesOverviewScope(window, m_stripPreviewContext.state, false))
+            return nullptr;
+        return managed;
+    }
+
+    if (m_workspaceTransition.active) {
+        const auto* managed = managedWindowForWorkspaceTransition(window);
+        return matchesTargetMonitor(managed) ? managed : nullptr;
+    }
+
+    const auto* managed = managedWindowFor(m_state, window, true);
+    if (!matchesTargetMonitor(managed))
+        return nullptr;
+
+    if ((m_state.phase == Phase::Opening || m_state.phase == Phase::Active) && !windowMatchesOverviewScope(window, m_state, false))
+        return nullptr;
+
+    return managed;
+}
+
 PHLWINDOW OverviewController::selectedWindow() const {
     if (!m_state.selectedIndex || *m_state.selectedIndex >= m_state.windows.size())
         return {};
@@ -10083,8 +10133,8 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     if (!window || !monitor || !isVisible() || !ownsMonitor(monitor))
         return std::nullopt;
 
-    const auto* managed = managedWindowFor(window);
-    if (!managed || !managed->targetMonitor || managed->targetMonitor != monitor)
+    const auto* managed = renderableManagedWindowFor(window, monitor);
+    if (!managed)
         return std::nullopt;
 
     Rect current;
@@ -10570,7 +10620,7 @@ bool OverviewController::shouldSuppressSurfaceBlur(void* surfacePassThisptr) con
         return false;
 
     const auto monitor = renderData->pMonitor.lock();
-    if (!monitor || !ownsMonitor(monitor) || !hasManagedWindow(renderData->pWindow) || previewMonitorForWindow(renderData->pWindow) != monitor)
+    if (!monitor || !ownsMonitor(monitor) || !renderableManagedWindowFor(renderData->pWindow, monitor))
         return false;
 
     if (debugSurfaceLogsEnabled()) {
@@ -10590,7 +10640,7 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
         return false;
 
     monitor = renderData->pMonitor.lock();
-    if (!monitor || !isVisible() || !ownsMonitor(monitor) || !hasManagedWindow(renderData->pWindow) || previewMonitorForWindow(renderData->pWindow) != monitor)
+    if (!monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(renderData->pWindow, monitor))
         return false;
 
     snapshot = {
@@ -15637,7 +15687,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         if (renderWorkspaceContents && targetWorkspace && renderWindowFn) {
             const auto renderPreviewWindows = [&](bool floating) {
                 for (const auto& managed : m_stripPreviewContext.state.windows) {
-                    if (!managed.window || managed.isFloating != floating)
+                    if (!managed.window || managed.isFloating != floating || !windowMatchesOverviewScope(managed.window, m_stripPreviewContext.state, false))
                         continue;
 
                     renderWindowFn(g_pHyprRenderer.get(), managed.window, monitor, renderNow, false, Render::RENDER_PASS_ALL, false, true);

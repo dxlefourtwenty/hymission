@@ -576,6 +576,7 @@ class OverviewController {
     [[nodiscard]] const ManagedWindow* managedWindowFor(const State& state, const PHLWINDOW& window, bool includeTransient = false) const;
     [[nodiscard]] const ManagedWindow* managedWindowForWorkspaceTransition(const PHLWINDOW& window) const;
     [[nodiscard]] const ManagedWindow* managedWindowFor(const PHLWINDOW& window) const;
+    [[nodiscard]] const ManagedWindow* renderableManagedWindowFor(const PHLWINDOW& window, const PHLMONITOR& monitor) const;
     [[nodiscard]] PHLWINDOW     selectedWindow() const;
     [[nodiscard]] float        managedPreviewAlphaFor(const PHLWINDOW& window, float fallback = 1.0F) const;
     [[nodiscard]] PHLMONITOR   focusMonitorForWindow(const PHLWINDOW& window) const;
