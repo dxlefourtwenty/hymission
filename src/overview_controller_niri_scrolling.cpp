@@ -3047,9 +3047,6 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};
 
-    if (activeDirectNiriSingleWorkspaceOverview())
-        return runOverviewEditingDispatcher("movefocus", &m_moveFocusOriginal, std::move(args));
-
     const auto requestedDirection = [&]() -> std::optional<Direction> {
         std::string lowered = asciiLowerCopy(args);
         lowered.erase(std::remove_if(lowered.begin(), lowered.end(), [](unsigned char ch) { return std::isspace(ch) != 0; }), lowered.end());
@@ -3065,6 +3062,15 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
 
         return std::nullopt;
     }();
+
+    // In direct niri single-workspace overview, directional movefocus must stay
+    // inside the overview navigation path. Running Hyprland's native movefocus
+    // first can leave the scrolling strip with no native window-move animation;
+    // moveSelection() updates the overview selection, focuses the real window,
+    // syncs the scrolling spot, and lets the direct niri preview ride that
+    // animated layout state instead of snapping after a deferred rebuild.
+    if (activeDirectNiriSingleWorkspaceOverview() && !requestedDirection)
+        return runOverviewEditingDispatcher("movefocus", &m_moveFocusOriginal, std::move(args));
 
     if (requestedDirection && activeDirectNiriSingleWorkspaceOverview()) {
         const auto workspace = activeLayoutWorkspace();
