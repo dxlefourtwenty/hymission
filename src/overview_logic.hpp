@@ -92,5 +92,7 @@ struct WorkspaceStripReservation {
                                                                   std::optional<std::size_t> activeIndex, double gap, double padding,
                                                                   double workspaceAspectRatio, double workspaceScale = 1.0);
 [[nodiscard]] std::optional<std::size_t> hitTestWorkspaceStrip(const std::vector<Rect>& rects, double x, double y);
+[[nodiscard]] bool directNiriScrollingOverviewDisablesWorkspaceStrip(bool niriModeEnabled, bool onlyActiveWorkspace,
+                                                                     bool ownerWorkspaceScrolling, bool focusedWorkspaceScrolling);
 
 } // namespace hymission

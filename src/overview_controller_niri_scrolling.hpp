@@ -7,6 +7,7 @@ namespace hymission::niri_scrolling_detail {
 extern bool stripSnapshotSingleWorkspaceOnly;
 
 SP<Hyprutils::Animation::SAnimationPropertyConfig> windowsMoveAnimationConfig();
+SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceAnimationConfig();
 
 void armTwoColumnSwapTrace(const PHLWORKSPACE& workspace);
 bool twoColumnSwapTraceActive(const PHLWORKSPACE& workspace);

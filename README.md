@@ -274,6 +274,7 @@ plugin {
         niri_workspace_scale = 1.0
         niri_strip_workspace_zoom = 2.0
         niri_mode_show_empty_workspaces_btwn = 1
+        niri_mode_wallpaper_zoom = 0
         niri_preview_disabled = 0
         niri_overview_animations = 1
         toggle_switch_mode = 1
@@ -322,6 +323,7 @@ hl.config({
             niri_layout_scale = 1.0,
             niri_overview_scale = 0.65,
             niri_workspace_gap = -1.0,
+            niri_mode_wallpaper_zoom = 0,
             niri_preview_disabled = 0,
             niri_overview_animations = 1,
             multi_workspace_expand_selected_window = 1,
@@ -374,9 +376,10 @@ hl.config({
 | `niri_workspace_gap` | float | `-1.0` | Visible gap between niri-mode workspace scroll strips in single-workspace overview. Values below `0.0` fall back to `general:gaps_out`; `niri_multi_ws_gap` remains supported as a legacy fallback. |
 | `niri_workspace_scale` | float | `1.0` | Niri mode strip thumbnail scale inside the configured strip thickness. Values are clamped to `0.05` - `1.0`; `1.0` uses the full strip cross-axis size. |
 | `niri_strip_workspace_zoom` | float | `2.0` | Extra zoom for scrolling-layout windows inside niri mode's active-workspace strip thumbnails only. Values are clamped to `0.05` - `4.0`; this does not affect the main overview, multi-workspace overview, non-niri strip thumbnails, or non-scrolling layouts. |
-| `niri_mode_show_empty_workspaces_btwn` | bool | `1` | In niri-mode single-workspace scrolling overview, show synthetic blur placeholders for numeric empty-workspace gaps between occupied workspaces. Set to `0` to only show existing workspace objects. |
-| `niri_preview_disabled` | bool | `0` | Disable the workspace strip when niri mode is showing a single scrolling-layout workspace. |
-| `niri_overview_animations` | bool | `1` | Animate niri overview preview scrolling when Hyprland `animations:enabled` is on, and keep native window move animations active during niri focus sync. |
+| `niri_mode_show_empty_workspaces_btwn` | bool | `1` | In niri-mode single-workspace scrolling overview, include numeric empty-workspace gaps between occupied workspaces. Set to `0` to only show existing workspace objects. |
+| `niri_mode_wallpaper_zoom` | bool | `0` | Single-workspace scrolling niri mode only. Render the monitor background layer inside each workspace viewport. When disabled, workspace viewports use the blurred placeholder card. |
+| `niri_preview_disabled` | bool | `0` | Legacy compatibility option. The preview strip is always disabled in single-workspace scrolling niri mode. |
+| `niri_overview_animations` | bool | `1` | Keep live Hyprland window movement available while the niri overview is open. Open/close and relayout motion use `windowsMove`; workspace switching uses `workspaces`. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
 | `switch_release_key` | string | `Super_L` | Toggle switch mode only. Release of this key commits the current selection and closes the switch session. Supports keysym names such as `Alt_L` / `Super_L` and `code:N`, and release tracking is resilient to missing per-window release events. |
@@ -416,7 +419,7 @@ Behavior notes:
 
 The workspace strip is shown when the current overview scope displays only the active workspace.
 By default it only shows real workspaces plus the trailing new-workspace card. In `continuous` mode, synthetic empty workspaces progressively expose numbered gaps one slot at a time and render the monitor background/wallpaper when available; the trailing new-workspace card keeps its dedicated `+` styling.
-With `niri_mode = 1`, the strip stays in the configured edge band and the main overview remains the scaled window overview. The strip uses monitor-aspect workspace thumbnails, centers the active workspace on open, and allows the thumbnail list to overflow instead of shrinking every workspace into view. Tiled `scrolling` layout previews keep Hyprland's real scrolling layout alignment, apply `niri_overview_scale` after fitting the non-scrolling axis, and may overflow along the scrolling axis. Gesture panning moves the zoomed layout, and focusing a window while overview is open recenters the underlying scrolling layout and refreshes the preview. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the `scrolling` layout inside the niri overview; workspace switching continues to use Hyprland's standard `gesture = ..., workspace`.
+With `niri_mode = 1`, `only_active_workspace = 1`, and a Hyprland `scrolling` layout, there is no separate preview strip. Workspaces share one overview scene and use `niri_workspace_gap` for spacing. Tiled previews are rebuilt from Hyprland's live scrolling layout geometry, so resize, move, swap, and focus dispatchers remain owned by Hyprland. `focus_fit_method = 0` centers the focused column; `focus_fit_method = 1` fits it inside the viewport. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the layout while overview is open.
 
 ### Optional Waybar Single-Entry Setup
 

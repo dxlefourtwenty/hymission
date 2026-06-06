@@ -75,6 +75,7 @@ using niri_scrolling_detail::retileFillTransformActiveForWindow;
 using niri_scrolling_detail::shouldWrapWorkspaceIds;
 using niri_scrolling_detail::twoColumnSwapTraceActive;
 using niri_scrolling_detail::windowsMoveAnimationConfig;
+using niri_scrolling_detail::workspaceAnimationConfig;
 
 class OverviewOverlayPassElement final : public IPassElement {
   public:
@@ -3180,6 +3181,8 @@ void OverviewController::renderStage(eRenderStage stage) {
 
 void OverviewController::handleConfigReloaded() {
     replaceNativeWorkspaceGestures("config-reloaded");
+    if (isVisible())
+        syncNiriWallpaperSnapshots();
 
     if (!refreshPreviewsOnConfigReloadEnabled())
         return;
@@ -3829,6 +3832,10 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     const auto layerResource = layer->m_layerSurface.lock();
     if (!layerMonitor || layerMonitor != monitor || !layerResource || !layer->m_mapped || layer->m_readyToDelete)
         return false;
+
+    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && niriModeWallpaperZoomEnabled() &&
+        layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+        return true;
 
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
         return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
@@ -5828,6 +5835,33 @@ void OverviewController::updateOverviewWorkspaceTransition() {
     if (!m_workspaceTransition.active || m_workspaceTransition.mode == WorkspaceTransitionMode::Gesture)
         return;
 
+    const bool hyprlandOwnedAnimation = niriModeAppliesToState(m_workspaceTransition.sourceState) ||
+        niriModeAppliesToState(m_workspaceTransition.targetState);
+    if (hyprlandOwnedAnimation) {
+        if (m_workspaceTransition.animationStart == std::chrono::steady_clock::time_point{}) {
+            m_workspaceTransition.animationStart = std::chrono::steady_clock::now();
+            beginWorkspaceTransitionAnimation("workspace-switch");
+        }
+
+        if (m_workspaceTransitionAnimation)
+            m_workspaceTransition.delta = m_workspaceTransitionAnimation->value();
+        else
+            m_workspaceTransition.delta = m_workspaceTransition.animationToDelta;
+
+        if (m_workspaceTransitionAnimation && m_workspaceTransitionAnimation->isBeingAnimated())
+            return;
+
+        finishWorkspaceTransitionAnimation();
+        if (m_workspaceTransition.mode == WorkspaceTransitionMode::TimedRevert) {
+            clearOverviewWorkspaceTransition();
+            damageOwnedMonitors();
+            return;
+        }
+
+        requestOverviewWorkspaceTransitionCommit();
+        return;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     if (m_workspaceTransition.animationStart == std::chrono::steady_clock::time_point{}) {
         m_workspaceTransition.animationStart = now;
@@ -5962,7 +5996,9 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
         return;
     }
 
-    const bool temporarilyDisabledAnimations = !m_animationsEnabledOverridden;
+    const bool hyprlandOwnedWorkspaceAnimation = niriModeAppliesToState(m_workspaceTransition.sourceState) ||
+        niriModeAppliesToState(m_workspaceTransition.targetState);
+    const bool temporarilyDisabledAnimations = !hyprlandOwnedWorkspaceAnimation && !m_animationsEnabledOverridden;
     if (temporarilyDisabledAnimations)
         setAnimationsEnabledOverride(true);
 
@@ -6264,6 +6300,7 @@ void OverviewController::restoreOverviewRenderState() {
 }
 
 void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace) {
+    m_workspaceTransitionAnimation.reset();
     restoreWorkspaceTransitionRenderState(committedWorkspace);
     clearPendingWindowGeometryRetry();
     m_workspaceTransitionCommitScheduled = false;
@@ -7614,6 +7651,53 @@ void OverviewController::clearHiddenStripLayerProxies() {
     m_hiddenStripLayerProxies.clear();
 }
 
+void OverviewController::clearNiriWallpaperSnapshots() {
+    m_niriWallpaperSnapshots.clear();
+}
+
+void OverviewController::syncNiriWallpaperSnapshots() {
+    clearNiriWallpaperSnapshots();
+    if (!niriModeWallpaperZoomEnabled() || !isVisible() || !niriModeAppliesToState(m_state) ||
+        !m_state.collectionPolicy.onlyActiveWorkspace || !g_pHyprRenderer)
+        return;
+
+    for (const auto& monitor : ownedMonitors()) {
+        if (!monitor)
+            continue;
+
+        PHLLS wallpaperLayer;
+        for (const auto& layerRef : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
+            const auto layer = layerRef.lock();
+            if (!layer || !layer->m_mapped || layer->m_readyToDelete)
+                continue;
+
+            wallpaperLayer = layer;
+        }
+
+        if (!wallpaperLayer)
+            continue;
+
+        const auto framebuffer = layerFramebufferFor(wallpaperLayer);
+        if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture())
+            continue;
+
+        setFramebufferLinearFiltering(*framebuffer);
+        m_niriWallpaperSnapshots.push_back({
+            .monitor = monitor,
+            .layer = wallpaperLayer,
+            .framebuffer = framebuffer,
+        });
+    }
+}
+
+SP<Render::ITexture> OverviewController::niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const {
+    const auto it = std::find_if(m_niriWallpaperSnapshots.begin(), m_niriWallpaperSnapshots.end(),
+                                 [&](const NiriWallpaperSnapshot& snapshot) {
+                                     return snapshot.monitor == monitor && snapshot.framebuffer && snapshot.framebuffer->isAllocated();
+                                 });
+    return it == m_niriWallpaperSnapshots.end() ? nullptr : it->framebuffer->getTexture();
+}
+
 OverviewController::HiddenStripLayerProxy* OverviewController::hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor) {
     const auto it = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(),
                                  [&](const HiddenStripLayerProxy& proxy) { return proxy.layer == layer && proxy.monitor == monitor; });
@@ -7821,6 +7905,10 @@ void OverviewController::syncHiddenStripLayerProxies() {
     for (const auto& layer : g_pCompositor->m_layers) {
         const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
         if (!shouldHideLayerSurface(layer, monitor))
+            continue;
+        const auto layerResource = layer ? layer->m_layerSurface.lock() : nullptr;
+        if (niriModeWallpaperZoomEnabled() && layerResource &&
+            layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
             continue;
 
         desired.emplace_back(layer, monitor);
@@ -8144,6 +8232,13 @@ double OverviewController::visualProgress() const {
     if (m_gestureSession.active)
         return clampUnit(m_gestureSession.openness);
 
+    if ((m_state.phase == Phase::Opening || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) &&
+        m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        if (m_overviewVisibilityAnimation)
+            return clampUnit(m_overviewVisibilityAnimation->value());
+        return clampUnit(m_state.animationFromVisual);
+    }
+
     switch (m_state.phase) {
         case Phase::Opening:
             return std::clamp(m_state.animationFromVisual + (m_state.animationToVisual - m_state.animationFromVisual) * easeOutCubic(m_state.animationProgress), 0.0, 1.0);
@@ -8256,6 +8351,71 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutProgress = 1.0;
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
+}
+
+void OverviewController::beginOverviewVisibilityAnimation(const char* source) {
+    m_overviewVisibilityAnimation.reset();
+    const auto config = windowsMoveAnimationConfig();
+    if (!niriOverviewAnimationsEnabled() || !g_pAnimationManager || !config) {
+        m_state.animationProgress = 1.0;
+        m_state.animationFromVisual = m_state.animationToVisual;
+        return;
+    }
+
+    g_pAnimationManager->createAnimation(static_cast<float>(m_state.animationFromVisual), m_overviewVisibilityAnimation, config, AVARDAMAGE_NONE);
+    m_overviewVisibilityAnimation->setUpdateCallback([this](auto) {
+        if (isVisible())
+            damageOwnedMonitors();
+    });
+    *m_overviewVisibilityAnimation = static_cast<float>(m_state.animationToVisual);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] overview visibility anim start source=" << (source ? source : "?");
+        debugLog(out.str());
+    }
+}
+
+void OverviewController::finishOverviewVisibilityAnimation() {
+    if (m_overviewVisibilityAnimation) {
+        m_overviewVisibilityAnimation->setValueAndWarp(static_cast<float>(m_state.animationToVisual));
+        m_overviewVisibilityAnimation.reset();
+    }
+    m_state.animationProgress = 1.0;
+    m_state.animationFromVisual = m_state.animationToVisual;
+    m_state.animationStart = {};
+}
+
+void OverviewController::beginWorkspaceTransitionAnimation(const char* source) {
+    m_workspaceTransitionAnimation.reset();
+    const auto config = workspaceAnimationConfig();
+    if (!niriOverviewAnimationsEnabled() || !g_pAnimationManager || !config) {
+        m_workspaceTransition.delta = m_workspaceTransition.animationToDelta;
+        return;
+    }
+
+    g_pAnimationManager->createAnimation(static_cast<float>(m_workspaceTransition.animationFromDelta), m_workspaceTransitionAnimation, config, AVARDAMAGE_NONE);
+    m_workspaceTransitionAnimation->setUpdateCallback([this](auto) {
+        if (isVisible())
+            damageOwnedMonitors();
+    });
+    *m_workspaceTransitionAnimation = static_cast<float>(m_workspaceTransition.animationToDelta);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] workspace transition anim start source=" << (source ? source : "?");
+        debugLog(out.str());
+    }
+}
+
+void OverviewController::finishWorkspaceTransitionAnimation() {
+    if (m_workspaceTransitionAnimation) {
+        m_workspaceTransitionAnimation->setValueAndWarp(static_cast<float>(m_workspaceTransition.animationToDelta));
+        m_workspaceTransitionAnimation.reset();
+    }
+    m_workspaceTransition.delta = m_workspaceTransition.animationToDelta;
+    m_workspaceTransition.animationProgress = 1.0;
+    m_workspaceTransition.animationStart = {};
 }
 
 PHLWINDOW OverviewController::resolveExitFocus(CloseMode mode) const {
@@ -9299,6 +9459,7 @@ CRegion OverviewController::transformRegionForWindow(const PHLWINDOW& window, co
 void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requestedScope) {
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
+    m_overviewVisibilityAnimation.reset();
     clearToggleSwitchSession();
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
@@ -9371,6 +9532,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     applyWorkspaceNameOverrides(m_state);
     clearHiddenStripLayerProxies();
+    syncNiriWallpaperSnapshots();
     syncHiddenStripLayerProxies();
     m_cursorShapeResetFrames = WAYBAR_CURSOR_SHAPE_RESET_FRAMES;
     resetStaleClientCursorShape();
@@ -9442,6 +9604,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         return;
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
+    m_overviewVisibilityAnimation.reset();
     clearToggleSwitchSession();
     if (mode != CloseMode::Abort)
         enforceDirectNiriExitFocusGuard();
@@ -9549,7 +9712,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         debugLog(out.str());
     }
 
-    if (mode != CloseMode::Abort)
+    if (mode != CloseMode::Abort && !(m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)))
         setAnimationsEnabledOverride(true);
     else
         setAnimationsEnabledOverride(false);
@@ -9769,6 +9932,7 @@ void OverviewController::deactivate() {
     clearPendingStripWorkspaceChange();
     clearStripWindowDragState();
     clearHiddenStripLayerProxies();
+    clearNiriWallpaperSnapshots();
     restoreOverviewRenderState();
     deactivateHooks();
     setFullscreenRenderOverride(false);
@@ -10078,6 +10242,35 @@ void OverviewController::updateAnimation() {
     if (!isAnimating())
         return;
 
+    if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        if (m_state.animationStart == std::chrono::steady_clock::time_point{}) {
+            m_state.animationStart = std::chrono::steady_clock::now();
+            beginOverviewVisibilityAnimation(m_state.phase == Phase::Opening ? "open" : "close");
+        }
+
+        m_state.animationProgress = visualProgress();
+        if (m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated())
+            return;
+
+        finishOverviewVisibilityAnimation();
+        if (m_state.phase == Phase::Opening) {
+            m_state.phase = Phase::Active;
+            m_state.animationFromVisual = 1.0;
+            m_state.animationToVisual = 1.0;
+            m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
+            refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");
+            updateSelectedWindowLayout({});
+            updateHoveredFromPointer(false, false, false, false, "begin-open");
+            damageOwnedMonitors();
+        } else if (m_state.phase == Phase::Closing && !m_deactivatePending) {
+            m_state.animationFromVisual = 0.0;
+            m_state.animationToVisual = 0.0;
+            m_deactivatePending = true;
+            scheduleDeactivate();
+        }
+        return;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     if (m_state.animationStart == std::chrono::steady_clock::time_point{}) {
         m_state.animationStart = now;
@@ -10341,6 +10534,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     const bool previousExitFullscreenReapplied = m_state.exitFullscreenReapplied;
     const auto previousFullscreenBackups = m_state.fullscreenBackups;
     const bool previousFullscreenOverrideActive = m_state.fullscreenOverrideActive;
+    const bool hyprlandOwnedDirectRelayout = usesDirectNiriScrollingOverview(m_state) &&
+        (previousPhase == Phase::Opening || previousPhase == Phase::Active);
     std::vector<std::pair<PHLWINDOW, Rect>> previousPreviewRects;
     previousPreviewRects.reserve(m_state.windows.size() + m_state.transientClosingWindows.size());
     for (const auto& window : m_state.windows)
@@ -10422,7 +10617,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
 
     if (!m_state.collectionPolicy.onlyActiveWorkspace && previousOwnerWorkspace)
         next.ownerWorkspace = previousOwnerWorkspace;
-    const bool carriedFrozenSwapColumnLayout =
+    const bool carriedFrozenSwapColumnLayout = !hyprlandOwnedDirectRelayout &&
         carryFrozenSwapColumnBackendPreviewLayout(next, activeLayoutWorkspace(), forceRelayout ? "rebuild-visible-forced" : "rebuild-visible");
 
     next.phase = previousPhase;
@@ -10572,6 +10767,15 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
                 placeholderRelayoutChanged = true;
         }
     } else {
+        for (auto& placeholder : next.emptyWorkspacePlaceholders)
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+    }
+
+    if (hyprlandOwnedDirectRelayout) {
+        shouldAnimateRelayout = false;
+        placeholderRelayoutChanged = false;
+        for (auto& window : next.windows)
+            window.relayoutFromGlobal = window.targetGlobal;
         for (auto& placeholder : next.emptyWorkspacePlaceholders)
             placeholder.relayoutFromGlobal = placeholder.targetGlobal;
     }

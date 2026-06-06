@@ -777,6 +777,14 @@ SP<Hyprutils::Animation::SAnimationPropertyConfig> windowsMoveAnimationConfig() 
     return tree->getAnimationPropertyConfig("windowsMove");
 }
 
+SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceAnimationConfig() {
+    const auto& tree = Config::animationTree();
+    if (!tree)
+        return {};
+
+    return tree->getAnimationPropertyConfig("workspaces");
+}
+
 bool shouldWrapWorkspaceIds(const WORKSPACEID targetId, const WORKSPACEID currentId) {
     static auto PWORKSPACEWRAPAROUND = CConfigValue<Hyprlang::INT>("animations:workspace_wraparound");
 
@@ -999,6 +1007,9 @@ double OverviewController::niriWorkspaceScale() const {
 bool OverviewController::niriModeShowEmptyWorkspacesBetweenEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode_show_empty_workspaces_btwn", 1) != 0;
 }
+bool OverviewController::niriModeWallpaperZoomEnabled() const {
+    return getConfigInt(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom", 0) != 0;
+}
 bool OverviewController::niriPreviewDisabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_preview_disabled", 0) != 0;
 }
@@ -1189,6 +1200,15 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor ||
         !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
+
+    if (usesDirectNiriScrollingOverview(m_state)) {
+        PHLWINDOW preferred = Desktop::focusState()->window();
+        if (!preferred || !preferred->m_isMapped)
+            preferred = selectedWindow();
+        rebuildVisibleState(preferred, true);
+        damageOwnedMonitors();
+        return;
+    }
 
     const auto workspace = activeLayoutWorkspace();
     auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
@@ -1496,10 +1516,11 @@ void OverviewController::refreshAfterOfficialScrollMove(const char* source) {
     refreshNiriScrollingOverviewAfterLayoutScroll(source);
 }
 bool OverviewController::shouldDisableWorkspaceStripForNiriPreview(const State& state) const {
-    if (!niriPreviewDisabled() || !niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace)
-        return false;
-
-    return state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace);
+    const bool ownerWorkspaceScrolling = state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace);
+    const bool focusedWorkspaceScrolling = state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
+        isScrollingWorkspace(state.focusDuringOverview->m_workspace);
+    return directNiriScrollingOverviewDisablesWorkspaceStrip(niriModeEnabled(), state.collectionPolicy.onlyActiveWorkspace,
+                                                             ownerWorkspaceScrolling, focusedWorkspaceScrolling);
 }
 PHLWORKSPACE OverviewController::centeredEmptyPlaceholderWorkspace(const State& state, const PHLMONITOR& monitor) const {
     if (!monitor)
@@ -3005,6 +3026,9 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};
 
+    if (activeDirectNiriSingleWorkspaceOverview())
+        return runOverviewEditingDispatcher("movefocus", &m_moveFocusOriginal, std::move(args));
+
     const auto requestedDirection = [&]() -> std::optional<Direction> {
         std::string lowered = asciiLowerCopy(args);
         lowered.erase(std::remove_if(lowered.begin(), lowered.end(), [](unsigned char ch) { return std::isspace(ch) != 0; }), lowered.end());
@@ -3109,6 +3133,45 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
         isScrollingGeometryLayoutMessage;
+
+    if (overviewActive && activeDirectNiriSingleWorkspaceOverview()) {
+        PHLWINDOW dispatchFocus = selectedBefore;
+        if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
+            dispatchFocus = m_state.focusDuringOverview;
+        if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
+            dispatchFocus = Desktop::focusState()->window();
+
+        if (dispatchFocus && dispatchFocus->m_isMapped && hasManagedWindow(dispatchFocus)) {
+            selectWindowInState(m_state, dispatchFocus);
+            m_state.focusDuringOverview = dispatchFocus;
+            if (Desktop::focusState()->window() != dispatchFocus)
+                focusWindowCompat(dispatchFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        }
+
+        const auto result = (*original)(std::move(args));
+        if (!result.success)
+            return result;
+
+        PHLWINDOW preferred = Desktop::focusState()->window();
+        if (!preferred || !preferred->m_isMapped)
+            preferred = dispatchFocus;
+        rebuildVisibleState(preferred, true);
+
+        if (g_pEventLoopManager) {
+            g_pEventLoopManager->doLater([this, preferred] {
+                if (!niri_scrolling_detail::isActiveController(this) || !activeDirectNiriSingleWorkspaceOverview())
+                    return;
+
+                PHLWINDOW target = Desktop::focusState()->window();
+                if (!target || !target->m_isMapped)
+                    target = preferred;
+                rebuildVisibleState(target, true);
+            });
+        }
+
+        damageOwnedMonitors();
+        return result;
+    }
 
     if (debugLogsEnabled() && overviewActive && (isSwapColumnLayoutMessage || isMoveColumnLayoutMessage)) {
         const auto workspace = activeLayoutWorkspace();
@@ -4261,6 +4324,9 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             }
         }
 
+        if (usesDirectNiriScrollingOverview(m_state))
+            return dynamicRect;
+
         struct DynamicResizeAnimation {
             Rect                               from;
             Rect                               to;
@@ -4532,6 +4598,13 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         case Phase::Opening:
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
+            if (usesDirectNiriScrollingOverview(m_state)) {
+                if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
+                    return *dynamicRect;
+                if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
+                    return *dynamicRect;
+                return window.targetGlobal;
+            }
             if (swapColumnBackendPreviewFrozenFor(window) || pendingSwapColumnRelayoutOwnsPreviewFor(window)) {
                 if (debugLogsEnabled() && window.window && window.window->m_workspace && consumeTwoColumnSwapPreviewTrace(window.window->m_workspace)) {
                     std::ostringstream out;
@@ -4640,6 +4713,19 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
     const double progress = visualProgress();
     const double phaseAlpha = clampUnit(progress);
     constexpr double PLACEHOLDER_BASE_ALPHA = 0.24;
+    const auto wallpaperTexture = niriModeWallpaperZoomEnabled() ? niriWallpaperTextureForMonitor(renderMonitor) : nullptr;
+    const auto renderWorkspaceBackground = [&](const Rect& rect, double alpha) {
+        if (rect.width <= 0.0 || rect.height <= 0.0 || alpha <= 0.001)
+            return;
+
+        if (wallpaperTexture) {
+            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(rect), {.a = static_cast<float>(clampUnit(alpha))});
+            return;
+        }
+
+        g_pHyprOpenGL->renderRect(toBox(rect), CHyprColor(0.03, 0.07, 0.14, alpha * PLACEHOLDER_BASE_ALPHA),
+                                  {.blur = true, .blurA = static_cast<float>(clampUnit(alpha))});
+    };
     if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
         return;
 
@@ -4703,7 +4789,7 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                     continue;
 
                 Rect transitionGlobal;
-                double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
+                double alpha = phaseAlpha;
                 if (sourcePlaceholder && targetPlaceholder) {
                     const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                     const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
@@ -4721,8 +4807,7 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                 if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0 || alpha <= 0.001)
                     continue;
 
-                g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
-                                          {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
+                renderWorkspaceBackground(placeholderRender, alpha);
                 renderedStatePlaceholder = true;
             }
         }
@@ -4736,12 +4821,11 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
             if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
                 continue;
 
-            const double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
+            const double alpha = phaseAlpha;
             if (alpha <= 0.001)
                 continue;
 
-            g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
-                                      {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
+            renderWorkspaceBackground(placeholderRender, alpha);
             renderedStatePlaceholder = true;
         }
     }
@@ -4795,12 +4879,11 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
     }
     const Rect placeholderRender = scaleRectForRender(currentLocal, renderMonitor);
 
-    const double alpha = PLACEHOLDER_BASE_ALPHA * phaseAlpha;
+    const double alpha = phaseAlpha;
     if (alpha <= 0.001)
         return;
 
-    g_pHyprOpenGL->renderRect(toBox(placeholderRender), CHyprColor(0.03, 0.07, 0.14, alpha),
-                              {.blur = true, .blurA = static_cast<float>(clampUnit(alpha / PLACEHOLDER_BASE_ALPHA))});
+    renderWorkspaceBackground(placeholderRender, alpha);
 }
 void OverviewController::buildWorkspaceStripEntries(State& state) const {
     state.stripEntries.clear();
@@ -5679,22 +5762,22 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                    targetWidth,
                                    targetHeight);
 
-            if (niriFitBackingPlaceholderWorkspaces.insert(layoutWorkspace->m_id).second) {
-                const Rect targetGlobal = makeRect(targetMonitor->m_position.x + viewportLocal.x,
-                                                   targetMonitor->m_position.y + viewportLocal.y,
-                                                   viewportLocal.width,
-                                                   viewportLocal.height);
-                state.emptyWorkspacePlaceholders.push_back({
-                    .monitor = targetMonitor,
-                    .workspace = layoutWorkspace,
-                    .workspaceId = layoutWorkspace->m_id,
-                    .naturalGlobal = baseGlobal,
-                    .exitGlobal = baseGlobal,
-                    .targetGlobal = targetGlobal,
-                    .relayoutFromGlobal = targetGlobal,
-                    .backingOnly = true,
-                });
-            }
+        }
+        if (niriFitBackingPlaceholderWorkspaces.insert(layoutWorkspace->m_id).second) {
+            const Rect targetGlobal = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
+                                               targetMonitor->m_position.y + workspaceViewportLocal.y,
+                                               workspaceViewportLocal.width,
+                                               workspaceViewportLocal.height);
+            state.emptyWorkspacePlaceholders.push_back({
+                .monitor = targetMonitor,
+                .workspace = layoutWorkspace,
+                .workspaceId = layoutWorkspace->m_id,
+                .naturalGlobal = baseGlobal,
+                .exitGlobal = baseGlobal,
+                .targetGlobal = targetGlobal,
+                .relayoutFromGlobal = targetGlobal,
+                .backingOnly = true,
+            });
         }
         const double stripPreviewGapBoost = g_niriStripSnapshotSingleWorkspaceOnly ? 2.0 : 0.0;
         if (overflowAxis) {

@@ -253,6 +253,14 @@ int main() {
 
     ok &= expect(hitTestWorkspaceStrip(topSlots, 120, 10) == std::optional<std::size_t>{1}, "strip hit-test should find the matching slot");
     ok &= expect(!hitTestWorkspaceStrip(topSlots, 100, 10).has_value(), "strip hit-test should miss strip gaps");
+    ok &= expect(directNiriScrollingOverviewDisablesWorkspaceStrip(true, true, true, false),
+                 "direct niri scrolling overview should disable the workspace preview strip");
+    ok &= expect(directNiriScrollingOverviewDisablesWorkspaceStrip(true, true, false, true),
+                 "focused scrolling workspace should disable the workspace preview strip");
+    ok &= expect(!directNiriScrollingOverviewDisablesWorkspaceStrip(true, false, true, true),
+                 "multi-workspace niri overview should preserve its existing strip policy");
+    ok &= expect(!directNiriScrollingOverviewDisablesWorkspaceStrip(false, true, true, true),
+                 "non-niri overview should preserve its existing strip policy");
 
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

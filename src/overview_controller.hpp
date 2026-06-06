@@ -218,6 +218,12 @@ class OverviewController {
         bool        backingOnly = false;
     };
 
+    struct NiriWallpaperSnapshot {
+        PHLMONITOR               monitor;
+        PHLLS                    layer;
+        SP<Render::IFramebuffer> framebuffer;
+    };
+
     struct State {
         Phase                                  phase = Phase::Inactive;
         PHLMONITOR                             ownerMonitor;
@@ -477,6 +483,7 @@ class OverviewController {
     [[nodiscard]] double       niriWorkspaceGap() const;
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
+    [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
     [[nodiscard]] bool         niriOverviewAnimationsEnabled() const;
     [[nodiscard]] bool         debugLogsEnabled() const;
@@ -634,6 +641,9 @@ class OverviewController {
     [[nodiscard]] double                        hiddenStripLayerProgress(const PHLLS& layer, const PHLMONITOR& monitor) const;
     void                                        clearHiddenStripLayerProxies();
     void                                        syncHiddenStripLayerProxies();
+    void                                        clearNiriWallpaperSnapshots();
+    void                                        syncNiriWallpaperSnapshots();
+    [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] const HiddenStripLayerProxy*  hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor) const;
@@ -660,6 +670,10 @@ class OverviewController {
     [[nodiscard]] double       relayoutVisualProgress() const;
     void                       beginOverviewRelayoutAnimation(const char* source = "?");
     void                       finishOverviewRelayoutAnimation();
+    void                       beginOverviewVisibilityAnimation(const char* source = "?");
+    void                       finishOverviewVisibilityAnimation();
+    void                       beginWorkspaceTransitionAnimation(const char* source = "?");
+    void                       finishWorkspaceTransitionAnimation();
     [[nodiscard]] double       workspaceStripEnterProgress() const;
     [[nodiscard]] Vector2D     workspaceStripEnterOffset(const PHLMONITOR& monitor) const;
     [[nodiscard]] Rect         currentWorkspaceStripRect(const WorkspaceStripEntry& entry) const;
@@ -858,6 +872,8 @@ class OverviewController {
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
     PHLANIMVAR<float>         m_relayoutProgressAnimation;
+    PHLANIMVAR<float>         m_overviewVisibilityAnimation;
+    PHLANIMVAR<float>         m_workspaceTransitionAnimation;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;
@@ -926,6 +942,7 @@ class OverviewController {
     std::vector<WorkspaceTransitionRenderStateBackup> m_overviewRenderStateBackups;
     StripPreviewContext      m_stripPreviewContext;
     std::vector<HiddenStripLayerProxy> m_hiddenStripLayerProxies;
+    std::vector<NiriWallpaperSnapshot> m_niriWallpaperSnapshots;
     bool                     m_applyingWorkspaceTransitionCommit = false;
     bool                     m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     bool                     m_workspaceTransitionCommitScheduled = false;
