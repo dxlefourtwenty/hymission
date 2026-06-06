@@ -736,6 +736,7 @@ class OverviewController {
     [[nodiscard]] std::string debugWindowLabel(const PHLWINDOW& window) const;
     void logOverviewLayoutState(const char* context, const State& state) const;
     void logScrollingWorkspaceSpotState(const char* context, const PHLWORKSPACE& workspace, const PHLWINDOW& focusWindow = {}) const;
+    void logSwapColumnFollowupState(const char* context, const PHLWORKSPACE& workspace, const char* source, const PHLWINDOW& focusWindow = {}) const;
     [[nodiscard]] SP<IKeyboard> inputKeyboardWithState() const;
     [[nodiscard]] bool          switchReleaseKeyHeld() const;
     [[nodiscard]] bool          isSwitchReleaseEvent(const IKeyboard::SKeyEvent& event, const SP<IKeyboard>& keyboard) const;

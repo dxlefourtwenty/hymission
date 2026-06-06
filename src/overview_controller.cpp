@@ -4274,15 +4274,45 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     }();
 
     if (requestedDirection && activeDirectNiriSingleWorkspaceOverview()) {
+        const auto workspace = activeLayoutWorkspace();
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] movefocus direct niri begin"
+                << " args=" << args
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " selected=" << debugWindowLabel(selectedWindow())
+                << " active=" << debugWindowLabel(Desktop::focusState()->window());
+            debugLog(out.str());
+            logSwapColumnFollowupState("movefocus-before-pending-commit", workspace, "movefocus", selectedWindow());
+            logScrollingWorkspaceSpotState("movefocus-before-selection", workspace, selectedWindow());
+        }
+
         (void)commitPendingSwapColumnRelayout("movefocus-before-selection");
 
         const auto focusedWindow = Desktop::focusState()->window();
         const bool focusIsInOverview = focusedWindow && hasManagedWindow(focusedWindow);
 
-        if (!focusIsInOverview && refocusDirectNiriSelectionWithoutScroll("movefocus-return"))
+        if (!focusIsInOverview && refocusDirectNiriSelectionWithoutScroll("movefocus-return")) {
+            if (debugLogsEnabled()) {
+                debugLog("[hymission] movefocus direct niri refocused existing overview selection");
+                logSwapColumnFollowupState("movefocus-after-refocus-return", workspace, "movefocus", selectedWindow());
+            }
             return {};
+        }
 
         moveSelection(*requestedDirection);
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] movefocus direct niri result"
+                << " args=" << args
+                << " selected=" << debugWindowLabel(selectedWindow())
+                << " active=" << debugWindowLabel(Desktop::focusState()->window())
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                << " relayoutProgress=" << m_state.relayoutProgress;
+            debugLog(out.str());
+            logSwapColumnFollowupState("movefocus-after-selection", workspace, "movefocus", selectedWindow());
+            logScrollingWorkspaceSpotState("movefocus-after-selection", workspace, selectedWindow());
+        }
         return {};
     }
 
@@ -4293,6 +4323,16 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     const auto result = m_moveFocusOriginal(std::move(args));
     const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(Desktop::focusState()->window(), previousFocusMonitor);
     refreshNiriScrollingOverviewAfterFocusDispatcher("movefocus", {}, syncScrollingSpot);
+    if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state)) {
+        std::ostringstream out;
+        out << "[hymission] movefocus native result"
+            << " success=" << (result.success ? 1 : 0)
+            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " selected=" << debugWindowLabel(selectedWindow())
+            << " active=" << debugWindowLabel(Desktop::focusState()->window());
+        debugLog(out.str());
+        logSwapColumnFollowupState("movefocus-native-result", activeLayoutWorkspace(), "movefocus", selectedWindow());
+    }
     return result;
 }
 
@@ -5221,6 +5261,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         if (columnCount == 2)
             armTwoColumnSwapTrace(workspace);
     }
+    if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state))
+        logSwapColumnFollowupState("niri-refresh-begin", workspace, source, selectedWindow());
 
     const bool animateRefresh = usesDirectNiriScrollingOverview(m_state) && niriOverviewAnimationsEnabled();
     struct TwoColumnRefreshOrigin {
@@ -5435,8 +5477,12 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
             << " animate=" << (m_state.relayoutActive ? 1 : 0)
             << " targetChanged=" << (targetChanged ? 1 : 0)
-            << " columns=" << columnCount;
+            << " columns=" << columnCount
+            << " pendingSwapcol=" << (hasPendingSwapColumnRelayoutCommit(workspace) ? 1 : 0)
+            << " freezeActive=" << (swapColumnBackendPreviewFreezeActiveFor(workspace) ? 1 : 0)
+            << " frozenWindows=" << m_swapColumnBackendPreviewFrozenLayout.size();
         debugLog(out.str());
+        logSwapColumnFollowupState("niri-refresh-result", workspace, source, selectedWindow());
     }
     if (traceColumnRefresh) {
         logScrollingWorkspaceSpotState("niri-refresh-after", workspace, selectedWindow());
@@ -5471,8 +5517,27 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         }
 
         selectWindowInState(m_state, focusTarget);
+        auto* const scrolling = scrollingAlgorithmForWorkspace(focusWorkspace);
+        auto* const controller =
+            scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller.get() : nullptr;
+        const double offsetBefore = controller ? controller->getOffset() : 0.0;
+        if (debugLogsEnabled())
+            logSwapColumnFollowupState("focus-refresh-before-spot-sync", focusWorkspace, source, focusTarget);
         if (syncScrollingSpot)
             (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] niri focus refresh spot sync"
+                << " source=" << (source ? source : "?")
+                << " target=" << debugWindowLabel(focusTarget)
+                << " workspace=" << debugWorkspaceLabel(focusWorkspace)
+                << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+                << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
+                << " offsetBefore=" << offsetBefore
+                << " offsetAfter=" << (controller ? controller->getOffset() : offsetBefore);
+            debugLog(out.str());
+            logSwapColumnFollowupState("focus-refresh-after-spot-sync", focusWorkspace, source, focusTarget);
+        }
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
@@ -7961,6 +8026,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
     const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
+    const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
@@ -7972,6 +8039,22 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
         isScrollingGeometryLayoutMessage;
+
+    if (debugLogsEnabled() && overviewActive && (isSwapColumnLayoutMessage || isMoveColumnLayoutMessage)) {
+        const auto workspace = activeLayoutWorkspace();
+        std::ostringstream out;
+        out << "[hymission] overview column edit before pending commit"
+            << " edit=" << (isSwapColumnLayoutMessage ? "swapcol" : "movecol")
+            << " args=" << dispatcherArgsLower
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " pendingSwapcol=" << (hasPendingSwapColumnRelayoutCommit(workspace) ? 1 : 0)
+            << " freezeActive=" << (swapColumnBackendPreviewFreezeActiveFor(workspace) ? 1 : 0)
+            << " selected=" << debugWindowLabel(selectedBefore)
+            << " active=" << debugWindowLabel(Desktop::focusState()->window());
+        debugLog(out.str());
+        logSwapColumnFollowupState("overview-edit-before-pending-commit", workspace, isSwapColumnLayoutMessage ? "swapcol" : "movecol", selectedBefore);
+        logScrollingWorkspaceSpotState(isSwapColumnLayoutMessage ? "swapcol-before-pending-commit" : "movecol-before-pending-commit", workspace, selectedBefore);
+    }
 
     if (overviewActive)
         (void)commitPendingSwapColumnRelayout("overview-edit-before-dispatch");
@@ -8157,6 +8240,46 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         debugLog(out.str());
         if (workspace)
             logScrollingWorkspaceSpotState("swapcol-before-dispatch", workspace, selectedBefore);
+    }
+
+    if (debugLogsEnabled() && isMoveColumnLayoutMessage) {
+        const auto workspace = activeLayoutWorkspace();
+        auto* const scrolling = workspace && isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+        std::size_t originCount = 0;
+        std::ostringstream origins;
+        origins << "[hymission] movecol relayout origins";
+        for (const auto& managed : m_state.windows) {
+            if (!managed.window || !managed.window->m_isMapped || managed.window->m_workspace != workspace || managed.window->m_pinned ||
+                isFloatingOverviewWindow(managed.window))
+                continue;
+
+            ++originCount;
+            origins << " | " << debugWindowLabel(managed.window)
+                    << " preview=" << rectToString(currentPreviewRect(managed))
+                    << " target=" << rectToString(managed.targetGlobal)
+                    << " relayoutFrom=" << rectToString(managed.relayoutFromGlobal);
+        }
+
+        std::ostringstream out;
+        out << "[hymission] movecol dispatch begin"
+            << " dispatcher=" << (dispatcherName ? dispatcherName : "?")
+            << " args=" << dispatcherArgsLower
+            << " overviewActive=" << (overviewActive ? 1 : 0)
+            << " phase=" << static_cast<int>(m_state.phase)
+            << " onlyActiveWorkspace=" << (m_state.collectionPolicy.onlyActiveWorkspace ? 1 : 0)
+            << " directNiri=" << (usesDirectNiriScrollingOverview(m_state) ? 1 : 0)
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " scrolling=" << (scrolling ? 1 : 0)
+            << " columns=" << (scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0)
+            << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
+            << " relayoutOrigins=" << originCount
+            << " selected=" << debugWindowLabel(selectedBefore)
+            << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+        debugLog(out.str());
+        debugLog(origins.str());
+        logSwapColumnFollowupState("movecol-before-dispatch", workspace, "movecol", selectedBefore);
+        if (workspace)
+            logScrollingWorkspaceSpotState("movecol-before-dispatch", workspace, selectedBefore);
     }
 
     struct TwoColumnOverviewSwapCapture {
@@ -8425,6 +8548,22 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             << " success=" << (result.success ? 1 : 0)
             << " captureValid=" << (twoColumnOverviewSwap.valid ? 1 : 0);
         debugLog(out.str());
+        logSwapColumnFollowupState("swapcol-after-dispatch", activeLayoutWorkspace(), "swapcol", selectedBefore);
+    }
+
+    if (debugLogsEnabled() && isMoveColumnLayoutMessage) {
+        const auto workspace = activeLayoutWorkspace();
+        std::ostringstream out;
+        out << "[hymission] movecol dispatch result"
+            << " success=" << (result.success ? 1 : 0)
+            << " selectedBefore=" << debugWindowLabel(selectedBefore)
+            << " selectedAfter=" << debugWindowLabel(selectedWindow())
+            << " activeAfter=" << debugWindowLabel(Desktop::focusState()->window())
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+            << " relayoutProgress=" << m_state.relayoutProgress;
+        debugLog(out.str());
+        logSwapColumnFollowupState("movecol-after-dispatch", workspace, "movecol", selectedWindow());
+        logScrollingWorkspaceSpotState("movecol-after-dispatch", workspace, selectedWindow());
     }
 
     if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
@@ -11762,16 +11901,37 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
         return;
 
     const bool suppressSwapColumnFollowupScroll = syncScrollingSpot && shouldSuppressSwapColumnFollowupFocusScroll(window);
+    const auto workspace = window->m_pinned ? activeLayoutWorkspace() : window->m_workspace;
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] sync real focus request"
+            << " target=" << debugWindowLabel(window)
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+            << " suppressSwapcolScroll=" << (suppressSwapColumnFollowupScroll ? 1 : 0)
+            << " shouldSyncRealFocus=" << (shouldSyncRealFocusDuringOverview() ? 1 : 0)
+            << " active=" << debugWindowLabel(Desktop::focusState()->window());
+        debugLog(out.str());
+        logSwapColumnFollowupState("sync-real-focus-request", workspace, "focus-sync", window);
+    }
 
     if (!shouldSyncRealFocusDuringOverview()) {
         if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
             (void)syncScrollingWorkspaceSpotOnWindow(window);
+        if (debugLogsEnabled()) {
+            debugLog("[hymission] sync real focus early return reason=real-focus-disabled");
+            logSwapColumnFollowupState("sync-real-focus-disabled", workspace, "focus-sync", window);
+        }
         return;
     }
 
     if (Desktop::focusState()->window() == window) {
         if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
             (void)syncScrollingWorkspaceSpotOnWindow(window);
+        if (debugLogsEnabled()) {
+            debugLog("[hymission] sync real focus early return reason=already-focused");
+            logSwapColumnFollowupState("sync-real-focus-already-focused", workspace, "focus-sync", window);
+        }
         return;
     }
 
@@ -11835,6 +11995,7 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
         if (const auto monitor = Desktop::focusState()->monitor(); monitor)
             out << " activeWorkspaceOnFocusMonitor=" << debugWorkspaceLabel(monitor->m_activeWorkspace);
         debugLog(out.str());
+        logSwapColumnFollowupState("sync-real-focus-result", workspace, "focus-sync", window);
     }
 }
 
@@ -11894,6 +12055,15 @@ void OverviewController::armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& 
         return;
 
     m_pendingSwapColumnRelayoutCommitWorkspace = workspace;
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] arm pending swapcol relayout commit"
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+            << " relayoutProgress=" << m_state.relayoutProgress;
+        debugLog(out.str());
+        logSwapColumnFollowupState("arm-pending-swapcol-relayout", workspace, "swapcol", selectedWindow());
+    }
 }
 
 bool OverviewController::hasPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace) const {
@@ -14709,6 +14879,57 @@ std::string OverviewController::debugWindowLabel(const PHLWINDOW& window) const 
     out << window->m_class << "::" << window->m_title << '@' << std::hex << reinterpret_cast<uintptr_t>(window.get()) << std::dec
         << (window->m_isX11 ? " x11" : " wayland");
     return out.str();
+}
+
+void OverviewController::logSwapColumnFollowupState(const char* context, const PHLWORKSPACE& workspace, const char* source,
+                                                    const PHLWINDOW& focusWindow) const {
+    if (!debugLogsEnabled())
+        return;
+
+    const auto pendingWorkspace = m_pendingSwapColumnRelayoutCommitWorkspace.lock();
+    const auto freezeWorkspace = m_swapColumnBackendPreviewFreezeWorkspace.lock();
+    const auto now = std::chrono::steady_clock::now();
+    const auto freezeRemainingMs = m_swapColumnBackendPreviewFreezeUntil != std::chrono::steady_clock::time_point{}
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(m_swapColumnBackendPreviewFreezeUntil - now).count()
+        : 0;
+    auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+    const auto* const scrollingData = scrolling ? scrolling->m_scrollingData.get() : nullptr;
+
+    const auto phaseName = [&]() {
+        switch (m_state.phase) {
+            case Phase::Inactive: return "inactive";
+            case Phase::Opening: return "opening";
+            case Phase::Active: return "active";
+            case Phase::ClosingSettle: return "closing-settle";
+            case Phase::Closing: return "closing";
+        }
+        return "unknown";
+    };
+
+    std::ostringstream out;
+    out << "[hymission] swapcol follow-up state"
+        << " context=" << (context ? context : "?")
+        << " source=" << (source ? source : "?")
+        << " workspace=" << debugWorkspaceLabel(workspace)
+        << " activeWorkspace=" << debugWorkspaceLabel(activeLayoutWorkspace())
+        << " phase=" << phaseName()
+        << " activeDirect=" << (activeDirectNiriSingleWorkspaceOverview() ? 1 : 0)
+        << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+        << " relayoutProgress=" << m_state.relayoutProgress
+        << " pendingWorkspace=" << debugWorkspaceLabel(pendingWorkspace)
+        << " pendingSame=" << (pendingWorkspace && workspace && pendingWorkspace == workspace ? 1 : 0)
+        << " freezeWorkspace=" << debugWorkspaceLabel(freezeWorkspace)
+        << " freezeSame=" << (freezeWorkspace && workspace && freezeWorkspace == workspace ? 1 : 0)
+        << " freezeActive=" << (swapColumnBackendPreviewFreezeActiveFor(workspace) ? 1 : 0)
+        << " freezeRemainingMs=" << freezeRemainingMs
+        << " frozenWindows=" << m_swapColumnBackendPreviewFrozenLayout.size()
+        << " columns=" << (scrollingData ? scrollingData->columns.size() : 0)
+        << " offset=" << (scrollingData && scrollingData->controller ? scrollingData->controller->getOffset() : 0.0)
+        << " selected=" << debugWindowLabel(selectedWindow())
+        << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+        << " focusWindow=" << debugWindowLabel(focusWindow)
+        << " activeWindow=" << debugWindowLabel(Desktop::focusState()->window());
+    debugLog(out.str());
 }
 
 void OverviewController::latchHoverSelectionAnchor(const Vector2D& pointer) {
