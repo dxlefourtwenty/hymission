@@ -33,6 +33,7 @@
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
+#include <hyprland/src/config/shared/animation/AnimationTree.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
@@ -164,6 +165,14 @@ constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardb
 OverviewController* g_controller = nullptr;
 
 bool g_niriStripSnapshotSingleWorkspaceOnly = false;
+
+SP<Hyprutils::Animation::SAnimationPropertyConfig> windowsMoveAnimationConfig() {
+    const auto& tree = Config::animationTree();
+    if (!tree)
+        return {};
+
+    return tree->getAnimationPropertyConfig("windowsMove");
+}
 
 struct RetileFillTransformState {
     std::chrono::steady_clock::time_point until;
@@ -11509,7 +11518,54 @@ double OverviewController::relayoutVisualProgress() const {
     if (!m_state.relayoutActive)
         return 1.0;
 
-    return easeOutCubic(std::clamp(m_state.relayoutProgress, 0.0, 1.0));
+    return clampUnit(m_state.relayoutProgress);
+}
+
+void OverviewController::beginOverviewRelayoutAnimation(const char* source) {
+    m_state.relayoutProgress = 0.0;
+    m_state.relayoutStart = std::chrono::steady_clock::now();
+    m_relayoutProgressAnimation.reset();
+
+    const auto config = windowsMoveAnimationConfig();
+    if (!g_pAnimationManager || !config) {
+        finishOverviewRelayoutAnimation();
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] relayout anim skipped source=" << (source ? source : "?") << " reason=missing-windowsMove-config";
+            debugLog(out.str());
+        }
+        return;
+    }
+
+    g_pAnimationManager->createAnimation(0.0F, m_relayoutProgressAnimation, config, AVARDAMAGE_NONE);
+    m_relayoutProgressAnimation->setUpdateCallback([this](auto) {
+        if (isVisible())
+            damageOwnedMonitors();
+    });
+    *m_relayoutProgressAnimation = 1.0F;
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] relayout anim start source=" << (source ? source : "?");
+        if (const auto values = config->pValues.lock()) {
+            out << " enabled=" << values->internalEnabled
+                << " speed=" << values->internalSpeed
+                << " bezier=" << values->internalBezier
+                << " style=" << values->internalStyle;
+        }
+        debugLog(out.str());
+    }
+}
+
+void OverviewController::finishOverviewRelayoutAnimation() {
+    if (m_relayoutProgressAnimation) {
+        m_relayoutProgressAnimation->setValueAndWarp(1.0F);
+        m_relayoutProgressAnimation.reset();
+    }
+
+    m_state.relayoutProgress = 1.0;
+    m_state.relayoutActive = false;
+    m_state.relayoutStart = {};
 }
 
 PHLWINDOW OverviewController::resolveExitFocus(CloseMode mode) const {
@@ -13813,27 +13869,24 @@ void OverviewController::updateAnimation() {
         return;
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
-        const auto now = std::chrono::steady_clock::now();
         if (m_state.relayoutStart == std::chrono::steady_clock::time_point{}) {
-            m_state.relayoutStart = now;
-            m_state.relayoutProgress = 0.0;
-            if (debugLogsEnabled())
-                debugLog("[hymission] relayout anim start");
+            beginOverviewRelayoutAnimation("update");
             return;
         }
 
-        const auto elapsed = std::chrono::duration<double, std::milli>(now - m_state.relayoutStart).count();
-        m_state.relayoutProgress = clampUnit(elapsed / RELAYOUT_DURATION_MS);
+        if (m_relayoutProgressAnimation)
+            m_state.relayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
+        else
+            m_state.relayoutProgress = 1.0;
+
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] relayout anim t=" << m_state.relayoutProgress;
             debugLog(out.str());
         }
 
-        if (m_state.relayoutProgress >= 1.0) {
-            m_state.relayoutProgress = 1.0;
-            m_state.relayoutActive = false;
-            m_state.relayoutStart = {};
+        if (!m_relayoutProgressAnimation || !m_relayoutProgressAnimation->isBeingAnimated() || m_state.relayoutProgress >= 1.0) {
+            finishOverviewRelayoutAnimation();
             if (!m_pendingSwapColumnRelayoutCommitWorkspace.lock()) {
                 m_swapColumnBackendPreviewFreezeWorkspace.reset();
                 m_swapColumnBackendPreviewFreezeUntil = {};
@@ -14439,6 +14492,8 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     carryOverWorkspaceStripSnapshots(next, m_state);
     restoreOverviewRenderState();
     m_state = std::move(next);
+    if (!m_state.relayoutActive)
+        m_relayoutProgressAnimation.reset();
     armOverviewRenderState(m_state);
     applyWorkspaceNameOverrides(m_state);
     syncHiddenStripLayerProxies();

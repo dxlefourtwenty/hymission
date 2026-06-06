@@ -17,6 +17,7 @@
 #include <hyprland/src/devices/IPointer.hpp>
 #include <hyprland/src/devices/ITouch.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/helpers/AnimatedVariable.hpp>
 #include <hyprland/src/helpers/signal/Signal.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/layout/algorithm/Algorithm.hpp>
@@ -657,6 +658,8 @@ class OverviewController {
     [[nodiscard]] Rect         currentPreviewRect(const ManagedWindow& window) const;
     [[nodiscard]] double       visualProgress() const;
     [[nodiscard]] double       relayoutVisualProgress() const;
+    void                       beginOverviewRelayoutAnimation(const char* source = "?");
+    void                       finishOverviewRelayoutAnimation();
     [[nodiscard]] double       workspaceStripEnterProgress() const;
     [[nodiscard]] Vector2D     workspaceStripEnterOffset(const PHLMONITOR& monitor) const;
     [[nodiscard]] Rect         currentWorkspaceStripRect(const WorkspaceStripEntry& entry) const;
@@ -854,6 +857,7 @@ class OverviewController {
     PHLMONITOR                m_lastActiveWindowMonitor;
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
+    PHLANIMVAR<float>         m_relayoutProgressAnimation;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;
