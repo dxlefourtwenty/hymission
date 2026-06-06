@@ -851,6 +851,7 @@ class OverviewController {
     bool                      m_layoutMessageDispatcherWrapped = false;
     bool                      m_moveFocusDispatcherWrapped = false;
     bool                      m_execDispatcherWrapped = false;
+    bool                      m_overviewEditingDispatcherInProgress = false;
     WorkspaceSwipeBeginFn     m_workspaceSwipeBeginOriginal = nullptr;
     WorkspaceSwipeUpdateFn    m_workspaceSwipeUpdateOriginal = nullptr;
     WorkspaceSwipeEndFn       m_workspaceSwipeEndOriginal = nullptr;

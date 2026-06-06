@@ -35,6 +35,21 @@ namespace {
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
+class ScopedFlag {
+  public:
+    explicit ScopedFlag(bool& flag) : m_flag(flag), m_previous(flag) {
+        m_flag = true;
+    }
+
+    ~ScopedFlag() {
+        m_flag = m_previous;
+    }
+
+  private:
+    bool& m_flag;
+    bool  m_previous;
+};
+
 long getConfigInt(HANDLE handle, const char* name, long fallback) {
     (void)handle;
 
@@ -1202,6 +1217,12 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         return;
 
     if (usesDirectNiriScrollingOverview(m_state)) {
+        if (insideRenderLifecycle() || m_overviewEditingDispatcherInProgress) {
+            scheduleVisibleStateRebuild();
+            damageOwnedMonitors();
+            return;
+        }
+
         PHLWINDOW preferred = Desktop::focusState()->window();
         if (!preferred || !preferred->m_isMapped)
             preferred = selectedWindow();
@@ -3135,6 +3156,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         isScrollingGeometryLayoutMessage;
 
     if (overviewActive && activeDirectNiriSingleWorkspaceOverview()) {
+        const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
         PHLWINDOW dispatchFocus = selectedBefore;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = m_state.focusDuringOverview;
@@ -3155,18 +3177,26 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         PHLWINDOW preferred = Desktop::focusState()->window();
         if (!preferred || !preferred->m_isMapped)
             preferred = dispatchFocus;
-        rebuildVisibleState(preferred, true);
 
         if (g_pEventLoopManager) {
             g_pEventLoopManager->doLater([this, preferred] {
                 if (!niri_scrolling_detail::isActiveController(this) || !activeDirectNiriSingleWorkspaceOverview())
                     return;
 
+                if (insideRenderLifecycle()) {
+                    scheduleVisibleStateRebuild();
+                    return;
+                }
+
                 PHLWINDOW target = Desktop::focusState()->window();
                 if (!target || !target->m_isMapped)
                     target = preferred;
                 rebuildVisibleState(target, true);
             });
+        } else if (!insideRenderLifecycle()) {
+            rebuildVisibleState(preferred, true);
+        } else {
+            scheduleVisibleStateRebuild();
         }
 
         damageOwnedMonitors();
