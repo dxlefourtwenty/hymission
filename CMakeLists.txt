@@ -33,6 +33,7 @@ add_library(hymission SHARED
   src/mission_layout.cpp
   src/overview_logic.cpp
   src/overview_controller.cpp
+  src/overview_controller_niri_scrolling.cpp
 )
 
 target_include_directories(hymission PRIVATE ${HYPR_DEPS_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})

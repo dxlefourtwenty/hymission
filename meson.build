@@ -31,6 +31,7 @@ src = [
   'src/mission_layout.cpp',
   'src/overview_logic.cpp',
   'src/overview_controller.cpp',
+  'src/overview_controller_niri_scrolling.cpp',
 ]
 
 shared_module(meson.project_name(), src,
