@@ -2768,9 +2768,6 @@ SDispatchResult OverviewController::close() {
     if (m_state.phase == Phase::Inactive || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
         return {};
 
-    if (m_workspaceTransition.active)
-        clearOverviewWorkspaceTransition();
-
     beginClose();
     return {};
 }
@@ -9602,6 +9599,23 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 
     if (mode == CloseMode::Abort && m_state.phase == Phase::Closing)
         return;
+
+    if (m_workspaceTransition.active) {
+        if (mode == CloseMode::Abort) {
+            clearOverviewWorkspaceTransition();
+        } else {
+            // Exiting while a niri single-workspace overview workspace switch is still
+            // animating must land on the destination workspace, not the workspace that
+            // was active when the overview opened. The old close() path discarded the
+            // pending transition before resolving pendingExitFocus/pendingExitWorkspace,
+            // so toggle/Escape could close against the stale source state. Commit the
+            // transition first and let the normal exit resolution use the rebuilt target
+            // state.
+            commitOverviewWorkspaceTransition(false);
+            if (!isVisible() || m_state.phase == Phase::Inactive)
+                return;
+        }
+    }
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     m_overviewVisibilityAnimation.reset();
