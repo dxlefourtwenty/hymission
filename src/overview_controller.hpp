@@ -625,8 +625,8 @@ class OverviewController {
     [[nodiscard]] bool         beginExternalOverviewWorkspaceTransition(const PHLWORKSPACE& workspace);
     [[nodiscard]] bool         startOverviewWorkspaceTransitionByStep(const PHLMONITOR& monitor, int step, WorkspaceTransitionMode mode);
     void                       updateOverviewWorkspaceTransition();
-    void                       requestOverviewWorkspaceTransitionCommit(bool followGesture = false);
-    void                       commitOverviewWorkspaceTransition(bool followGesture = false);
+    void                       requestOverviewWorkspaceTransitionCommit(bool followGesture = false, bool forceSync = false);
+    void                       commitOverviewWorkspaceTransition(bool followGesture = false, bool forceSync = false);
     void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {});
     void                       armWorkspaceTransitionRenderState();
     void                       restoreWorkspaceTransitionRenderState(const PHLWORKSPACE& committedWorkspace = {});

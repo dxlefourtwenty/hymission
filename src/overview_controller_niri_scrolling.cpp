@@ -1994,7 +1994,7 @@ void OverviewController::enforceDirectNiriExitFocusGuard() {
         if (m_workspaceTransition.mode != WorkspaceTransitionMode::TimedCommit)
             return;
 
-        commitOverviewWorkspaceTransition(false);
+        commitOverviewWorkspaceTransition(false, true);
         if (!isVisible() || !usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
             return;
     }

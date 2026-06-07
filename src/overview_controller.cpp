@@ -5791,7 +5791,7 @@ void OverviewController::updateOverviewWorkspaceSwipeGestureAdjusted(double delt
     damageOwnedMonitors();
 
     if (gestureSwipeForeverEnabled() && std::abs(m_workspaceSwipeGesture.gestureDelta) >= gestureDistance - 0.5)
-        requestOverviewWorkspaceTransitionCommit(true);
+        requestOverviewWorkspaceTransitionCommit(true, false);
 }
 
 void OverviewController::endOverviewWorkspaceSwipeGesture(bool cancelled) {
@@ -5855,7 +5855,7 @@ void OverviewController::updateOverviewWorkspaceTransition() {
             return;
         }
 
-        requestOverviewWorkspaceTransitionCommit();
+        requestOverviewWorkspaceTransitionCommit(false, false);
         return;
     }
 
@@ -5882,15 +5882,15 @@ void OverviewController::updateOverviewWorkspaceTransition() {
         return;
     }
 
-    requestOverviewWorkspaceTransitionCommit(false);
+    requestOverviewWorkspaceTransitionCommit(false, false);
 }
 
-void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGesture) {
+void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGesture, bool forceSync) {
     if (!m_workspaceTransition.active)
         return;
 
-    if (!(g_pHyprOpenGL && g_pHyprRenderer->m_renderData.pMonitor)) {
-        commitOverviewWorkspaceTransition(followGesture);
+    if (!(g_pHyprOpenGL && g_pHyprRenderer->m_renderData.pMonitor) || forceSync) {
+        commitOverviewWorkspaceTransition(followGesture, forceSync);
         return;
     }
 
@@ -5898,7 +5898,7 @@ void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGes
     if (m_workspaceTransitionCommitScheduled)
         return;
     if (!g_pEventLoopManager) {
-        commitOverviewWorkspaceTransition(m_pendingWorkspaceTransitionCommitFollowGesture);
+        commitOverviewWorkspaceTransition(m_pendingWorkspaceTransitionCommitFollowGesture, forceSync);
         return;
     }
 
@@ -5908,7 +5908,7 @@ void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGes
     if (debugLogsEnabled())
         debugLog("[hymission] defer overview workspace transition commit until after render");
 
-    g_pEventLoopManager->doLater([this, generation] {
+    g_pEventLoopManager->doLater([this, generation, forceSync] {
         if (g_controller != this || generation != m_workspaceTransitionCommitGeneration)
             return;
 
@@ -5923,15 +5923,15 @@ void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGes
         // If a frame is still rendering, reschedule instead of tearing the render
         // state mid-frame.
         if (g_pHyprOpenGL && g_pHyprRenderer->m_renderData.pMonitor) {
-            requestOverviewWorkspaceTransitionCommit(followGesture);
+            requestOverviewWorkspaceTransitionCommit(followGesture, forceSync);
             return;
         }
 
-        commitOverviewWorkspaceTransition(followGesture);
+        commitOverviewWorkspaceTransition(followGesture, forceSync);
     });
 }
 
-void OverviewController::commitOverviewWorkspaceTransition(bool followGesture) {
+void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, bool forceSync) {
     if (!m_workspaceTransition.active || !m_workspaceTransition.monitor)
         return;
 
@@ -9610,8 +9610,9 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             // pending transition before resolving pendingExitFocus/pendingExitWorkspace,
             // so toggle/Escape could close against the stale source state. Commit the
             // transition first and let the normal exit resolution use the rebuilt target
-            // state.
-            commitOverviewWorkspaceTransition(false);
+            // state. Use forceSync=true to ensure the commit completes before we resolve
+            // exit focus/workspace below.
+            commitOverviewWorkspaceTransition(false, true);
             if (!isVisible() || m_state.phase == Phase::Inactive)
                 return;
         }
