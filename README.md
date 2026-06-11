@@ -277,6 +277,7 @@ plugin {
         niri_mode_wallpaper_zoom = 0
         niri_preview_disabled = 0
         niri_overview_animations = 1
+        niri_overview_open_close_speed_multiplier = 1.2
         toggle_switch_mode = 1
         switch_toggle_auto_next = 1
         switch_release_key = Super_L
@@ -326,6 +327,7 @@ hl.config({
             niri_mode_wallpaper_zoom = 0,
             niri_preview_disabled = 0,
             niri_overview_animations = 1,
+            niri_overview_open_close_speed_multiplier = 1.2,
             multi_workspace_expand_selected_window = 1,
             switch_release_key = "Super_L",
             workspace_strip_anchor = "left",
@@ -380,6 +382,7 @@ hl.config({
 | `niri_mode_wallpaper_zoom` | bool | `0` | Single-workspace scrolling niri mode only. Render the monitor background layer inside each workspace viewport. When disabled, workspace viewports use the blurred placeholder card. |
 | `niri_preview_disabled` | bool | `0` | Legacy compatibility option. The preview strip is always disabled in single-workspace scrolling niri mode. |
 | `niri_overview_animations` | bool | `1` | Keep live Hyprland window movement available while the niri overview is open. Open/close and relayout motion use `windowsMove`; workspace switching uses `workspaces`. |
+| `niri_overview_open_close_speed_multiplier` | float | `1.2` | Speed multiplier applied to the live `windowsMove` animation for niri single-workspace overview open and close transitions. The configured curve and style are preserved. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
 | `switch_release_key` | string | `Super_L` | Toggle switch mode only. Release of this key commits the current selection and closes the switch session. Supports keysym names such as `Alt_L` / `Super_L` and `code:N`, and release tracking is resilient to missing per-window release events. |

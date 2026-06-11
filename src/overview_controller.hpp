@@ -486,6 +486,7 @@ class OverviewController {
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
     [[nodiscard]] bool         niriOverviewAnimationsEnabled() const;
+    [[nodiscard]] double       niriOverviewOpenCloseSpeedMultiplier() const;
     [[nodiscard]] bool         debugLogsEnabled() const;
     [[nodiscard]] bool         debugSurfaceLogsEnabled() const;
     [[nodiscard]] PHLWORKSPACE activeLayoutWorkspace() const;
@@ -883,6 +884,7 @@ class OverviewController {
     long                      m_animationsEnabledBackup = 1;
     PHLANIMVAR<float>         m_relayoutProgressAnimation;
     PHLANIMVAR<float>         m_overviewVisibilityAnimation;
+    SP<Hyprutils::Animation::SAnimationPropertyConfig> m_overviewVisibilityAnimationConfig;
     PHLANIMVAR<float>         m_workspaceTransitionAnimation;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;

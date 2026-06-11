@@ -1064,6 +1064,9 @@ bool OverviewController::niriOverviewAnimationsEnabled() const {
 
     return m_animationsEnabledOverridden && m_animationsEnabledBackup != 0;
 }
+double OverviewController::niriOverviewOpenCloseSpeedMultiplier() const {
+    return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_open_close_speed_multiplier", 1.2), 0.1, 10.0);
+}
 PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
     if (isVisible() && niriModeAppliesToState(m_state)) {
         if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor); centeredEmptyWorkspace)

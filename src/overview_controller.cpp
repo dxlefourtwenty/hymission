@@ -256,6 +256,26 @@ std::string getConfigString(HANDLE handle, const char* name, std::string fallbac
     return fallback;
 }
 
+SP<Hyprutils::Animation::SAnimationPropertyConfig> scaledAnimationConfig(
+    const SP<Hyprutils::Animation::SAnimationPropertyConfig>& baseConfig, double speedMultiplier) {
+    if (!baseConfig)
+        return {};
+
+    const auto values = baseConfig->pValues.lock();
+    if (!values)
+        return baseConfig;
+
+    auto config = makeShared<Hyprutils::Animation::SAnimationPropertyConfig>();
+    config->overridden = true;
+    config->internalBezier = values->internalBezier;
+    config->internalStyle = values->internalStyle;
+    config->internalSpeed = values->internalSpeed * static_cast<float>(speedMultiplier);
+    config->internalEnabled = values->internalEnabled;
+    config->pValues = config;
+    config->pParentAnimation = baseConfig;
+    return config;
+}
+
 Config::CGradientValueData activeBorderGradient() {
     static auto PACTIVEBORDER = CConfigValue<Config::IComplexConfigValue>("general:col.active_border");
 
@@ -5681,7 +5701,9 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
     if (targetFocus)
         m_state.focusDuringOverview = targetFocus;
-    if (niriModeEnabled() && workspaceStripEnabled(m_state)) {
+    if (usesDirectNiriScrollingOverview(m_state) && workspaceStripEnabled(m_state)) {
+        const bool animateStripRelayout = niriOverviewAnimationsEnabled();
+        bool stripRelayoutChanged = false;
         for (auto& entry : m_state.stripEntries) {
             const auto targetIt = std::find_if(m_workspaceTransition.targetState.stripEntries.begin(), m_workspaceTransition.targetState.stripEntries.end(),
                                                [&](const WorkspaceStripEntry& targetEntry) {
@@ -5690,10 +5712,17 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             if (targetIt == m_workspaceTransition.targetState.stripEntries.end())
                 continue;
 
+            const Rect currentRect = currentWorkspaceStripRect(entry);
             entry.rect = targetIt->rect;
-            entry.relayoutFromRect = entry.rect;
-            entry.hasRelayoutFromRect = false;
+            entry.relayoutFromRect = currentRect;
+            entry.hasRelayoutFromRect = animateStripRelayout && !rectApproxEqual(currentRect, entry.rect, 0.5);
+            stripRelayoutChanged = stripRelayoutChanged || entry.hasRelayoutFromRect;
             entry.active = targetIt->active;
+        }
+
+        if (stripRelayoutChanged) {
+            m_state.relayoutActive = true;
+            beginOverviewRelayoutAnimation("workspace-strip-transition");
         }
     }
     armWorkspaceTransitionRenderState();
@@ -8380,13 +8409,16 @@ void OverviewController::finishOverviewRelayoutAnimation() {
 
 void OverviewController::beginOverviewVisibilityAnimation(const char* source) {
     m_overviewVisibilityAnimation.reset();
-    const auto config = windowsMoveAnimationConfig();
+    m_overviewVisibilityAnimationConfig.reset();
+    const auto config =
+        scaledAnimationConfig(windowsMoveAnimationConfig(), niriOverviewOpenCloseSpeedMultiplier());
     if (!niriOverviewAnimationsEnabled() || !g_pAnimationManager || !config) {
         m_state.animationProgress = 1.0;
         m_state.animationFromVisual = m_state.animationToVisual;
         return;
     }
 
+    m_overviewVisibilityAnimationConfig = config;
     g_pAnimationManager->createAnimation(static_cast<float>(m_state.animationFromVisual), m_overviewVisibilityAnimation, config, AVARDAMAGE_NONE);
     m_overviewVisibilityAnimation->setUpdateCallback([this](auto) {
         if (isVisible())
@@ -8396,7 +8428,10 @@ void OverviewController::beginOverviewVisibilityAnimation(const char* source) {
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] overview visibility anim start source=" << (source ? source : "?");
+        out << "[hymission] overview visibility anim start source=" << (source ? source : "?")
+            << " speedMultiplier=" << niriOverviewOpenCloseSpeedMultiplier();
+        if (const auto values = config->pValues.lock())
+            out << " speed=" << values->internalSpeed << " bezier=" << values->internalBezier << " style=" << values->internalStyle;
         debugLog(out.str());
     }
 }
@@ -8406,6 +8441,7 @@ void OverviewController::finishOverviewVisibilityAnimation() {
         m_overviewVisibilityAnimation->setValueAndWarp(static_cast<float>(m_state.animationToVisual));
         m_overviewVisibilityAnimation.reset();
     }
+    m_overviewVisibilityAnimationConfig.reset();
     m_state.animationProgress = 1.0;
     m_state.animationFromVisual = m_state.animationToVisual;
     m_state.animationStart = {};
@@ -9512,6 +9548,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
     m_overviewVisibilityAnimation.reset();
+    m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
@@ -9699,6 +9736,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     m_overviewVisibilityAnimation.reset();
+    m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
     if (mode != CloseMode::Abort)
         enforceDirectNiriExitFocusGuard();
