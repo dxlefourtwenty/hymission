@@ -640,6 +640,7 @@ class OverviewController {
     void                       requestOverviewWorkspaceTransitionCommit(bool followGesture = false, bool forceSync = false);
     void                       commitOverviewWorkspaceTransition(bool followGesture = false, bool forceSync = false);
     void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {}, bool clearPendingRequests = true);
+    void                       commitActiveNiriWorkspaceTransitionForRetarget();
     void                       startNextQueuedOverviewWorkspaceTransition();
     void                       armWorkspaceTransitionRenderState();
     void                       restoreWorkspaceTransitionRenderState(const PHLWORKSPACE& committedWorkspace = {});

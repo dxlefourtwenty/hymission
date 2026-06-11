@@ -5628,10 +5628,19 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         return false;
 
     if (!sourceStateOverride && m_state.relayoutActive) {
+        const bool freezeNiriPlaceholderRelayout = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
+        const double relayoutProgress = relayoutVisualProgress();
         for (auto& managed : m_state.windows) {
             managed.targetGlobal = currentPreviewRect(managed);
             managed.relayoutFromGlobal = managed.targetGlobal;
         }
+        if (freezeNiriPlaceholderRelayout) {
+            for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+                placeholder.targetGlobal = lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutProgress);
+                placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+            }
+        }
+        m_relayoutProgressAnimation.reset();
         m_state.relayoutActive = false;
         m_state.relayoutProgress = 1.0;
         m_state.relayoutStart = {};
@@ -6385,6 +6394,57 @@ void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& co
         m_pendingWorkspaceTransitionRequests.clear();
 }
 
+void OverviewController::commitActiveNiriWorkspaceTransitionForRetarget() {
+    if (!m_workspaceTransition.active || m_workspaceTransition.mode != WorkspaceTransitionMode::TimedCommit)
+        return;
+
+    const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    if (!niriSingleWorkspaceTransition)
+        return;
+
+    std::vector<std::pair<PHLWINDOW, Rect>> targetPreviewRects;
+    targetPreviewRects.reserve(m_workspaceTransition.targetState.windows.size());
+    for (const auto& managed : m_workspaceTransition.targetState.windows) {
+        if (!managed.window)
+            continue;
+        if (const auto rect = workspaceTransitionRectForWindow(managed.window); rect)
+            targetPreviewRects.emplace_back(managed.window, *rect);
+    }
+
+    const auto targetWorkspaceId = m_workspaceTransition.targetWorkspaceId;
+    commitOverviewWorkspaceTransition(false, true);
+    if (m_workspaceTransition.active || m_state.phase != Phase::Active)
+        return;
+
+    bool windowRelayoutChanged = false;
+    for (auto& managed : m_state.windows) {
+        const auto previous = std::find_if(targetPreviewRects.begin(), targetPreviewRects.end(),
+                                           [&](const auto& candidate) { return candidate.first == managed.window; });
+        if (previous == targetPreviewRects.end())
+            continue;
+
+        managed.relayoutFromGlobal = previous->second;
+        windowRelayoutChanged = windowRelayoutChanged || !rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5);
+    }
+
+    const bool preservedRelayout = windowRelayoutChanged || m_state.relayoutActive;
+    if (preservedRelayout) {
+        m_relayoutProgressAnimation.reset();
+        m_state.relayoutActive = true;
+        m_state.relayoutProgress = 0.0;
+        m_state.relayoutStart = {};
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] retarget overview workspace transition committedTarget=" << targetWorkspaceId
+            << " preservedWindows=" << targetPreviewRects.size()
+            << " relayout=" << (preservedRelayout ? 1 : 0);
+        debugLog(out.str());
+    }
+}
+
 void OverviewController::startNextQueuedOverviewWorkspaceTransition() {
     while (!m_workspaceTransition.active && !m_pendingWorkspaceTransitionRequests.empty()) {
         auto request = std::move(m_pendingWorkspaceTransitionRequests.front());
@@ -6394,6 +6454,9 @@ void OverviewController::startNextQueuedOverviewWorkspaceTransition() {
 }
 
 SDispatchResult OverviewController::startOverviewWorkspaceTransitionForDispatcher(const std::string& args, bool currentMonitorOnly) {
+    if (m_workspaceTransition.active)
+        commitActiveNiriWorkspaceTransitionForRetarget();
+
     if (m_workspaceTransition.active) {
         m_pendingWorkspaceTransitionRequests.push_back({
             .args = args,
