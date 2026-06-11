@@ -9547,6 +9547,8 @@ CRegion OverviewController::transformRegionForWindow(const PHLWINDOW& window, co
 void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requestedScope) {
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
+    const bool freshOpen = !isVisible();
+    const double fromVisual = freshOpen ? 0.0 : visualProgress();
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
@@ -9556,8 +9558,6 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_postCloseOpenDebounceUntil = {};
 
     const auto buildStart = std::chrono::steady_clock::now();
-    const bool freshOpen = !isVisible();
-    const double fromVisual = freshOpen ? 0.0 : visualProgress();
     if (freshOpen)
         resetDirectNiriWorkspaceLanes();
     clearOverviewWorkspaceTransition();
@@ -9734,6 +9734,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             m_state.ownerWorkspace = committedWorkspace;
     }
 
+    const double fromVisual = fromVisualOverride.value_or(visualProgress());
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
@@ -9797,7 +9798,6 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         m_state.relayoutStart = {};
     }
 
-    const double fromVisual = fromVisualOverride.value_or(visualProgress());
     m_state.pendingExitWorkspace = resolveExitWorkspace(mode);
     m_state.pendingExitFocus = resolveExitFocus(mode);
     m_state.closeMode = mode;
