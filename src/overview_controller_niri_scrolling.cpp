@@ -757,10 +757,6 @@ bool stripSnapshotSingleWorkspaceOnly = false;
 
 namespace {
 
-struct RetileFillTransformState {
-    std::chrono::steady_clock::time_point until;
-};
-
 struct TwoColumnSwapTraceState {
     std::chrono::steady_clock::time_point until;
     std::size_t                          remainingPreviewLogs = 384;
@@ -770,13 +766,8 @@ struct PendingTwoColumnSwapRepairState {
     std::chrono::steady_clock::time_point until;
 };
 
-std::unordered_map<const void*, RetileFillTransformState>    g_retileFillTransformStates;
 std::unordered_map<const void*, TwoColumnSwapTraceState>     g_twoColumnSwapTraceStates;
 std::unordered_map<const void*, PendingTwoColumnSwapRepairState> g_pendingTwoColumnSwapRepairs;
-
-const void* windowIdentityKey(const PHLWINDOW& window) {
-    return window ? window.get() : nullptr;
-}
 
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
@@ -901,37 +892,10 @@ bool consumePendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace) {
     return active;
 }
 
-bool retileFillTransformActiveForWindow(const PHLWINDOW& window) {
-    const void* const key = windowIdentityKey(window);
-    if (!key)
-        return false;
-
-    const auto it = g_retileFillTransformStates.find(key);
-    if (it == g_retileFillTransformStates.end())
-        return false;
-
-    if (std::chrono::steady_clock::now() <= it->second.until)
-        return true;
-
-    g_retileFillTransformStates.erase(it);
-    return false;
-}
-
-void armRetileFillTransformForWindow(const PHLWINDOW& window) {
-    const void* const key = windowIdentityKey(window);
-    if (!key)
-        return;
-
-    g_retileFillTransformStates[key] = RetileFillTransformState{
-        .until = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(RELAYOUT_DURATION_MS + 96.0)),
-    };
-}
-
 } // namespace niri_scrolling_detail
 
 using niri_scrolling_detail::armTwoColumnSwapTrace;
 using niri_scrolling_detail::armPendingTwoColumnSwapRepair;
-using niri_scrolling_detail::armRetileFillTransformForWindow;
 using niri_scrolling_detail::clearPendingTwoColumnSwapRepair;
 using niri_scrolling_detail::consumePendingTwoColumnSwapRepair;
 using niri_scrolling_detail::consumeTwoColumnSwapPreviewTrace;
@@ -1217,7 +1181,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         return;
 
     if (usesDirectNiriScrollingOverview(m_state)) {
-        if (insideRenderLifecycle() || m_overviewEditingDispatcherInProgress) {
+        if (m_overviewEditingDispatcherInProgress) {
+            damageOwnedMonitors();
+            return;
+        }
+        if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
             damageOwnedMonitors();
             return;
@@ -1226,7 +1194,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         PHLWINDOW preferred = Desktop::focusState()->window();
         if (!preferred || !preferred->m_isMapped)
             preferred = selectedWindow();
-        rebuildVisibleState(preferred, true);
+        refreshVisibleStateMetadata(preferred);
         damageOwnedMonitors();
         return;
     }
@@ -1725,6 +1693,8 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
 
     const auto validManagedFocus = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !window->m_isMapped)
+            return {};
+        if (state.collectionPolicy.onlyActiveWorkspace && state.ownerWorkspace && !window->m_pinned && window->m_workspace != state.ownerWorkspace)
             return {};
 
         return managedWindowFor(state, window, true) ? window : PHLWINDOW{};
@@ -3047,73 +3017,8 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};
 
-    const auto requestedDirection = [&]() -> std::optional<Direction> {
-        std::string lowered = asciiLowerCopy(args);
-        lowered.erase(std::remove_if(lowered.begin(), lowered.end(), [](unsigned char ch) { return std::isspace(ch) != 0; }), lowered.end());
-
-        if (lowered == "l" || lowered == "left")
-            return Direction::Left;
-        if (lowered == "r" || lowered == "right")
-            return Direction::Right;
-        if (lowered == "u" || lowered == "up")
-            return Direction::Up;
-        if (lowered == "d" || lowered == "down")
-            return Direction::Down;
-
-        return std::nullopt;
-    }();
-
-    // In direct niri single-workspace overview, directional movefocus must stay
-    // inside the overview navigation path. Running Hyprland's native movefocus
-    // first can leave the scrolling strip with no native window-move animation;
-    // moveSelection() updates the overview selection, focuses the real window,
-    // syncs the scrolling spot, and lets the direct niri preview ride that
-    // animated layout state instead of snapping after a deferred rebuild.
-    if (activeDirectNiriSingleWorkspaceOverview() && !requestedDirection)
+    if (activeDirectNiriSingleWorkspaceOverview())
         return runOverviewEditingDispatcher("movefocus", &m_moveFocusOriginal, std::move(args));
-
-    if (requestedDirection && activeDirectNiriSingleWorkspaceOverview()) {
-        const auto workspace = activeLayoutWorkspace();
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] movefocus direct niri begin"
-                << " args=" << args
-                << " workspace=" << debugWorkspaceLabel(workspace)
-                << " selected=" << debugWindowLabel(selectedWindow())
-                << " active=" << debugWindowLabel(Desktop::focusState()->window());
-            debugLog(out.str());
-            logSwapColumnFollowupState("movefocus-before-pending-commit", workspace, "movefocus", selectedWindow());
-            logScrollingWorkspaceSpotState("movefocus-before-selection", workspace, selectedWindow());
-        }
-
-        (void)commitPendingSwapColumnRelayout("movefocus-before-selection");
-
-        const auto focusedWindow = Desktop::focusState()->window();
-        const bool focusIsInOverview = focusedWindow && hasManagedWindow(focusedWindow);
-
-        if (!focusIsInOverview && refocusDirectNiriSelectionWithoutScroll("movefocus-return")) {
-            if (debugLogsEnabled()) {
-                debugLog("[hymission] movefocus direct niri refocused existing overview selection");
-                logSwapColumnFollowupState("movefocus-after-refocus-return", workspace, "movefocus", selectedWindow());
-            }
-            return {};
-        }
-
-        moveSelection(*requestedDirection);
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] movefocus direct niri result"
-                << " args=" << args
-                << " selected=" << debugWindowLabel(selectedWindow())
-                << " active=" << debugWindowLabel(Desktop::focusState()->window())
-                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
-                << " relayoutProgress=" << m_state.relayoutProgress;
-            debugLog(out.str());
-            logSwapColumnFollowupState("movefocus-after-selection", workspace, "movefocus", selectedWindow());
-            logScrollingWorkspaceSpotState("movefocus-after-selection", workspace, selectedWindow());
-        }
-        return {};
-    }
 
     auto previousFocusMonitor = focusMonitorForWindow(Desktop::focusState()->window());
     if (!previousFocusMonitor)
@@ -3140,8 +3045,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
-    const bool selectedWasPinnedBefore = selectedBefore && selectedBefore->m_pinned;
-    const bool selectedWasFloatingLikeBefore = selectedBefore && (selectedBefore->m_pinned || isFloatingOverviewWindow(selectedBefore));
     const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
     const std::string dispatcherArgsLower = asciiLowerCopy(trimCopy(args));
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
@@ -3161,7 +3064,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
         isScrollingGeometryLayoutMessage;
 
-    if (overviewActive && activeDirectNiriSingleWorkspaceOverview()) {
+    const bool directLiveGeometryAvailable = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+        std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
+            return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
+        });
+
+    if (directLiveGeometryAvailable) {
         const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
         PHLWINDOW dispatchFocus = selectedBefore;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
@@ -3184,26 +3092,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!preferred || !preferred->m_isMapped)
             preferred = dispatchFocus;
 
-        if (g_pEventLoopManager) {
-            g_pEventLoopManager->doLater([this, preferred] {
-                if (!niri_scrolling_detail::isActiveController(this) || !activeDirectNiriSingleWorkspaceOverview())
-                    return;
-
-                if (insideRenderLifecycle()) {
-                    scheduleVisibleStateRebuild();
-                    return;
-                }
-
-                PHLWINDOW target = Desktop::focusState()->window();
-                if (!target || !target->m_isMapped)
-                    target = preferred;
-                rebuildVisibleState(target, true);
-            });
-        } else if (!insideRenderLifecycle()) {
-            rebuildVisibleState(preferred, true);
-        } else {
+        if (insideRenderLifecycle())
             scheduleVisibleStateRebuild();
-        }
+        else
+            refreshVisibleStateMetadata(preferred);
 
         damageOwnedMonitors();
         return result;
@@ -3757,85 +3649,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
     }
 
-    const auto forceRetiledWindowIntoScrollingSpace = [&](const PHLWINDOW& window, const char* source) {
-        if (!window || !window->m_isMapped || !usesDirectNiriScrollingOverview(m_state))
-            return false;
-
-        const auto target = window->layoutTarget();
-        if (!target || target->floating() || window->m_pinned || isFloatingOverviewWindow(window))
-            return false;
-
-        PHLWORKSPACE workspace = selectedWasPinnedBefore ? activeLayoutWorkspace() : window->m_workspace;
-        if (!workspace)
-            workspace = activeLayoutWorkspace();
-        if (!workspace || !workspace->m_space || !isScrollingWorkspace(workspace))
-            return false;
-
-        // A floating/pinned window that was created outside of the overview can
-        // still have stale layout membership when it is re-tiled while the
-        // overview owns rendering.  Force the target back into the real scrolling
-        // space before the overview rebuild reads the strip geometry.  This keeps
-        // Hyprland and the overview in the same tiled/floating state immediately,
-        // instead of letting the desktop "catch up" only after the overview exits.
-        target->assignToSpace(workspace->m_space);
-
-
-        m_pendingLiveFocusWorkspaceChangeTarget = window;
-        (void)activateWindowWorkspaceForFocus(window);
-        focusWindowCompat(window, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-        if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
-            m_pendingLiveFocusWorkspaceChangeTarget.reset();
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-        if (scrolling) {
-            if (const auto targetData = scrolling->dataFor(target); targetData) {
-                if (const auto column = targetData->column.lock()) {
-                    column->lastFocusedTarget = targetData;
-                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
-                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
-                            scrolling->m_scrollingData->fitCol(column);
-                        else
-                            scrolling->m_scrollingData->centerCol(column);
-                    }
-                }
-            }
-        }
-
-        workspace->m_space->recalculate();
-        if (scrolling && scrolling->m_scrollingData)
-            scrolling->m_scrollingData->recalculate(true);
-        (void)syncScrollingWorkspaceSpotOnWindow(window);
-        workspace->m_space->recalculate();
-        if (scrolling && scrolling->m_scrollingData)
-            scrolling->m_scrollingData->recalculate(true);
-
-        refreshWorkspaceLayoutSnapshot(workspace);
-        if (const auto monitor = workspace->m_monitor.lock())
-            g_layoutManager->recalculateMonitor(monitor);
-        if (g_pAnimationManager)
-            g_pAnimationManager->frameTick();
-
-        armRetileFillTransformForWindow(window);
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] force retiled floating/pinned window into scrolling space"
-                << " source=" << (source ? source : "?")
-                << " window=" << debugWindowLabel(window)
-                << " workspace=" << workspace->m_id;
-            debugLog(out.str());
-        }
-
-        return true;
-    };
-
-    const bool selectedRetiledFromFloatingLike = overviewActive && selectedWasFloatingLikeBefore && selectedBefore && selectedBefore->m_isMapped &&
-        !selectedBefore->m_pinned && !isFloatingOverviewWindow(selectedBefore) && selectedBefore->layoutTarget() &&
-        !selectedBefore->layoutTarget()->floating();
-
-    if (selectedRetiledFromFloatingLike)
-        (void)forceRetiledWindowIntoScrollingSpace(selectedBefore, dispatcherName);
-
     if (overviewActive && isVisible() && m_state.phase == Phase::Active) {
         PHLWINDOW forcedGeometryAnchor;
         if (forceGeometryRefocus) {
@@ -4186,6 +3999,35 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
     }
 
     workspace->m_space->recalculate();
+}
+
+std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const ManagedWindow& window) const {
+    if (!window.window || !window.window->m_isMapped || !window.targetMonitor || !usesDirectNiriScrollingOverview(m_state))
+        return std::nullopt;
+
+    const auto workspace = (window.window->m_pinned || window.isPinned) ? m_state.ownerWorkspace : window.window->m_workspace;
+    if (!workspace || !workspace->m_space || !isScrollingWorkspace(workspace))
+        return std::nullopt;
+
+    const auto placeholder = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
+                                          [&](const EmptyWorkspacePlaceholder& candidate) {
+                                              return candidate.backingOnly && candidate.monitor == window.targetMonitor &&
+                                                  candidate.workspaceId == workspace->m_id;
+                                          });
+    if (placeholder == m_state.emptyWorkspacePlaceholders.end())
+        return std::nullopt;
+
+    const CBox desktopBox = workspace->m_space->workArea();
+    const Rect desktopViewport = makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height);
+    const Rect liveRect = renderGlobalRectForWindow(window.window);
+    if (desktopViewport.width <= 1.0 || desktopViewport.height <= 1.0 || liveRect.width <= 0.0 || liveRect.height <= 0.0)
+        return std::nullopt;
+
+    const Rect transformed = transformLiveOverviewRect(liveRect, desktopViewport, placeholder->targetGlobal);
+    if (transformed.width <= 0.0 || transformed.height <= 0.0)
+        return std::nullopt;
+
+    return transformed;
 }
 
 Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
@@ -4635,6 +4477,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
             if (usesDirectNiriScrollingOverview(m_state)) {
+                if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
+                    return *liveRect;
                 if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
                     return *dynamicRect;
                 if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
@@ -5163,7 +5007,7 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
 }
 OverviewController::State OverviewController::buildState(const PHLMONITOR& monitor, ScopeOverride requestedScope, const std::vector<WorkspaceOverride>& workspaceOverrides,
                                                          bool keepEmptyParticipatingMonitors, bool suppressWorkspaceStrip,
-                                                         PHLWINDOW preferredSelectedWindow) const {
+                                                         PHLWINDOW preferredSelectedWindow, bool refreshLayoutSnapshots) const {
     State state;
     if (!monitor)
         return state;
@@ -5927,8 +5771,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         return slot;
     };
 
-    for (const auto& workspace : state.managedWorkspaces)
-        refreshWorkspaceLayoutSnapshot(workspace);
+    if (refreshLayoutSnapshots) {
+        for (const auto& workspace : state.managedWorkspaces)
+            refreshWorkspaceLayoutSnapshot(workspace);
+    }
 
     for (const auto& window : candidates) {
         if (!shouldManageWindow(window, state))

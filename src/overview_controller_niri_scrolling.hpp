@@ -15,8 +15,6 @@ bool consumeTwoColumnSwapPreviewTrace(const PHLWORKSPACE& workspace);
 void armPendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace);
 void clearPendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace);
 bool consumePendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace);
-bool retileFillTransformActiveForWindow(const PHLWINDOW& window);
-void armRetileFillTransformForWindow(const PHLWINDOW& window);
 bool isActiveController(const OverviewController* controller);
 bool shouldWrapWorkspaceIds(WORKSPACEID targetId, WORKSPACEID currentId);
 

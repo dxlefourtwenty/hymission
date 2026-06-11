@@ -155,6 +155,30 @@ Rect lerpRect(const Rect& from, const Rect& to, double t) {
     };
 }
 
+Rect transformLiveOverviewRect(const Rect& liveRect, const Rect& desktopViewport, const Rect& overviewViewport) {
+    if (desktopViewport.width <= 0.0 || desktopViewport.height <= 0.0 || overviewViewport.width <= 0.0 || overviewViewport.height <= 0.0)
+        return {};
+
+    const double scale = std::min(overviewViewport.width / desktopViewport.width, overviewViewport.height / desktopViewport.height);
+    const double width = std::max(0.0, liveRect.width * scale);
+    const double height = std::max(0.0, liveRect.height * scale);
+    const double centerX = overviewViewport.centerX() + (liveRect.centerX() - desktopViewport.centerX()) * scale;
+    const double centerY = overviewViewport.centerY() + (liveRect.centerY() - desktopViewport.centerY()) * scale;
+    return {
+        centerX - width * 0.5,
+        centerY - height * 0.5,
+        width,
+        height,
+    };
+}
+
+int64_t authoritativeOverviewWorkspaceId(bool transitionActive, int64_t transitionTargetId, int64_t committedWorkspaceId) {
+    if (transitionActive)
+        return transitionTargetId;
+
+    return committedWorkspaceId;
+}
+
 double easeOutCubic(double t) {
     const double clamped = clampUnit(t);
     const double inverse = 1.0 - clamped;

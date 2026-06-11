@@ -70,6 +70,14 @@ int main() {
 
     const Rect middle = lerpRect({0, 0, 100, 100}, {100, 80, 50, 60}, 0.5);
     ok &= expect(middle.x == 50.0 && middle.y == 40.0 && middle.width == 75.0 && middle.height == 80.0, "lerpRect midpoint should be correct");
+    ok &= expectRect(transformLiveOverviewRect({400, 200, 800, 600}, {0, 0, 2000, 1000}, {100, 50, 1000, 500}),
+                     {300, 150, 400, 300}, "live overview transform should scale current Hyprland geometry into the overview viewport");
+    ok &= expectRect(transformLiveOverviewRect({600, 200, 1000, 600}, {0, 0, 2000, 1000}, {100, 50, 1000, 500}),
+                     {400, 150, 500, 300}, "metadata refresh should not freeze later live position and size changes");
+    ok &= expect(authoritativeOverviewWorkspaceId(true, 7, 3) == 7,
+                 "active transition destination should remain authoritative during close");
+    ok &= expect(authoritativeOverviewWorkspaceId(false, 7, 3) == 3,
+                 "committed workspace should be authoritative after transition completion");
 
     ok &= expect(easeOutCubic(0.0) == 0.0, "easeOutCubic(0) should be 0");
     ok &= expect(easeInCubic(1.0) == 1.0, "easeInCubic(1) should be 1");

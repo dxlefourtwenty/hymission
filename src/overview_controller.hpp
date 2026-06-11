@@ -606,6 +606,7 @@ class OverviewController {
     void                       reconcileNiriCenteredSelectionForExit();
     [[nodiscard]] Rect         liveGlobalRectForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] Rect         goalGlobalRectForWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] std::optional<Rect> livePreviewRectForManagedWindow(const ManagedWindow& window) const;
     [[nodiscard]] bool         shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& window) const;
     void                       refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& workspace) const;
     void                       commitNonScrollingWorkspaceLayout(const PHLWORKSPACE& workspace) const;
@@ -742,6 +743,7 @@ class OverviewController {
     void updateAnimation();
     void updateHoveredFromPointer(bool syncSelection = true, bool syncRealFocus = true, bool syncScrollingSpot = true, bool allowSelectionRetarget = false,
                                   const char* source = "?");
+    void refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow = {});
     void rebuildVisibleState(PHLWINDOW preferredSelectedWindow = {}, bool forceRelayout = false);
     void moveSelection(Direction direction);
     [[nodiscard]] bool moveSelectionCircular(int step = 1, const char* source = "?");
@@ -797,7 +799,8 @@ class OverviewController {
     void buildWorkspaceStripEntries(State& state) const;
     bool selectWindowInState(State& state, const PHLWINDOW& window) const;
     State  buildState(const PHLMONITOR& monitor, ScopeOverride requestedScope, const std::vector<WorkspaceOverride>& workspaceOverrides = {},
-                      bool keepEmptyParticipatingMonitors = false, bool suppressWorkspaceStrip = false, PHLWINDOW preferredSelectedWindow = {}) const;
+                      bool keepEmptyParticipatingMonitors = false, bool suppressWorkspaceStrip = false, PHLWINDOW preferredSelectedWindow = {},
+                      bool refreshLayoutSnapshots = true) const;
     State  m_state;
     HANDLE m_handle = nullptr;
 

@@ -64,6 +64,8 @@ struct WorkspaceStripReservation {
 [[nodiscard]] std::optional<std::size_t> chooseDirectionalNeighbor(const std::vector<Rect>& rects, std::size_t currentIndex, Direction direction);
 [[nodiscard]] std::optional<std::size_t> chooseCyclicIndex(std::size_t count, std::size_t currentIndex, int step = 1);
 [[nodiscard]] Rect                       lerpRect(const Rect& from, const Rect& to, double t);
+[[nodiscard]] Rect                       transformLiveOverviewRect(const Rect& liveRect, const Rect& desktopViewport, const Rect& overviewViewport);
+[[nodiscard]] int64_t                    authoritativeOverviewWorkspaceId(bool transitionActive, int64_t transitionTargetId, int64_t committedWorkspaceId);
 [[nodiscard]] double                     easeOutCubic(double t);
 [[nodiscard]] double                     easeInCubic(double t);
 [[nodiscard]] bool                       shouldSyncOverviewLiveFocus(bool handlesInput, bool overviewFocusFollowsMouse, long inputFollowMouseBeforeOpen);

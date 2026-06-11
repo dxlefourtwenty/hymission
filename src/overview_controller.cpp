@@ -69,9 +69,7 @@ namespace hymission {
 
 using Render::GL::g_pHyprOpenGL;
 using Render::RENDER_MODE_FULL_FAKE;
-using niri_scrolling_detail::armRetileFillTransformForWindow;
 using niri_scrolling_detail::consumeTwoColumnSwapPreviewTrace;
-using niri_scrolling_detail::retileFillTransformActiveForWindow;
 using niri_scrolling_detail::shouldWrapWorkspaceIds;
 using niri_scrolling_detail::twoColumnSwapTraceActive;
 using niri_scrolling_detail::windowsMoveAnimationConfig;
@@ -2917,7 +2915,7 @@ void OverviewController::renderStage(eRenderStage stage) {
             return best;
         };
 
-        if (g_pEventLoopManager && !m_visibleStateRebuildScheduled) {
+        if (!directNiriOverview && g_pEventLoopManager && !m_visibleStateRebuildScheduled) {
             if (const auto refocusAnchor = focusedFloatingPinnedAnchor(); refocusAnchor && refocusAnchor != selectedWindow()) {
                 m_visibleStateRebuildScheduled = true;
                 const auto generation = ++m_visibleStateRebuildGeneration;
@@ -2974,11 +2972,16 @@ void OverviewController::renderStage(eRenderStage stage) {
             }
 
             const Rect currentSource = currentOverviewSourceFor(managed);
-            if (!rectApproxEqual(currentSource, managed.naturalGlobal, 0.5)) {
+            if (!directNiriOverview && !rectApproxEqual(currentSource, managed.naturalGlobal, 0.5)) {
                 needsForcedRelayout = true;
                 relayoutTriggerWindow = window;
                 break;
             }
+        }
+
+        if (directNiriOverview && needsForcedRelayout) {
+            scheduleVisibleStateRebuild();
+            needsForcedRelayout = false;
         }
 
         if (needsForcedRelayout && !m_visibleStateRebuildScheduled) {
@@ -3617,6 +3620,9 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
     if (!isVisible())
         return;
 
+    if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview())
+        return;
+
     if (kind == WindowSetChangeKind::MoveToWorkspace && window->m_pinned) {
         const auto* managed = managedWindowFor(m_state, window);
         const auto nextMonitor = preferredMonitorForWindow(window, m_state);
@@ -3688,6 +3694,9 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
     if (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) {
         if (shouldDeferRebuild) {
             scheduleVisibleStateRebuild();
+        } else if (activeDirectNiriSingleWorkspaceOverview()) {
+            refreshVisibleStateMetadata(directNiriOneToTwoOpenAnchor ? directNiriOneToTwoOpenAnchor : window);
+            updatePendingWindowGeometryRetry(window);
         } else {
             rebuildVisibleState(directNiriOneToTwoOpenAnchor, static_cast<bool>(directNiriOneToTwoOpenAnchor));
             updatePendingWindowGeometryRetry(window);
@@ -6076,6 +6085,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
 
         next.phase = Phase::Active;
+        next.ownerWorkspace = targetWorkspace;
         refreshWorkspaceStripActivity(next, transitionMonitor, targetWorkspaceId);
         next.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, next, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
         next.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, next, false) ? m_state.pendingExitFocus : PHLWINDOW{};
@@ -6113,8 +6123,13 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
         m_state = std::move(next);
         applyWorkspaceNameOverrides(m_state);
-        if (targetFocus)
+        if (targetFocus) {
             selectWindowInState(m_state, targetFocus);
+            m_state.focusDuringOverview = targetFocus;
+        } else {
+            m_state.focusDuringOverview.reset();
+            m_state.selectedIndex.reset();
+        }
         refreshWorkspaceStripSnapshots();
 
         if (g_pEventManager) {
@@ -7530,25 +7545,6 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     const double actualWidth = std::max(1.0, actual.width);
     const double actualHeight = std::max(1.0, actual.height);
 
-    // When a window was already floating/pinned before opening the overview,
-    // retile/tile/pin-toggle can make Hyprland switch the live surface to tiled
-    // geometry before the overview relayout animation has finished.  The normal
-    // uniform fit then tries to preserve the new tiled aspect inside the old
-    // floating card, which produces the bad shrinking/incorrect sizing during the
-    // tile-in animation.  For only that transition, fill the animated overview
-    // rect directly; once the relayout finishes this falls back to the normal
-    // uniform preview transform.
-    if (retileFillTransformActiveForWindow(window)) {
-        const double scaleX = std::max(0.0, current.width / actualWidth);
-        const double scaleY = std::max(0.0, current.height / actualHeight);
-        return WindowTransform{
-            .actualGlobal = actual,
-            .targetGlobal = current,
-            .scaleX = scaleX,
-            .scaleY = scaleY,
-        };
-    }
-
     const double uniformScale = std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
     const Rect   fitted = makeRect(current.centerX() - actualWidth * uniformScale * 0.5, current.centerY() - actualHeight * uniformScale * 0.5,
                                    actualWidth * uniformScale, actualHeight * uniformScale);
@@ -8433,7 +8429,14 @@ PHLWORKSPACE OverviewController::resolveExitWorkspace(CloseMode mode) const {
         return {};
 
     const auto* placeholder = centeredEmptyWorkspacePlaceholder(m_state);
-    return placeholder ? placeholder->workspace : PHLWORKSPACE{};
+    if (placeholder)
+        return placeholder->workspace;
+
+    if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) && m_state.ownerWorkspace &&
+        !preferredOverviewExitFocus())
+        return m_state.ownerWorkspace;
+
+    return {};
 }
 
 
@@ -9126,7 +9129,10 @@ void OverviewController::scheduleVisibleStateRebuild() {
         return;
 
     if (!g_pEventLoopManager) {
-        rebuildVisibleState();
+        if (activeDirectNiriSingleWorkspaceOverview() && !m_workspaceTransition.active)
+            refreshVisibleStateMetadata();
+        else
+            rebuildVisibleState();
         return;
     }
 
@@ -9140,7 +9146,10 @@ void OverviewController::scheduleVisibleStateRebuild() {
         if (!isVisible() || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
             return;
 
-        rebuildVisibleState();
+        if (activeDirectNiriSingleWorkspaceOverview() && !m_workspaceTransition.active)
+            refreshVisibleStateMetadata();
+        else
+            rebuildVisibleState();
     });
 }
 
@@ -9600,6 +9609,21 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     if (mode == CloseMode::Abort && m_state.phase == Phase::Closing)
         return;
 
+    const WORKSPACEID authoritativeCloseWorkspaceId = authoritativeOverviewWorkspaceId(
+        m_workspaceTransition.active,
+        m_workspaceTransition.targetWorkspaceId,
+        m_state.ownerWorkspace ? m_state.ownerWorkspace->m_id : WORKSPACE_INVALID);
+    std::vector<std::pair<PHLWINDOW, Rect>> transitionClosePreviewRects;
+    if (mode != CloseMode::Abort && m_workspaceTransition.active) {
+        transitionClosePreviewRects.reserve(m_workspaceTransition.targetState.windows.size());
+        for (const auto& managed : m_workspaceTransition.targetState.windows) {
+            if (!managed.window)
+                continue;
+            if (const auto rect = workspaceTransitionRectForWindow(managed.window); rect)
+                transitionClosePreviewRects.emplace_back(managed.window, *rect);
+        }
+    }
+
     if (m_workspaceTransition.active) {
         if (mode == CloseMode::Abort) {
             clearOverviewWorkspaceTransition();
@@ -9616,6 +9640,12 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             if (!isVisible() || m_state.phase == Phase::Inactive)
                 return;
         }
+    }
+
+    if (mode != CloseMode::Abort && authoritativeCloseWorkspaceId != WORKSPACE_INVALID) {
+        const auto committedWorkspace = g_pCompositor->getWorkspaceByID(authoritativeCloseWorkspaceId);
+        if (committedWorkspace)
+            m_state.ownerWorkspace = committedWorkspace;
     }
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
@@ -9645,6 +9675,30 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_swapColumnBackendPreviewFreezeWorkspace.reset();
     m_swapColumnBackendPreviewFreezeUntil = {};
     m_swapColumnBackendPreviewFrozenLayout.clear();
+
+    if (!transitionClosePreviewRects.empty()) {
+        for (auto& managed : m_state.windows) {
+            const auto previous = std::find_if(transitionClosePreviewRects.begin(), transitionClosePreviewRects.end(),
+                                               [&](const auto& candidate) { return candidate.first == managed.window; });
+            if (previous == transitionClosePreviewRects.end())
+                continue;
+            managed.targetGlobal = previous->second;
+            managed.relayoutFromGlobal = previous->second;
+        }
+        m_state.relayoutActive = false;
+        m_state.relayoutProgress = 1.0;
+        m_state.relayoutStart = {};
+    } else if (m_state.phase == Phase::Active && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        for (auto& managed : m_state.windows) {
+            if (const auto liveRect = livePreviewRectForManagedWindow(managed); liveRect) {
+                managed.targetGlobal = *liveRect;
+                managed.relayoutFromGlobal = *liveRect;
+            }
+        }
+        m_state.relayoutActive = false;
+        m_state.relayoutProgress = 1.0;
+        m_state.relayoutStart = {};
+    }
 
     if (m_state.phase == Phase::Active && m_state.relayoutActive) {
         for (auto& managed : m_state.windows) {
@@ -10521,6 +10575,115 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
     }
 }
 
+void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow) {
+    if (!isVisible() || !m_state.ownerMonitor || !m_state.ownerWorkspace || m_workspaceTransition.active)
+        return;
+
+    const auto previousState = m_state;
+    State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, preferredSelectedWindow, false);
+    if (next.windows.empty() && next.stripEntries.empty() && next.participatingMonitors.empty()) {
+        beginClose(CloseMode::Abort);
+        return;
+    }
+
+    next.phase = previousState.phase;
+    next.animationProgress = previousState.animationProgress;
+    next.animationFromVisual = previousState.animationFromVisual;
+    next.animationToVisual = previousState.animationToVisual;
+    next.animationStart = previousState.animationStart;
+    next.settleStableFrames = previousState.settleStableFrames;
+    next.settleHasSample = previousState.settleHasSample;
+    next.settleStart = previousState.settleStart;
+    next.focusBeforeOpen = previousState.focusBeforeOpen;
+    next.closeMode = previousState.closeMode;
+    next.exitFullscreenReapplied = previousState.exitFullscreenReapplied;
+    next.fullscreenOverrideActive = previousState.fullscreenOverrideActive;
+    next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
+    next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
+    next.relayoutActive = false;
+    next.relayoutProgress = 1.0;
+    next.relayoutStart = {};
+    for (auto& backup : next.fullscreenBackups) {
+        const auto previous = std::find_if(previousState.fullscreenBackups.begin(), previousState.fullscreenBackups.end(),
+                                           [&](const FullscreenWorkspaceBackup& candidate) { return candidate.workspace == backup.workspace; });
+        if (previous != previousState.fullscreenBackups.end())
+            backup = *previous;
+    }
+
+    const auto previousManagedFor = [&](const PHLWINDOW& window) -> const ManagedWindow* {
+        const auto it = std::find_if(previousState.windows.begin(), previousState.windows.end(),
+                                     [&](const ManagedWindow& candidate) { return candidate.window == window; });
+        return it == previousState.windows.end() ? nullptr : &*it;
+    };
+
+    next.slots.clear();
+    next.slots.reserve(next.windows.size());
+    for (auto& managed : next.windows) {
+        if (const auto* previous = previousManagedFor(managed.window); previous) {
+            managed.targetMonitor = previous->targetMonitor;
+            managed.naturalGlobal = previous->naturalGlobal;
+            managed.exitGlobal = previous->exitGlobal;
+            managed.relayoutFromGlobal = previous->relayoutFromGlobal;
+            managed.targetGlobal = previous->targetGlobal;
+            managed.slot = previous->slot;
+        }
+        next.slots.push_back(managed.slot);
+    }
+
+    for (auto& placeholder : next.emptyWorkspacePlaceholders) {
+        const auto previous = std::find_if(previousState.emptyWorkspacePlaceholders.begin(), previousState.emptyWorkspacePlaceholders.end(),
+                                           [&](const EmptyWorkspacePlaceholder& candidate) {
+                                               return candidate.monitor == placeholder.monitor && candidate.workspaceId == placeholder.workspaceId &&
+                                                   candidate.backingOnly == placeholder.backingOnly;
+                                           });
+        if (previous == previousState.emptyWorkspacePlaceholders.end())
+            continue;
+
+        placeholder.naturalGlobal = previous->naturalGlobal;
+        placeholder.exitGlobal = previous->exitGlobal;
+        placeholder.targetGlobal = previous->targetGlobal;
+        placeholder.relayoutFromGlobal = previous->targetGlobal;
+    }
+
+    for (const auto& previous : previousState.windows) {
+        if (!previous.window || !previous.window->m_fadingOut ||
+            std::any_of(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& candidate) { return candidate.window == previous.window; }))
+            continue;
+
+        ManagedWindow transient = previous;
+        transient.targetGlobal = currentPreviewRect(previous);
+        transient.relayoutFromGlobal = transient.targetGlobal;
+        transient.exitGlobal = transient.targetGlobal;
+        next.transientClosingWindows.push_back(std::move(transient));
+    }
+    for (const auto& previous : previousState.transientClosingWindows) {
+        if (!previous.window || !previous.window->m_fadingOut ||
+            std::any_of(next.transientClosingWindows.begin(), next.transientClosingWindows.end(),
+                        [&](const ManagedWindow& candidate) { return candidate.window == previous.window; }))
+            continue;
+        next.transientClosingWindows.push_back(previous);
+    }
+
+    PHLWINDOW selected = preferredSelectedWindow;
+    if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
+        selected = Desktop::focusState()->window();
+    if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
+        selected = previousState.focusDuringOverview;
+    if (selected && selected->m_isMapped && selectWindowInState(next, selected))
+        next.focusDuringOverview = selected;
+
+    carryOverWorkspaceStripSnapshots(next, previousState);
+    restoreOverviewRenderState();
+    m_state = std::move(next);
+    m_relayoutProgressAnimation.reset();
+    armOverviewRenderState(m_state);
+    applyWorkspaceNameOverrides(m_state);
+    syncHiddenStripLayerProxies();
+    refreshWorkspaceStripSnapshots();
+    updateHoveredFromPointer(false, false, false, false, "metadata-refresh");
+    damageOwnedMonitors();
+}
+
 void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, bool forceRelayout) {
     if (!isVisible() || !m_state.ownerMonitor || !m_state.ownerWorkspace)
         return;
@@ -10672,33 +10835,6 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         return it == m_state.windows.end() ? nullptr : &*it;
     };
 
-    const auto armRetileFillTransformIfNeeded = [&](const ManagedWindow& nextManaged, const ManagedWindow* previousManaged) {
-        if (!forceRelayout || !previousManaged || !nextManaged.window || !usesDirectNiriScrollingOverview(m_state))
-            return;
-
-        const bool wasFloatingLike = previousManaged->isFloating || previousManaged->isPinned || previousManaged->isNiriFloatingOverlay ||
-            isFloatingOverviewWindow(previousManaged->window) || (previousManaged->window && previousManaged->window->m_pinned);
-        const bool nowTiled = !nextManaged.isFloating && !nextManaged.isPinned && !nextManaged.isNiriFloatingOverlay &&
-            !nextManaged.window->m_pinned && !isFloatingOverviewWindow(nextManaged.window);
-
-        if (!wasFloatingLike || !nowTiled)
-            return;
-
-        const auto target = nextManaged.window->layoutTarget();
-        if (!target || target->floating())
-            return;
-
-        armRetileFillTransformForWindow(nextManaged.window);
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] arm retile fill transform window=" << debugWindowLabel(nextManaged.window)
-                << " previousFloating=" << (previousManaged->isFloating ? 1 : 0)
-                << " previousPinned=" << (previousManaged->isPinned ? 1 : 0)
-                << " previousOverlay=" << (previousManaged->isNiriFloatingOverlay ? 1 : 0);
-            debugLog(out.str());
-        }
-    };
-
     if (previousPendingExitFocus && std::any_of(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& managed) { return managed.window == previousPendingExitFocus; }))
         next.pendingExitFocus = previousPendingExitFocus;
     else
@@ -10719,8 +10855,6 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
             const auto* previousManaged = previousManagedForWindow(window.window);
             if (!previousManaged)
                 continue;
-
-            armRetileFillTransformIfNeeded(window, previousManaged);
 
             window.targetMonitor = previousManaged->targetMonitor;
             window.slot = previousManaged->slot;
@@ -10748,7 +10882,6 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     } else if (previousPhase == Phase::Active || selectionRelayoutForced) {
         for (auto& window : next.windows) {
             if (const auto* previousManaged = previousManagedForWindow(window.window); previousManaged) {
-                armRetileFillTransformIfNeeded(window, previousManaged);
                 window.exitGlobal = previousManaged->exitGlobal;
             }
 
