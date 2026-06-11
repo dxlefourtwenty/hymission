@@ -4955,6 +4955,43 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
             state.ownerWorkspace->m_monitor.lock() == monitor && isScrollingWorkspace(state.ownerWorkspace))
             stripActiveWorkspace = state.ownerWorkspace;
 
+        const bool singleWorkspaceScrollingNiri =
+            niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(stripActiveWorkspace);
+
+        std::unordered_set<WORKSPACEID> forcedStripWorkspaceIds;
+        const auto forceStripWorkspaceId = [&](WORKSPACEID workspaceId) {
+            if (workspaceId != WORKSPACE_INVALID)
+                forcedStripWorkspaceIds.insert(workspaceId);
+        };
+
+        if (singleWorkspaceScrollingNiri) {
+            if (stripActiveWorkspace) {
+                forceStripWorkspaceId(stripActiveWorkspace->m_id);
+                if (stripActiveWorkspace->m_id > 1)
+                    forceStripWorkspaceId(stripActiveWorkspace->m_id - 1);
+                forceStripWorkspaceId(stripActiveWorkspace->m_id + 1);
+            }
+
+            for (const auto workspaceId : niri_scrolling_detail::retainedDirectNiriWorkspaceLaneIds(monitor->m_id))
+                forceStripWorkspaceId(workspaceId);
+
+            // Preserve the lanes that were already rendered in the active overview
+            // state.  Niri keeps workspace rows visually stable while windows move
+            // between workspaces; trimming the previous empty/source row during a
+            // post-move rebuild is what makes the adjacent workspace disappear.
+            if (isVisible()) {
+                for (const auto& entry : m_state.stripEntries) {
+                    if (entry.monitor == monitor && !entry.newWorkspaceSlot)
+                        forceStripWorkspaceId(entry.workspaceId);
+                }
+
+                for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+                    if (placeholder.monitor == monitor && placeholder.workspaceId != WORKSPACE_INVALID && !placeholder.backingOnly)
+                        forceStripWorkspaceId(placeholder.workspaceId);
+                }
+            }
+        }
+
         std::vector<PHLWORKSPACE> normalWorkspaces;
         const auto allWorkspaces = g_pCompositor->getWorkspacesCopy();
         normalWorkspaces.reserve(allWorkspaces.size());
@@ -4983,11 +5020,20 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
         }
 
         std::vector<int64_t> workspaceIds;
-        workspaceIds.reserve(normalWorkspaces.size());
+        workspaceIds.reserve(normalWorkspaces.size() + forcedStripWorkspaceIds.size());
         for (const auto& workspace : normalWorkspaces) {
             if (workspace)
                 workspaceIds.push_back(workspace->m_id);
         }
+
+        for (const auto workspaceId : forcedStripWorkspaceIds) {
+            const auto id = static_cast<int64_t>(workspaceId);
+            if (std::find(workspaceIds.begin(), workspaceIds.end(), id) == workspaceIds.end())
+                workspaceIds.push_back(id);
+        }
+
+        std::sort(workspaceIds.begin(), workspaceIds.end());
+        workspaceIds.erase(std::unique(workspaceIds.begin(), workspaceIds.end()), workspaceIds.end());
 
         const auto stripWorkspaceIds = expandWorkspaceStripWorkspaceIds(workspaceIds, emptyMode);
 
@@ -5018,13 +5064,11 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
             }
         }
 
-        const bool singleWorkspaceScrollingNiri =
-            niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(stripActiveWorkspace);
         if (singleWorkspaceScrollingNiri) {
             const auto trimEdgeEntries = [&](bool fromFront) {
                 while (!monitorEntries.empty()) {
                     const auto& entry = fromFront ? monitorEntries.front() : monitorEntries.back();
-                    if (entry.active || workspacesWithWindows.contains(entry.workspaceId))
+                    if (entry.active || workspacesWithWindows.contains(entry.workspaceId) || forcedStripWorkspaceIds.contains(entry.workspaceId))
                         break;
 
                     if (fromFront)
@@ -5569,10 +5613,38 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == candidateMonitor)
                     forceVisibleLaneId(m_state.ownerWorkspace->m_id);
 
+                for (const auto& entry : m_state.stripEntries) {
+                    if (entry.monitor == candidateMonitor && entry.workspaceId != WORKSPACE_INVALID && !entry.newWorkspaceSlot)
+                        forceVisibleLaneId(entry.workspaceId);
+                }
+
                 for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
                     if (placeholder.monitor == candidateMonitor && placeholder.workspaceId != WORKSPACE_INVALID && !placeholder.backingOnly)
                         forceVisibleLaneId(placeholder.workspaceId);
                 }
+            }
+
+            WORKSPACEID centerWorkspaceId = WORKSPACE_INVALID;
+            if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspaceId != WORKSPACE_INVALID) {
+                centerWorkspaceId = override->workspaceId;
+            } else if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
+                       state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
+                centerWorkspaceId = state.focusDuringOverview->m_workspace->m_id;
+            } else if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == candidateMonitor) {
+                centerWorkspaceId = state.ownerWorkspace->m_id;
+            } else if (candidateMonitor->m_activeWorkspace) {
+                centerWorkspaceId = candidateMonitor->m_activeWorkspace->m_id;
+            }
+
+            // Always allocate the immediate workspace context around the centered
+            // workspace.  Hyprland can drop an empty source workspace after a
+            // move, but Niri's overview still keeps the neighboring workspace
+            // row/slot stable instead of letting the row vanish until refocus.
+            if (centerWorkspaceId != WORKSPACE_INVALID) {
+                appendLaneWorkspaceId(centerWorkspaceId);
+                if (centerWorkspaceId > 1)
+                    appendLaneWorkspaceId(centerWorkspaceId - 1);
+                appendLaneWorkspaceId(centerWorkspaceId + 1);
             }
 
             std::sort(realWorkspaceIds.begin(), realWorkspaceIds.end());
@@ -5586,18 +5658,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const auto workspaceId = static_cast<WORKSPACEID>(rawWorkspaceId);
                 if (!workspaceById.contains(workspaceId))
                     syntheticLaneWorkspaceIds.push_back(workspaceId);
-            }
-
-            WORKSPACEID centerWorkspaceId = WORKSPACE_INVALID;
-            if (const auto* override = overrideForMonitor(candidateMonitor); override && override->workspaceId != WORKSPACE_INVALID) {
-                centerWorkspaceId = override->workspaceId;
-            } else if (state.focusDuringOverview && state.focusDuringOverview->m_workspace &&
-                       state.focusDuringOverview->m_workspace->m_monitor.lock() == candidateMonitor) {
-                centerWorkspaceId = state.focusDuringOverview->m_workspace->m_id;
-            } else if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == candidateMonitor) {
-                centerWorkspaceId = state.ownerWorkspace->m_id;
-            } else if (candidateMonitor->m_activeWorkspace) {
-                centerWorkspaceId = candidateMonitor->m_activeWorkspace->m_id;
             }
 
             std::size_t activeIndex = 0;
