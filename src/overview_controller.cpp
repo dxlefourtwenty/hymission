@@ -6454,6 +6454,9 @@ void OverviewController::startNextQueuedOverviewWorkspaceTransition() {
 }
 
 SDispatchResult OverviewController::startOverviewWorkspaceTransitionForDispatcher(const std::string& args, bool currentMonitorOnly) {
+    if (m_beginCloseInProgress || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
+        return {};
+
     if (m_workspaceTransition.active)
         commitActiveNiriWorkspaceTransitionForRetarget();
 
@@ -8749,12 +8752,21 @@ bool OverviewController::activateWorkspaceForExit(const PHLWORKSPACE& workspace)
 }
 
 void OverviewController::normalizeDirectNiriWorkspaceActivation(const PHLWORKSPACE& workspace) const {
-    if (!workspace || !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(workspace))
+    if (!workspace || !m_state.collectionPolicy.onlyActiveWorkspace || !niriModeAppliesToState(m_state) || !isScrollingWorkspace(workspace))
         return;
 
     const auto monitor = workspace->m_monitor.lock();
     if (!monitor)
         return;
+
+    for (const auto& candidate : g_pCompositor->getWorkspacesCopy()) {
+        if (!candidate || candidate->m_isSpecialWorkspace || candidate->m_monitor.lock() != monitor)
+            continue;
+
+        const bool active = candidate == monitor->m_activeWorkspace;
+        candidate->m_visible = active;
+        candidate->m_forceRendering = false;
+    }
 
     workspace->m_renderOffset->setValueAndWarp(Vector2D{});
     workspace->m_alpha->setValueAndWarp(1.F);
@@ -9781,6 +9793,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     if (mode == CloseMode::Abort && m_state.phase == Phase::Closing)
         return;
 
+    const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
+    if (mode != CloseMode::Abort)
+        m_pendingWorkspaceTransitionRequests.clear();
+
     const WORKSPACEID authoritativeCloseWorkspaceId = authoritativeOverviewWorkspaceId(
         m_workspaceTransition.active,
         m_workspaceTransition.targetWorkspaceId,
@@ -9821,7 +9837,6 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     }
 
     const double fromVisual = fromVisualOverride.value_or(visualProgress());
-    const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
@@ -10247,6 +10262,10 @@ void OverviewController::deactivate() {
     m_postOpenRefreshFrames = 0;
     clearPendingWindowGeometryRetry();
     clearOverviewWorkspaceTransition();
+    if (desiredFocus && desiredFocus->m_workspace)
+        normalizeDirectNiriWorkspaceActivation(desiredFocus->m_workspace);
+    else if (desiredWorkspace)
+        normalizeDirectNiriWorkspaceActivation(desiredWorkspace);
     m_workspaceSwipeGesture = {};
     m_stripSnapshotsDirty = false;
     m_stripSnapshotRefreshScheduled = false;
