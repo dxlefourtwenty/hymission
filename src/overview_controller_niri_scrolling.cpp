@@ -3139,7 +3139,7 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     // window is moved out.  Keep that lane alive as a synthetic overview
     // placeholder for the source/target transition and the first post-move
     // active frame, otherwise the previous workspace visually disappears.
-    retainDirectNiriWorkspaceLane(sourceMonitor, sourceWorkspace);
+    niri_scrolling_detail::retainDirectNiriWorkspaceLane(sourceMonitor, sourceWorkspace);
 
     const auto* previousManaged = managedWindowFor(m_state, movedWindow, true);
     const float movedPreviewAlpha = previousManaged ? previousManaged->previewAlpha : 1.0F;
@@ -3228,7 +3228,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
             const auto retainedSourceWorkspace = retainedMoveSource ? retainedMoveSource->m_workspace : PHLWORKSPACE{};
             const auto retainedSourceMonitor = retainedSourceWorkspace ? retainedSourceWorkspace->m_monitor.lock() : PHLMONITOR{};
-            retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
+            niri_scrolling_detail::retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
         }
 
         const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
@@ -5562,7 +5562,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 forcedVisibleLaneIds.insert(workspaceId);
             };
 
-            for (const auto workspaceId : retainedDirectNiriWorkspaceLaneIds(candidateMonitor->m_id))
+            for (const auto workspaceId : niri_scrolling_detail::retainedDirectNiriWorkspaceLaneIds(candidateMonitor->m_id))
                 forceVisibleLaneId(workspaceId);
 
             if (preserveExistingOrder && isVisible()) {
