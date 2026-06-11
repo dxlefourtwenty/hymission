@@ -1777,8 +1777,19 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
     const auto validManagedFocus = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !window->m_isMapped)
             return {};
-        if (state.collectionPolicy.onlyActiveWorkspace && state.ownerWorkspace && !window->m_pinned && window->m_workspace != state.ownerWorkspace)
-            return {};
+
+        if (state.collectionPolicy.onlyActiveWorkspace && !window->m_pinned) {
+            if (!window->m_workspace || window->m_workspace->m_isSpecialWorkspace)
+                return {};
+
+            // In direct niri single-workspace overview, the centered/focused
+            // workspace is allowed to move away from state.ownerWorkspace while
+            // the overview is still open.  Do not reject the actual overview
+            // focus just because ownerWorkspace is one rebuild behind; only keep
+            // it scoped to the overview monitor.
+            if (state.ownerMonitor && window->m_workspace->m_monitor.lock() != state.ownerMonitor)
+                return {};
+        }
 
         return managedWindowFor(state, window, true) ? window : PHLWINDOW{};
     };
@@ -5084,6 +5095,17 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
                 normalById.emplace(workspace->m_id, workspace);
         }
 
+        if (singleWorkspaceScrollingNiri) {
+            // Object permanence for the niri overview starts with the strip:
+            // every real workspace on this monitor must stay represented, even
+            // if the active centered workspace is the only one Hyprland just
+            // exposed through the live focus path.
+            for (const auto& workspace : normalWorkspaces) {
+                if (workspace)
+                    forceStripWorkspaceId(workspace->m_id);
+            }
+        }
+
         std::vector<int64_t> workspaceIds;
         workspaceIds.reserve(normalWorkspaces.size() + forcedStripWorkspaceIds.size());
         for (const auto& workspace : normalWorkspaces) {
@@ -5596,21 +5618,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::pair<WORKSPACEID, WORKSPACEID>> placeholderRangeByMonitor;
 
     if (allowDirectNiriOverviewLayout) {
-        std::unordered_map<MONITORID, std::unordered_set<WORKSPACEID>> directNiriWorkspacesWithWindowsByMonitor;
-        for (const auto& window : candidates) {
-            if (!shouldManageWindow(window, state) || !window->m_isMapped)
-                continue;
-
-            const auto targetMonitor = preferredMonitorForWindow(window, state);
-            if (!targetMonitor)
-                continue;
-
-            const auto directWorkspace = window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : window->m_workspace;
-            if (!directWorkspace || !isScrollingWorkspace(directWorkspace))
-                continue;
-
-            directNiriWorkspacesWithWindowsByMonitor[targetMonitor->m_id].insert(directWorkspace->m_id);
-        }
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
                 continue;
@@ -5662,13 +5669,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 appendLaneWorkspaceId(override.workspaceId);
             }
 
-            std::unordered_set<WORKSPACEID> forcedVisibleLaneIds;
             const auto forceVisibleLaneId = [&](WORKSPACEID workspaceId) {
                 if (workspaceId == WORKSPACE_INVALID)
                     return;
 
                 appendLaneWorkspaceId(workspaceId);
-                forcedVisibleLaneIds.insert(workspaceId);
             };
 
             for (const auto workspaceId : niri_scrolling_detail::retainedDirectNiriWorkspaceLaneIds(candidateMonitor->m_id))
@@ -5726,56 +5731,28 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
 
             std::size_t activeIndex = 0;
-            bool        centerWorkspaceInLane = false;
             if (centerWorkspaceId != WORKSPACE_INVALID) {
                 const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(centerWorkspaceId));
-                if (it != laneWorkspaceIds.end()) {
+                if (it != laneWorkspaceIds.end())
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
-                    centerWorkspaceInLane = true;
-                }
             }
 
             std::size_t firstPlaceholderIndex = laneWorkspaceIds.size();
             std::size_t lastPlaceholderIndex = laneWorkspaceIds.size();
 
-            if (centerWorkspaceInLane && activeIndex < laneWorkspaceIds.size()) {
-                constexpr std::size_t DIRECT_NIRI_WORKSPACE_CONTEXT_LANES = 1;
-                const std::size_t contextFirstIndex = activeIndex > DIRECT_NIRI_WORKSPACE_CONTEXT_LANES ? activeIndex - DIRECT_NIRI_WORKSPACE_CONTEXT_LANES : 0;
-                const std::size_t contextLastIndex = std::min(laneWorkspaceIds.size() - 1, activeIndex + DIRECT_NIRI_WORKSPACE_CONTEXT_LANES);
-
-                firstPlaceholderIndex = contextFirstIndex;
-                lastPlaceholderIndex = contextLastIndex;
+            if (!laneWorkspaceIds.empty()) {
+                // Direct niri single-workspace view still needs workspace-row
+                // object permanence.  The compositor may only report the
+                // focused workspace during a rebuild, or destroy an emptied
+                // source workspace immediately after a move.  Keep every lane
+                // we can derive for this monitor visible and backed by a real
+                // or synthetic placeholder instead of trimming to +/- 1.
+                firstPlaceholderIndex = 0;
+                lastPlaceholderIndex = laneWorkspaceIds.size() - 1;
 
                 auto& visibleWorkspaceIds = directNiriVisibleWorkspaceIdsByMonitor[candidateMonitor->m_id];
-                for (std::size_t index = contextFirstIndex; index <= contextLastIndex; ++index)
-                    visibleWorkspaceIds.insert(static_cast<WORKSPACEID>(laneWorkspaceIds[index]));
-
-                for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
-                    const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
-                    if (!forcedVisibleLaneIds.contains(workspaceId))
-                        continue;
-
-                    firstPlaceholderIndex = std::min(firstPlaceholderIndex, index);
-                    lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
-                    visibleWorkspaceIds.insert(workspaceId);
-                }
-            } else {
-                const auto monitorWindowsIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
-                const auto hasWindowOnWorkspace = [&](WORKSPACEID workspaceId) {
-                    return monitorWindowsIt != directNiriWorkspacesWithWindowsByMonitor.end() && monitorWindowsIt->second.contains(workspaceId);
-                };
-
-                for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
-                    const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
-                    const bool hasWindows = hasWindowOnWorkspace(workspaceId);
-                    const bool keepAsAnchor = centerWorkspaceId != WORKSPACE_INVALID && workspaceId == centerWorkspaceId;
-                    if (!hasWindows && !keepAsAnchor)
-                        continue;
-
-                    firstPlaceholderIndex = std::min(firstPlaceholderIndex, index);
-                    lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
-                    directNiriVisibleWorkspaceIdsByMonitor[candidateMonitor->m_id].insert(workspaceId);
-                }
+                for (const auto rawWorkspaceId : laneWorkspaceIds)
+                    visibleWorkspaceIds.insert(static_cast<WORKSPACEID>(rawWorkspaceId));
             }
 
             if (firstPlaceholderIndex != laneWorkspaceIds.size() && lastPlaceholderIndex != laneWorkspaceIds.size()) {
