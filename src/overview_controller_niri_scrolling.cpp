@@ -1240,12 +1240,12 @@ bool OverviewController::scrollActiveLayoutByGestureDelta(const IPointer::SSwipe
 
     return true;
 }
-void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const char* source) {
+void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const char* source, const PreviewRectSnapshot* previousPreviewRects) {
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor ||
         !isScrollingWorkspace(activeLayoutWorkspace()))
         return;
 
-    if (usesDirectNiriScrollingOverview(m_state)) {
+    if (usesDirectNiriScrollingOverview(m_state) && !previousPreviewRects) {
         if (m_overviewEditingDispatcherInProgress) {
             damageOwnedMonitors();
             return;
@@ -1408,6 +1408,16 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
     std::size_t updated = 0;
     bool        targetChanged = false;
+    const auto previousPreviewRectFor = [&](const PHLWINDOW& window, const ManagedWindow& fallback) {
+        if (previousPreviewRects) {
+            const auto previous = std::find_if(previousPreviewRects->begin(), previousPreviewRects->end(),
+                                               [&](const auto& entry) { return entry.first == window; });
+            if (previous != previousPreviewRects->end())
+                return previous->second;
+        }
+
+        return currentPreviewRect(fallback);
+    };
     m_state.slots.clear();
     for (auto& managed : m_state.windows) {
         auto it = std::find_if(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& candidate) { return candidate.window == managed.window; });
@@ -1416,7 +1426,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             continue;
         }
 
-        const Rect currentRect = currentPreviewRect(managed);
+        const Rect currentRect = previousPreviewRectFor(managed.window, managed);
         const Rect previousTarget = managed.targetGlobal;
         const Rect previousRelayoutFrom = managed.relayoutFromGlobal;
         managed.naturalGlobal = it->naturalGlobal;
@@ -1506,6 +1516,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     m_state.relayoutActive = targetChanged && (animateRefresh || captureTwoColumnRefresh);
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
+    if (m_state.relayoutActive)
+        beginOverviewRelayoutAnimation(source ? source : "niri-refresh");
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
@@ -1530,6 +1542,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
 
+    const auto previousPreviewRects = syncScrollingSpot ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     PHLWINDOW focusTarget;
     if (preferredWindow && hasManagedWindow(preferredWindow))
         focusTarget = preferredWindow;
@@ -1581,7 +1594,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
-    refreshNiriScrollingOverviewAfterLayoutScroll(source);
+    refreshNiriScrollingOverviewAfterLayoutScroll(source, syncScrollingSpot ? &previousPreviewRects : nullptr);
 }
 void OverviewController::refreshAfterOfficialScrollMove(const char* source) {
     refreshNiriScrollingOverviewAfterLayoutScroll(source);
@@ -2611,7 +2624,7 @@ void OverviewController::refreshExitLayoutForFocus(const PHLWINDOW& window) cons
     for (const auto& monitor : monitors)
         g_layoutManager->recalculateMonitor(monitor);
 }
-void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot) {
+void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const PreviewRectSnapshot* previousPreviewRects) {
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
 
@@ -2690,7 +2703,7 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
     if (syncOverviewScrollingSpot)
-        refreshNiriScrollingOverviewAfterLayoutScroll("focus-sync");
+        refreshNiriScrollingOverviewAfterLayoutScroll("focus-sync", previousPreviewRects);
     if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
         m_pendingLiveFocusWorkspaceChangeTarget.reset();
 
@@ -2719,6 +2732,8 @@ void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrolling
         return;
 
     const auto previousSelected = m_state.focusDuringOverview;
+    const bool capturePreviousRects = syncScrollingSpot && shouldSyncScrollingLayoutDuringOverviewFocus();
+    const auto previousPreviewRects = capturePreviousRects ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     if (m_state.focusDuringOverview != selected && debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] overview target " << debugWindowLabel(selected) << " source=" << (source ? source : "?");
@@ -2742,7 +2757,7 @@ void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrolling
     m_queuedOverviewLiveFocusTarget.reset();
     m_queuedOverviewLiveFocusSyncScrollingSpot = false;
     m_queuedOverviewLiveFocusCenterCursor = false;
-    syncRealFocusDuringOverview(selected, syncScrollingSpot);
+    syncRealFocusDuringOverview(selected, syncScrollingSpot, capturePreviousRects ? &previousPreviewRects : nullptr);
     if (centerCursor)
         centerCursorOnOverviewWindow(selected, source);
     updateSelectedWindowLayout(previousSelected);
@@ -3244,6 +3259,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
             return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
         });
+    const bool animateDirectStripRelayout =
+        directLiveGeometryAvailable && (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage) && niriOverviewAnimationsEnabled();
+    const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
         if (!overviewActive || !usesDirectNiriScrollingOverview(m_state))
@@ -3314,21 +3332,24 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             niri_scrolling_detail::retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
         }
 
-        const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
         PHLWINDOW dispatchFocus = selectedBefore;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = m_state.focusDuringOverview;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = Desktop::focusState()->window();
 
-        if (dispatchFocus && dispatchFocus->m_isMapped && hasManagedWindow(dispatchFocus)) {
-            selectWindowInState(m_state, dispatchFocus);
-            m_state.focusDuringOverview = dispatchFocus;
-            if (Desktop::focusState()->window() != dispatchFocus)
-                focusWindowCompat(dispatchFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-        }
+        SDispatchResult result;
+        {
+            const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
+            if (dispatchFocus && dispatchFocus->m_isMapped && hasManagedWindow(dispatchFocus)) {
+                selectWindowInState(m_state, dispatchFocus);
+                m_state.focusDuringOverview = dispatchFocus;
+                if (Desktop::focusState()->window() != dispatchFocus)
+                    focusWindowCompat(dispatchFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            }
 
-        const auto result = (*original)(std::move(args));
+            result = (*original)(std::move(args));
+        }
         if (!result.success)
             return result;
 
@@ -3336,10 +3357,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!preferred || !preferred->m_isMapped)
             preferred = dispatchFocus;
 
-        if (insideRenderLifecycle())
+        if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
-        else
+        } else {
             refreshVisibleStateMetadata(preferred);
+            if (animateDirectStripRelayout)
+                refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);
+        }
 
         damageOwnedMonitors();
         return result;
@@ -4730,6 +4754,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
             if (usesDirectNiriScrollingOverview(m_state)) {
+                if (m_state.relayoutActive)
+                    return activeBaseRect();
                 if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
                     return *liveRect;
                 if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)

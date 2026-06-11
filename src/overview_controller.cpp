@@ -3488,6 +3488,7 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
 
         if (niriModeAppliesToState(m_state) && m_state.selectedIndex && clickedIndex != *m_state.selectedIndex) {
             const auto previousSelectedWindow = selectedWindow();
+            const auto previousPreviewRects = directNiriSingleWorkspaceScrollClick ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
             m_state.selectedIndex = clickedIndex;
             m_state.focusDuringOverview = clickedWindow;
             m_queuedOverviewSelectionTarget.reset();
@@ -3502,12 +3503,14 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             if (clickedWindow)
                 (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
             updateSelectedWindowLayout(previousSelectedWindow);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center");
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center",
+                                                           directNiriSingleWorkspaceScrollClick ? &previousPreviewRects : nullptr);
             damageOwnedMonitors();
             return true;
         }
 
         const auto previousSelectedWindow = selectedWindow();
+        const auto previousPreviewRects = directNiriSingleWorkspaceScrollClick ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
         m_state.selectedIndex = effectiveHoveredIndex;
         m_state.focusDuringOverview = clickedWindow;
         m_queuedOverviewSelectionTarget.reset();
@@ -3522,7 +3525,7 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         updateSelectedWindowLayout(previousSelectedWindow);
         if (directNiriSingleWorkspaceScrollClick) {
             (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center");
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center", &previousPreviewRects);
         }
         damageOwnedMonitors();
         return true;
@@ -7387,6 +7390,16 @@ std::string OverviewController::collectionSummary(const PHLMONITOR& monitor) con
         summary << " fade=" << fading << " size=" << invalidSize << " nows=" << noWorkspace;
 
     return summary.str();
+}
+
+OverviewController::PreviewRectSnapshot OverviewController::captureCurrentPreviewRects() const {
+    PreviewRectSnapshot rects;
+    rects.reserve(m_state.windows.size());
+
+    for (const auto& window : m_state.windows)
+        rects.emplace_back(window.window, currentPreviewRect(window));
+
+    return rects;
 }
 
 std::vector<Rect> OverviewController::targetRects() const {

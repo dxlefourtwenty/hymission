@@ -263,6 +263,8 @@ class OverviewController {
         std::chrono::steady_clock::time_point  settleStart = {};
     };
 
+    using PreviewRectSnapshot = std::vector<std::pair<PHLWINDOW, Rect>>;
+
     struct SurfaceRenderDataSnapshot {
         Vector2D pos;
         Vector2D localPos;
@@ -504,7 +506,7 @@ class OverviewController {
     [[nodiscard]] double       scrollLayoutPixelsPerGestureDelta(ScrollingLayoutDirection direction) const;
     [[nodiscard]] double       scrollLayoutPrimaryDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale) const;
     [[nodiscard]] bool         scrollActiveLayoutByGestureDelta(const IPointer::SSwipeUpdateEvent& event, eTrackpadGestureDirection direction, float deltaScale);
-    void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source);
+    void                       refreshNiriScrollingOverviewAfterLayoutScroll(const char* source, const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                       refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow = {}, bool syncScrollingSpot = true);
     [[nodiscard]] bool         shouldSyncRealFocusDuringOverview() const;
     [[nodiscard]] bool         shouldSyncScrollingLayoutDuringOverviewFocus() const;
@@ -584,6 +586,7 @@ class OverviewController {
     [[nodiscard]] bool         shouldAutoCloseFor(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldManageWindow(const PHLWINDOW& window, const State& state) const;
     [[nodiscard]] std::string  collectionSummary(const PHLMONITOR& monitor) const;
+    [[nodiscard]] PreviewRectSnapshot captureCurrentPreviewRects() const;
     [[nodiscard]] std::vector<Rect> targetRects() const;
     [[nodiscard]] Rect         workspaceStripBandRectForMonitor(const PHLMONITOR& monitor, const State& state) const;
     [[nodiscard]] Rect         overviewContentRectForMonitor(const PHLMONITOR& monitor, const State& state) const;
@@ -711,7 +714,8 @@ class OverviewController {
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const;
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
-    void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true);
+    void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
+                                                          const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                       syncFocusDuringOverviewFromSelection(bool syncScrollingSpot = true, const char* source = "?", bool centerCursor = false);
     [[nodiscard]] bool         refocusDirectNiriSelectionWithoutScroll(const char* source = "?");
     void                       armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace);
