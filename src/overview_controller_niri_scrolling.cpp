@@ -770,6 +770,63 @@ struct PendingTwoColumnSwapRepairState {
 std::unordered_map<const void*, TwoColumnSwapTraceState>     g_twoColumnSwapTraceStates;
 std::unordered_map<const void*, PendingTwoColumnSwapRepairState> g_pendingTwoColumnSwapRepairs;
 
+struct RetainedDirectNiriWorkspaceLane {
+    WORKSPACEID workspaceId = WORKSPACE_INVALID;
+    std::string workspaceName;
+    std::chrono::steady_clock::time_point until;
+};
+
+std::unordered_map<MONITORID, std::vector<RetainedDirectNiriWorkspaceLane>> g_retainedDirectNiriWorkspaceLanes;
+
+void retainDirectNiriWorkspaceLane(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace) {
+    if (!monitor || !workspace || workspace->m_isSpecialWorkspace || workspace->m_id == WORKSPACE_INVALID)
+        return;
+
+    auto& lanes = g_retainedDirectNiriWorkspaceLanes[monitor->m_id];
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(30000);
+    const auto it = std::find_if(lanes.begin(), lanes.end(), [&](const RetainedDirectNiriWorkspaceLane& lane) {
+        return lane.workspaceId == workspace->m_id;
+    });
+
+    if (it != lanes.end()) {
+        it->workspaceName = workspace->m_name;
+        it->until = until;
+        return;
+    }
+
+    lanes.push_back({
+        .workspaceId = workspace->m_id,
+        .workspaceName = workspace->m_name,
+        .until = until,
+    });
+
+    if (lanes.size() > 8)
+        lanes.erase(lanes.begin(), lanes.begin() + static_cast<long>(lanes.size() - 8));
+}
+
+std::vector<WORKSPACEID> retainedDirectNiriWorkspaceLaneIds(MONITORID monitorId) {
+    std::vector<WORKSPACEID> ids;
+    const auto it = g_retainedDirectNiriWorkspaceLanes.find(monitorId);
+    if (it == g_retainedDirectNiriWorkspaceLanes.end())
+        return ids;
+
+    const auto now = std::chrono::steady_clock::now();
+    auto& lanes = it->second;
+    lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [&](const RetainedDirectNiriWorkspaceLane& lane) {
+                    return lane.workspaceId == WORKSPACE_INVALID || now > lane.until;
+                }),
+                lanes.end());
+
+    ids.reserve(lanes.size());
+    for (const auto& lane : lanes)
+        ids.push_back(lane.workspaceId);
+
+    if (lanes.empty())
+        g_retainedDirectNiriWorkspaceLanes.erase(it);
+
+    return ids;
+}
+
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
 }
@@ -3078,6 +3135,12 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     if (!canOwnWorkspaceTransition)
         return std::nullopt;
 
+    // Hyprland can destroy the source workspace immediately when its last
+    // window is moved out.  Keep that lane alive as a synthetic overview
+    // placeholder for the source/target transition and the first post-move
+    // active frame, otherwise the previous workspace visually disappears.
+    retainDirectNiriWorkspaceLane(sourceMonitor, sourceWorkspace);
+
     const auto* previousManaged = managedWindowFor(m_state, movedWindow, true);
     const float movedPreviewAlpha = previousManaged ? previousManaged->previewAlpha : 1.0F;
     const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
@@ -3158,6 +3221,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (isMoveToWorkspaceDispatcher) {
             if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore); result)
                 return *result;
+
+            PHLWINDOW retainedMoveSource = selectedBefore;
+            if (const auto separator = args.find_last_of(','); separator != std::string::npos)
+                retainedMoveSource = g_pCompositor->getWindowByRegex(args.substr(separator + 1));
+
+            const auto retainedSourceWorkspace = retainedMoveSource ? retainedMoveSource->m_workspace : PHLWORKSPACE{};
+            const auto retainedSourceMonitor = retainedSourceWorkspace ? retainedSourceWorkspace->m_monitor.lock() : PHLMONITOR{};
+            retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
         }
 
         const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
@@ -5466,14 +5537,46 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 realWorkspaceIds.push_back(workspace->m_id);
             }
 
+            const auto appendLaneWorkspaceId = [&](WORKSPACEID workspaceId) {
+                if (workspaceId == WORKSPACE_INVALID)
+                    return;
+
+                const auto id = static_cast<int64_t>(workspaceId);
+                if (std::find(realWorkspaceIds.begin(), realWorkspaceIds.end(), id) == realWorkspaceIds.end())
+                    realWorkspaceIds.push_back(id);
+            };
+
             for (const auto& override : workspaceOverrides) {
                 if (override.monitorId != candidateMonitor->m_id || !override.syntheticEmpty || override.workspaceId == WORKSPACE_INVALID)
                     continue;
 
-                const auto overrideId = static_cast<int64_t>(override.workspaceId);
-                if (std::find(realWorkspaceIds.begin(), realWorkspaceIds.end(), overrideId) == realWorkspaceIds.end())
-                    realWorkspaceIds.push_back(overrideId);
+                appendLaneWorkspaceId(override.workspaceId);
             }
+
+            std::unordered_set<WORKSPACEID> forcedVisibleLaneIds;
+            const auto forceVisibleLaneId = [&](WORKSPACEID workspaceId) {
+                if (workspaceId == WORKSPACE_INVALID)
+                    return;
+
+                appendLaneWorkspaceId(workspaceId);
+                forcedVisibleLaneIds.insert(workspaceId);
+            };
+
+            for (const auto workspaceId : retainedDirectNiriWorkspaceLaneIds(candidateMonitor->m_id))
+                forceVisibleLaneId(workspaceId);
+
+            if (preserveExistingOrder && isVisible()) {
+                if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == candidateMonitor)
+                    forceVisibleLaneId(m_state.ownerWorkspace->m_id);
+
+                for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+                    if (placeholder.monitor == candidateMonitor && placeholder.workspaceId != WORKSPACE_INVALID && !placeholder.backingOnly)
+                        forceVisibleLaneId(placeholder.workspaceId);
+                }
+            }
+
+            std::sort(realWorkspaceIds.begin(), realWorkspaceIds.end());
+            realWorkspaceIds.erase(std::unique(realWorkspaceIds.begin(), realWorkspaceIds.end()), realWorkspaceIds.end());
 
             const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
                 realWorkspaceIds,
@@ -5521,6 +5624,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 auto& visibleWorkspaceIds = directNiriVisibleWorkspaceIdsByMonitor[candidateMonitor->m_id];
                 for (std::size_t index = contextFirstIndex; index <= contextLastIndex; ++index)
                     visibleWorkspaceIds.insert(static_cast<WORKSPACEID>(laneWorkspaceIds[index]));
+
+                for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
+                    const auto workspaceId = static_cast<WORKSPACEID>(laneWorkspaceIds[index]);
+                    if (!forcedVisibleLaneIds.contains(workspaceId))
+                        continue;
+
+                    firstPlaceholderIndex = std::min(firstPlaceholderIndex, index);
+                    lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
+                    visibleWorkspaceIds.insert(workspaceId);
+                }
             } else {
                 const auto monitorWindowsIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
                 const auto hasWindowOnWorkspace = [&](WORKSPACEID workspaceId) {
