@@ -773,7 +773,6 @@ std::unordered_map<const void*, PendingTwoColumnSwapRepairState> g_pendingTwoCol
 struct RetainedDirectNiriWorkspaceLane {
     WORKSPACEID workspaceId = WORKSPACE_INVALID;
     std::string workspaceName;
-    std::chrono::steady_clock::time_point until;
 };
 
 std::unordered_map<MONITORID, std::vector<RetainedDirectNiriWorkspaceLane>> g_retainedDirectNiriWorkspaceLanes;
@@ -783,7 +782,6 @@ void retainDirectNiriWorkspaceLaneId(const PHLMONITOR& monitor, WORKSPACEID work
         return;
 
     auto& lanes = g_retainedDirectNiriWorkspaceLanes[monitor->m_id];
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(30000);
     const auto it = std::find_if(lanes.begin(), lanes.end(), [&](const RetainedDirectNiriWorkspaceLane& lane) {
         return lane.workspaceId == workspaceId;
     });
@@ -791,18 +789,13 @@ void retainDirectNiriWorkspaceLaneId(const PHLMONITOR& monitor, WORKSPACEID work
     if (it != lanes.end()) {
         if (!workspaceName.empty())
             it->workspaceName = std::move(workspaceName);
-        it->until = until;
         return;
     }
 
     lanes.push_back({
         .workspaceId = workspaceId,
         .workspaceName = std::move(workspaceName),
-        .until = until,
     });
-
-    if (lanes.size() > 16)
-        lanes.erase(lanes.begin(), lanes.begin() + static_cast<long>(lanes.size() - 16));
 }
 
 void retainDirectNiriWorkspaceLane(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace) {
@@ -818,10 +811,9 @@ std::vector<WORKSPACEID> retainedDirectNiriWorkspaceLaneIds(MONITORID monitorId)
     if (it == g_retainedDirectNiriWorkspaceLanes.end())
         return ids;
 
-    const auto now = std::chrono::steady_clock::now();
     auto& lanes = it->second;
-    lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [&](const RetainedDirectNiriWorkspaceLane& lane) {
-                    return lane.workspaceId == WORKSPACE_INVALID || now > lane.until;
+    lanes.erase(std::remove_if(lanes.begin(), lanes.end(), [](const RetainedDirectNiriWorkspaceLane& lane) {
+                    return lane.workspaceId == WORKSPACE_INVALID;
                 }),
                 lanes.end());
 
@@ -833,6 +825,10 @@ std::vector<WORKSPACEID> retainedDirectNiriWorkspaceLaneIds(MONITORID monitorId)
         g_retainedDirectNiriWorkspaceLanes.erase(it);
 
     return ids;
+}
+
+void clearRetainedDirectNiriWorkspaceLanes() {
+    g_retainedDirectNiriWorkspaceLanes.clear();
 }
 
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
@@ -3150,19 +3146,27 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     const auto sourceWorkspace = movedWindow ? movedWindow->m_workspace : PHLWORKSPACE{};
     const auto sourceMonitor = sourceWorkspace ? sourceWorkspace->m_monitor.lock() : PHLMONITOR{};
     const auto targetSpec = getWorkspaceIDNameFromString(workspaceArgs);
-    const auto targetWorkspace = targetSpec.id == WORKSPACE_INVALID ? PHLWORKSPACE{} : g_pCompositor->getWorkspaceByID(targetSpec.id);
-    const auto targetMonitor = targetWorkspace ? targetWorkspace->m_monitor.lock() : PHLMONITOR{};
     const auto silentDispatcher = m_overviewEditingDispatchersOriginal.find("movetoworkspacesilent");
-    const bool canOwnWorkspaceTransition = movedWindow && movedWindow->m_isMapped && hasManagedWindow(movedWindow) && sourceWorkspace &&
-        targetWorkspace && !targetWorkspace->m_isSpecialWorkspace && sourceWorkspace != targetWorkspace && sourceMonitor && targetMonitor &&
-        sourceMonitor == targetMonitor && sourceMonitor == m_state.ownerMonitor && silentDispatcher != m_overviewEditingDispatchersOriginal.end();
+    const bool canPrepareWorkspaceTransition = movedWindow && movedWindow->m_isMapped && hasManagedWindow(movedWindow) && sourceWorkspace && sourceMonitor &&
+        sourceMonitor == m_state.ownerMonitor && targetSpec.id != WORKSPACE_INVALID && !targetSpec.name.starts_with("special:") &&
+        silentDispatcher != m_overviewEditingDispatchersOriginal.end();
+    if (!canPrepareWorkspaceTransition)
+        return std::nullopt;
+
+    auto       targetWorkspace = targetSpec.id == WORKSPACE_INVALID ? PHLWORKSPACE{} : g_pCompositor->getWorkspaceByID(targetSpec.id);
+    if (!targetWorkspace && sourceMonitor && targetSpec.id != WORKSPACE_INVALID && !targetSpec.name.starts_with("special:")) {
+        const std::string targetName = targetSpec.name.empty() ? std::to_string(targetSpec.id) : targetSpec.name;
+        targetWorkspace = g_pCompositor->createNewWorkspace(targetSpec.id, sourceMonitor->m_id, targetName, false);
+    }
+    const auto targetMonitor = targetWorkspace ? targetWorkspace->m_monitor.lock() : PHLMONITOR{};
+    const bool canOwnWorkspaceTransition = targetWorkspace && !targetWorkspace->m_isSpecialWorkspace && sourceWorkspace != targetWorkspace && targetMonitor &&
+        sourceMonitor == targetMonitor;
     if (!canOwnWorkspaceTransition)
         return std::nullopt;
 
     // Hyprland can destroy the source workspace immediately when its last
-    // window is moved out.  Keep that lane alive as a synthetic overview
-    // placeholder for the source/target transition and the first post-move
-    // active frame, otherwise the previous workspace visually disappears.
+    // window is moved out. Keep that lane alive as a synthetic overview
+    // placeholder until overview closes, otherwise later rebuilds drop it.
     niri_scrolling_detail::retainDirectNiriWorkspaceLane(sourceMonitor, sourceWorkspace);
 
     const auto* previousManaged = managedWindowFor(m_state, movedWindow, true);
@@ -3172,18 +3176,15 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     m_state.focusDuringOverview = movedWindow;
     if (Desktop::focusState()->window() != movedWindow)
         focusWindowCompat(movedWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+    State sourceState = captureOverviewWorkspaceTransitionSourceState();
 
     const auto result = silentDispatcher->second(args);
     if (!result.success)
         return result;
 
-    PHLWINDOW sourceFocus = Desktop::focusState()->window();
-    if (!sourceFocus || !sourceFocus->m_isMapped || sourceFocus->m_workspace != sourceWorkspace)
-        sourceFocus = focusCandidateForWorkspace(sourceWorkspace);
-    refreshVisibleStateMetadata(sourceFocus);
-
+    targetWorkspace->m_lastFocusedWindow = movedWindow;
     if (!beginOverviewWorkspaceTransition(sourceMonitor, targetWorkspace->m_id, targetWorkspace->m_name, targetWorkspace, false,
-                                          WorkspaceTransitionMode::TimedCommit))
+                                          WorkspaceTransitionMode::TimedCommit, std::move(sourceState), movedWindow))
         return result;
 
     const auto targetManaged = std::find_if(m_workspaceTransition.targetState.windows.begin(), m_workspaceTransition.targetState.windows.end(),
@@ -4251,6 +4252,9 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
     if (!workspace || !workspace->m_space || !isScrollingWorkspace(workspace))
         return std::nullopt;
 
+    if (!window.window->m_pinned && !window.isPinned && window.targetMonitor->m_activeWorkspace != workspace)
+        return window.targetGlobal;
+
     const auto placeholder = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
                                           [&](const EmptyWorkspacePlaceholder& candidate) {
                                               return candidate.backingOnly && candidate.monitor == window.targetMonitor &&
@@ -4270,6 +4274,10 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
         return std::nullopt;
 
     return transformed;
+}
+
+void OverviewController::resetDirectNiriWorkspaceLanes() {
+    niri_scrolling_detail::clearRetainedDirectNiriWorkspaceLanes();
 }
 
 Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {

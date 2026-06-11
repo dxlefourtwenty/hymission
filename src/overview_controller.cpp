@@ -5587,21 +5587,7 @@ bool OverviewController::beginOverviewWorkspaceSwipeGesture(eTrackpadGestureDire
     return true;
 }
 
-bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName, PHLWORKSPACE workspace,
-                                                         bool syntheticEmpty, WorkspaceTransitionMode mode) {
-    if (!monitor || !isVisible() || m_state.phase != Phase::Active)
-        return false;
-
-    if (m_state.relayoutActive) {
-        for (auto& managed : m_state.windows) {
-            managed.targetGlobal = currentPreviewRect(managed);
-            managed.relayoutFromGlobal = managed.targetGlobal;
-        }
-        m_state.relayoutActive = false;
-        m_state.relayoutProgress = 1.0;
-        m_state.relayoutStart = {};
-    }
-
+OverviewController::State OverviewController::captureOverviewWorkspaceTransitionSourceState() const {
     State source = m_state;
     source.phase = Phase::Active;
     source.relayoutActive = false;
@@ -5612,6 +5598,26 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             managed.targetGlobal = currentPreviewRect(*currentManaged);
         managed.relayoutFromGlobal = managed.targetGlobal;
     }
+    return source;
+}
+
+bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName, PHLWORKSPACE workspace,
+                                                         bool syntheticEmpty, WorkspaceTransitionMode mode, std::optional<State> sourceStateOverride,
+                                                         PHLWINDOW preferredTargetFocus) {
+    if (!monitor || !isVisible() || m_state.phase != Phase::Active)
+        return false;
+
+    if (!sourceStateOverride && m_state.relayoutActive) {
+        for (auto& managed : m_state.windows) {
+            managed.targetGlobal = currentPreviewRect(managed);
+            managed.relayoutFromGlobal = managed.targetGlobal;
+        }
+        m_state.relayoutActive = false;
+        m_state.relayoutProgress = 1.0;
+        m_state.relayoutStart = {};
+    }
+
+    State source = sourceStateOverride ? std::move(*sourceStateOverride) : captureOverviewWorkspaceTransitionSourceState();
 
     const auto anchorMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : monitor;
     std::vector<WorkspaceOverride> overrides = {{
@@ -5622,7 +5628,9 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .syntheticEmpty = syntheticEmpty,
     }};
 
-    const auto targetFocus = focusCandidateForWorkspace(workspace);
+    const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
+        preferredTargetFocus :
+        focusCandidateForWorkspace(workspace);
     State      target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
     if (target.participatingMonitors.empty())
         return false;
@@ -8618,12 +8626,26 @@ bool OverviewController::activateWorkspaceForExit(const PHLWORKSPACE& workspace)
     return !alreadyActive;
 }
 
+void OverviewController::normalizeDirectNiriWorkspaceActivation(const PHLWORKSPACE& workspace) const {
+    if (!workspace || !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(workspace))
+        return;
+
+    const auto monitor = workspace->m_monitor.lock();
+    if (!monitor)
+        return;
+
+    workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+    workspace->m_alpha->setValueAndWarp(1.F);
+    g_layoutManager->recalculateMonitor(monitor);
+}
+
 void OverviewController::commitOverviewExitFocus(const PHLWINDOW& window) {
     if (!window || !window->m_isMapped)
         return;
 
     const bool alreadyFocused = Desktop::focusState()->window() == window;
     const bool activatedWorkspace = activateWindowWorkspaceForFocus(window);
+    normalizeDirectNiriWorkspaceActivation(window->m_workspace);
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -9497,7 +9519,10 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_postCloseOpenDebounceUntil = {};
 
     const auto buildStart = std::chrono::steady_clock::now();
-    const double fromVisual = isVisible() ? visualProgress() : 0.0;
+    const bool freshOpen = !isVisible();
+    const double fromVisual = freshOpen ? 0.0 : visualProgress();
+    if (freshOpen)
+        resetDirectNiriWorkspaceLanes();
     clearOverviewWorkspaceTransition();
     m_workspaceSwipeGesture = {};
     m_pendingSwapColumnRelayoutCommitWorkspace.reset();
@@ -10109,6 +10134,7 @@ void OverviewController::deactivate() {
         m_surfaceFeedbackOverrideActive = false;
     }
     m_lastStripThemeColorValid = false;
+    resetDirectNiriWorkspaceLanes();
     m_state = {};
     for (const auto& ownedMonitor : ownedMonitors) {
         g_pHyprRenderer->damageMonitor(ownedMonitor);

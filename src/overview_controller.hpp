@@ -623,7 +623,10 @@ class OverviewController {
     [[nodiscard]] bool         resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& monitor, int step, WORKSPACEID& workspaceId, std::string& workspaceName,
                                                                     PHLWORKSPACE& workspace, bool& syntheticEmpty) const;
     [[nodiscard]] bool         beginOverviewWorkspaceTransition(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName, PHLWORKSPACE workspace,
-                                                               bool syntheticEmpty, WorkspaceTransitionMode mode);
+                                                               bool syntheticEmpty, WorkspaceTransitionMode mode,
+                                                               std::optional<State> sourceStateOverride = std::nullopt,
+                                                               PHLWINDOW preferredTargetFocus = {});
+    [[nodiscard]] State        captureOverviewWorkspaceTransitionSourceState() const;
     [[nodiscard]] bool         beginExternalOverviewWorkspaceTransition(const PHLWORKSPACE& workspace);
     [[nodiscard]] bool         startOverviewWorkspaceTransitionByStep(const PHLMONITOR& monitor, int step, WorkspaceTransitionMode mode);
     void                       updateOverviewWorkspaceTransition();
@@ -644,6 +647,7 @@ class OverviewController {
     void                                        clearHiddenStripLayerProxies();
     void                                        syncHiddenStripLayerProxies();
     void                                        clearNiriWallpaperSnapshots();
+    void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
@@ -693,6 +697,7 @@ class OverviewController {
     [[nodiscard]] bool         shouldClearWorkspaceFullscreenForExitTarget(const PHLWINDOW& window) const;
     [[nodiscard]] bool         activateWindowWorkspaceForFocus(const PHLWINDOW& window) const;
     [[nodiscard]] bool         activateWorkspaceForExit(const PHLWORKSPACE& workspace) const;
+    void                       normalizeDirectNiriWorkspaceActivation(const PHLWORKSPACE& workspace) const;
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const;
