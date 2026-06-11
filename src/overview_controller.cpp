@@ -6174,7 +6174,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
                 placeholderRelayoutChanged = true;
         }
 
-        clearOverviewWorkspaceTransition(targetWorkspace);
+        clearOverviewWorkspaceTransition(targetWorkspace, false);
         const bool stripRelayoutChanged = carryOverWorkspaceStripRelayout(next, m_state);
         carryOverWorkspaceStripSnapshots(next, m_state);
         if (stripRelayoutChanged || placeholderRelayoutChanged) {
@@ -6215,6 +6215,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     } else {
         updateHoveredFromPointer(false, false, false, false, "workspace-transition-commit");
     }
+    startNextQueuedOverviewWorkspaceTransition();
     damageOwnedMonitors();
 }
 
@@ -6372,7 +6373,7 @@ void OverviewController::restoreOverviewRenderState() {
     m_overviewRenderStateBackups.clear();
 }
 
-void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace) {
+void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace, bool clearPendingRequests) {
     m_workspaceTransitionAnimation.reset();
     restoreWorkspaceTransitionRenderState(committedWorkspace);
     clearPendingWindowGeometryRetry();
@@ -6380,11 +6381,33 @@ void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& co
     m_pendingWorkspaceTransitionCommitFollowGesture = false;
     ++m_workspaceTransitionCommitGeneration;
     m_workspaceTransition = {};
+    if (clearPendingRequests)
+        m_pendingWorkspaceTransitionRequests.clear();
+}
+
+void OverviewController::startNextQueuedOverviewWorkspaceTransition() {
+    while (!m_workspaceTransition.active && !m_pendingWorkspaceTransitionRequests.empty()) {
+        auto request = std::move(m_pendingWorkspaceTransitionRequests.front());
+        m_pendingWorkspaceTransitionRequests.pop_front();
+        (void)startOverviewWorkspaceTransitionForDispatcher(request.args, request.currentMonitorOnly);
+    }
 }
 
 SDispatchResult OverviewController::startOverviewWorkspaceTransitionForDispatcher(const std::string& args, bool currentMonitorOnly) {
-    if (m_workspaceTransition.active)
+    if (m_workspaceTransition.active) {
+        m_pendingWorkspaceTransitionRequests.push_back({
+            .args = args,
+            .currentMonitorOnly = currentMonitorOnly,
+        });
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] queue overview workspace transition args=" << args
+                << " currentMonitorOnly=" << (currentMonitorOnly ? 1 : 0)
+                << " pending=" << m_pendingWorkspaceTransitionRequests.size();
+            debugLog(out.str());
+        }
         return {};
+    }
 
     if (m_state.phase != Phase::Active)
         return {};

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -373,6 +374,11 @@ class OverviewController {
         std::chrono::steady_clock::time_point  animationStart = {};
     };
 
+    struct WorkspaceTransitionRequest {
+        std::string args;
+        bool        currentMonitorOnly = false;
+    };
+
     struct WorkspaceTransitionRenderStateBackup {
         PHLWORKSPACE workspace;
         bool         visible = false;
@@ -633,7 +639,8 @@ class OverviewController {
     void                       updateOverviewWorkspaceTransition();
     void                       requestOverviewWorkspaceTransitionCommit(bool followGesture = false, bool forceSync = false);
     void                       commitOverviewWorkspaceTransition(bool followGesture = false, bool forceSync = false);
-    void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {});
+    void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {}, bool clearPendingRequests = true);
+    void                       startNextQueuedOverviewWorkspaceTransition();
     void                       armWorkspaceTransitionRenderState();
     void                       restoreWorkspaceTransitionRenderState(const PHLWORKSPACE& committedWorkspace = {});
     void                       armOverviewRenderState(const State& state);
@@ -950,6 +957,7 @@ class OverviewController {
     ScrollGestureSession      m_scrollGestureSession;
     WorkspaceSwipeGestureContext m_workspaceSwipeGesture;
     WorkspaceTransition      m_workspaceTransition;
+    std::deque<WorkspaceTransitionRequest> m_pendingWorkspaceTransitionRequests;
     std::vector<WorkspaceTransitionRenderStateBackup> m_workspaceTransitionRenderStateBackups;
     std::vector<WorkspaceTransitionRenderStateBackup> m_overviewRenderStateBackups;
     StripPreviewContext      m_stripPreviewContext;
