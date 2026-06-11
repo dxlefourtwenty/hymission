@@ -9124,6 +9124,39 @@ void OverviewController::clearPendingWindowGeometryRetry() {
     ++m_pendingWindowGeometryRetryGeneration;
 }
 
+std::vector<std::pair<PHLWINDOW, Rect>> OverviewController::captureCurrentPreviewRects() const {
+    std::vector<std::pair<PHLWINDOW, Rect>> previewRects;
+    previewRects.reserve(m_state.windows.size());
+    for (const auto& managed : m_state.windows) {
+        if (managed.window)
+            previewRects.emplace_back(managed.window, currentPreviewRect(managed));
+    }
+    return previewRects;
+}
+
+void OverviewController::restoreWorkspaceTransitionSourcePreviewRects(const std::vector<std::pair<PHLWINDOW, Rect>>& previewRects) {
+    if (!m_workspaceTransition.active || previewRects.empty())
+        return;
+
+    std::size_t restored = 0;
+    for (auto& managed : m_workspaceTransition.sourceState.windows) {
+        const auto previous = std::find_if(previewRects.begin(), previewRects.end(),
+                                           [&](const auto& candidate) { return candidate.first == managed.window; });
+        if (previous == previewRects.end())
+            continue;
+
+        managed.targetGlobal = previous->second;
+        managed.relayoutFromGlobal = previous->second;
+        ++restored;
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] restored workspace-move transition source previews count=" << restored;
+        debugLog(out.str());
+    }
+}
+
 void OverviewController::scheduleVisibleStateRebuild() {
     if (m_visibleStateRebuildScheduled)
         return;

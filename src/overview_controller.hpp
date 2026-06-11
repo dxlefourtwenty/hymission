@@ -743,6 +743,8 @@ class OverviewController {
     void updateAnimation();
     void updateHoveredFromPointer(bool syncSelection = true, bool syncRealFocus = true, bool syncScrollingSpot = true, bool allowSelectionRetarget = false,
                                   const char* source = "?");
+    [[nodiscard]] std::vector<std::pair<PHLWINDOW, Rect>> captureCurrentPreviewRects() const;
+    void restoreWorkspaceTransitionSourcePreviewRects(const std::vector<std::pair<PHLWINDOW, Rect>>& previewRects);
     void refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow = {});
     void rebuildVisibleState(PHLWINDOW preferredSelectedWindow = {}, bool forceRelayout = false);
     void moveSelection(Direction direction);

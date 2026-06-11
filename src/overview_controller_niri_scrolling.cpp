@@ -3052,6 +3052,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
+    const bool isMoveToWorkspaceDispatcher =
+        dispatcherNameLower == "movetoworkspace" || dispatcherNameLower == "movetoworkspacesilent";
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
@@ -3071,6 +3073,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     if (directLiveGeometryAvailable) {
         const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
+        const auto workspaceBeforeMove = isMoveToWorkspaceDispatcher && selectedBefore ? selectedBefore->m_workspace : PHLWORKSPACE{};
+        const bool workspaceTransitionActiveBeforeDispatch = m_workspaceTransition.active;
+        const auto previewRectsBeforeMove =
+            isMoveToWorkspaceDispatcher && !workspaceTransitionActiveBeforeDispatch ? captureCurrentPreviewRects() : std::vector<std::pair<PHLWINDOW, Rect>>{};
         PHLWINDOW dispatchFocus = selectedBefore;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = m_state.focusDuringOverview;
@@ -3087,6 +3093,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         const auto result = (*original)(std::move(args));
         if (!result.success)
             return result;
+
+        if (!workspaceTransitionActiveBeforeDispatch && m_workspaceTransition.active && selectedBefore && workspaceBeforeMove &&
+            selectedBefore->m_workspace != workspaceBeforeMove)
+            restoreWorkspaceTransitionSourcePreviewRects(previewRectsBeforeMove);
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         if (!preferred || !preferred->m_isMapped)
