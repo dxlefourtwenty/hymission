@@ -1316,8 +1316,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     std::array<TwoColumnRefreshGroup, 2> refreshGroups{};
     std::unordered_map<PHLWINDOW, TwoColumnRefreshOrigin> refreshOrigins;
     const bool swapColumnFreezeActive = swapColumnBackendPreviewFreezeActiveFor(workspace);
-    const bool captureTwoColumnRefresh = !swapColumnFreezeActive && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 && scrolling && scrolling->m_scrollingData &&
-        scrolling->m_scrollingData->columns.size() == 2;
+    const bool captureTwoColumnRefresh = !previousPreviewRects && !swapColumnFreezeActive && usesDirectNiriScrollingOverview(m_state) && columnCount == 2 &&
+        scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
     const bool forceSameFocusTwoColumnSwap = captureTwoColumnRefresh && consumePendingTwoColumnSwapRepair(workspace);
     const auto expandRefreshGroupBounds = [](TwoColumnRefreshGroup& group, const Rect& rect) {
         if (!group.hasBounds) {
