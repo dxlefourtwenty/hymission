@@ -3941,7 +3941,8 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
-    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor)) {
+    const bool nativeBorderHandoff = m_deactivatePending && usesDirectNiriScrollingOverview(m_state);
+    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor) || nativeBorderHandoff) {
         m_borderDrawOriginal(borderDecorationThisptr, monitor, alpha);
         return;
     }
@@ -11889,8 +11890,11 @@ void OverviewController::renderSelectionChrome() const {
         }
     }
 
-    renderInactiveWindowBorders(m_state, progress, false);
-    renderFocusedWindowBorder(m_state, progress, false);
+    const bool closingDirectNiriOverview =
+        usesDirectNiriScrollingOverview(m_state) && (m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing);
+    const double borderProgress = closingDirectNiriOverview ? 1.0 : progress;
+    renderInactiveWindowBorders(m_state, borderProgress, false);
+    renderFocusedWindowBorder(m_state, borderProgress, false);
 
     if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
         const auto& window = m_state.windows[*m_draggedWindowIndex];
