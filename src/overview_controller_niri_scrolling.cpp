@@ -1896,6 +1896,11 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
     if (const auto directNiriFocus = directNiriFocusedOverviewWindow(m_state); directNiriFocus)
         return directNiriFocus;
 
+    if (usesDirectNiriScrollingOverview(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.focusDuringOverview &&
+        m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace &&
+        !m_state.focusDuringOverview->m_workspace->m_isSpecialWorkspace && isScrollingWorkspace(m_state.focusDuringOverview->m_workspace))
+        return m_state.focusDuringOverview;
+
     const auto focusDuringOverview = m_state.focusDuringOverview && hasManagedWindow(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
     const auto selected = selectedWindow();
     const auto hovered = hoveredWindow();
@@ -5083,6 +5088,17 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
         if (stripActiveWorkspace && !stripActiveWorkspace->m_isSpecialWorkspace && !containsHandle(normalWorkspaces, stripActiveWorkspace))
             normalWorkspaces.push_back(stripActiveWorkspace);
 
+        if (singleWorkspaceScrollingNiri) {
+            for (const auto& window : g_pCompositor->m_windows) {
+                if (!window || !window->m_isMapped || window->m_fadingOut || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace)
+                    continue;
+
+                const auto workspaceMonitor = window->m_workspace->m_monitor.lock();
+                if (workspaceMonitor == monitor && !containsHandle(normalWorkspaces, window->m_workspace))
+                    normalWorkspaces.push_back(window->m_workspace);
+            }
+        }
+
         std::stable_sort(normalWorkspaces.begin(), normalWorkspaces.end(), [](const PHLWORKSPACE& lhs, const PHLWORKSPACE& rhs) {
             if (!lhs || !rhs)
                 return static_cast<bool>(lhs);
@@ -5630,6 +5646,31 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const auto workspaceMonitor = workspace->m_monitor.lock();
                 if (workspaceMonitor == candidateMonitor)
                     monitorWorkspaces.push_back(workspace);
+            }
+
+            for (const auto& workspace : g_pCompositor->getWorkspacesCopy()) {
+                if (!workspace || workspace->m_isSpecialWorkspace)
+                    continue;
+
+                const auto workspaceMonitor = workspace->m_monitor.lock();
+                if (workspaceMonitor == candidateMonitor && !containsHandle(monitorWorkspaces, workspace))
+                    monitorWorkspaces.push_back(workspace);
+            }
+
+            for (const auto& window : g_pCompositor->m_windows) {
+                if (!window || !window->m_isMapped || window->m_fadingOut || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace)
+                    continue;
+
+                const auto workspaceMonitor = window->m_workspace->m_monitor.lock();
+                if (workspaceMonitor == candidateMonitor && !containsHandle(monitorWorkspaces, window->m_workspace))
+                    monitorWorkspaces.push_back(window->m_workspace);
+            }
+
+            if (monitorWorkspaces.empty()) {
+                if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == candidateMonitor && !state.ownerWorkspace->m_isSpecialWorkspace)
+                    monitorWorkspaces.push_back(state.ownerWorkspace);
+                else if (candidateMonitor->m_activeWorkspace && !candidateMonitor->m_activeWorkspace->m_isSpecialWorkspace)
+                    monitorWorkspaces.push_back(candidateMonitor->m_activeWorkspace);
             }
 
             std::stable_sort(monitorWorkspaces.begin(), monitorWorkspaces.end(), [](const PHLWORKSPACE& lhs, const PHLWORKSPACE& rhs) {
