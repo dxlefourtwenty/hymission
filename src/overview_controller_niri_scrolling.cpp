@@ -3039,6 +3039,72 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     }
     return result;
 }
+
+std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore) {
+    std::string workspaceArgs = args;
+    PHLWINDOW   movedWindow = selectedBefore;
+    if (const auto separator = args.find_last_of(','); separator != std::string::npos) {
+        movedWindow = g_pCompositor->getWindowByRegex(args.substr(separator + 1));
+        workspaceArgs = args.substr(0, separator);
+    }
+
+    const auto sourceWorkspace = movedWindow ? movedWindow->m_workspace : PHLWORKSPACE{};
+    const auto sourceMonitor = sourceWorkspace ? sourceWorkspace->m_monitor.lock() : PHLMONITOR{};
+    const auto targetSpec = getWorkspaceIDNameFromString(workspaceArgs);
+    const auto targetWorkspace = targetSpec.id == WORKSPACE_INVALID ? PHLWORKSPACE{} : g_pCompositor->getWorkspaceByID(targetSpec.id);
+    const auto targetMonitor = targetWorkspace ? targetWorkspace->m_monitor.lock() : PHLMONITOR{};
+    const auto silentDispatcher = m_overviewEditingDispatchersOriginal.find("movetoworkspacesilent");
+    const bool canOwnWorkspaceTransition = movedWindow && movedWindow->m_isMapped && hasManagedWindow(movedWindow) && sourceWorkspace &&
+        targetWorkspace && !targetWorkspace->m_isSpecialWorkspace && sourceWorkspace != targetWorkspace && sourceMonitor && targetMonitor &&
+        sourceMonitor == targetMonitor && sourceMonitor == m_state.ownerMonitor && silentDispatcher != m_overviewEditingDispatchersOriginal.end();
+    if (!canOwnWorkspaceTransition)
+        return std::nullopt;
+
+    const auto* previousManaged = managedWindowFor(m_state, movedWindow, true);
+    const float movedPreviewAlpha = previousManaged ? previousManaged->previewAlpha : 1.0F;
+    const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
+    selectWindowInState(m_state, movedWindow);
+    m_state.focusDuringOverview = movedWindow;
+    if (Desktop::focusState()->window() != movedWindow)
+        focusWindowCompat(movedWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+
+    const auto result = silentDispatcher->second(args);
+    if (!result.success)
+        return result;
+
+    PHLWINDOW sourceFocus = Desktop::focusState()->window();
+    if (!sourceFocus || !sourceFocus->m_isMapped || sourceFocus->m_workspace != sourceWorkspace)
+        sourceFocus = focusCandidateForWorkspace(sourceWorkspace);
+    refreshVisibleStateMetadata(sourceFocus);
+
+    if (!beginOverviewWorkspaceTransition(sourceMonitor, targetWorkspace->m_id, targetWorkspace->m_name, targetWorkspace, false,
+                                          WorkspaceTransitionMode::TimedCommit))
+        return result;
+
+    const auto targetManaged = std::find_if(m_workspaceTransition.targetState.windows.begin(), m_workspaceTransition.targetState.windows.end(),
+                                            [&](const ManagedWindow& managed) { return managed.window == movedWindow; });
+    if (targetManaged != m_workspaceTransition.targetState.windows.end()) {
+        targetManaged->previewAlpha = movedPreviewAlpha;
+        selectWindowInState(m_workspaceTransition.targetState, movedWindow);
+        m_workspaceTransition.targetState.focusDuringOverview = movedWindow;
+        m_state.focusDuringOverview = movedWindow;
+    }
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri workspace move transition"
+            << " window=" << debugWindowLabel(movedWindow)
+            << " source=" << debugWorkspaceLabel(sourceWorkspace)
+            << " target=" << debugWorkspaceLabel(targetWorkspace)
+            << " sourceWindows=" << m_workspaceTransition.sourceState.windows.size()
+            << " targetWindows=" << m_workspaceTransition.targetState.windows.size();
+        debugLog(out.str());
+    }
+
+    damageOwnedMonitors();
+    return result;
+}
+
 SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args) {
     if (!original || !*original)
         return {};
@@ -3052,8 +3118,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
-    const bool isMoveToWorkspaceDispatcher =
-        dispatcherNameLower == "movetoworkspace" || dispatcherNameLower == "movetoworkspacesilent";
+    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace";
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
@@ -3072,11 +3137,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         });
 
     if (directLiveGeometryAvailable) {
+        if (isMoveToWorkspaceDispatcher) {
+            if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore); result)
+                return *result;
+        }
+
         const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
-        const auto workspaceBeforeMove = isMoveToWorkspaceDispatcher && selectedBefore ? selectedBefore->m_workspace : PHLWORKSPACE{};
-        const bool workspaceTransitionActiveBeforeDispatch = m_workspaceTransition.active;
-        const auto previewRectsBeforeMove =
-            isMoveToWorkspaceDispatcher && !workspaceTransitionActiveBeforeDispatch ? captureCurrentPreviewRects() : std::vector<std::pair<PHLWINDOW, Rect>>{};
         PHLWINDOW dispatchFocus = selectedBefore;
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = m_state.focusDuringOverview;
@@ -3093,10 +3159,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         const auto result = (*original)(std::move(args));
         if (!result.success)
             return result;
-
-        if (!workspaceTransitionActiveBeforeDispatch && m_workspaceTransition.active && selectedBefore && workspaceBeforeMove &&
-            selectedBefore->m_workspace != workspaceBeforeMove)
-            restoreWorkspaceTransitionSourcePreviewRects(previewRectsBeforeMove);
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         if (!preferred || !preferred->m_isMapped)
