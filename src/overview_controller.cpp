@@ -3349,14 +3349,38 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
                     const auto sourceWorkspace = window->m_workspace;
                     g_pCompositor->moveWindowToWorkspaceSafe(window, targetWorkspace);
 
+                    // Niri treats a workspace move as an activation of the target workspace when
+                    // the moved window remains selected. Mirror that here before the overview
+                    // rebuilds, otherwise direct niri single-workspace mode keeps the old owner
+                    // workspace and leaves a blank lane between the old and new workspaces.
+                    targetWorkspace->m_lastFocusedWindow = window;
+                    m_pendingLiveFocusWorkspaceChangeTarget = window;
+                    (void)activateWindowWorkspaceForFocus(window);
+                    focusWindowCompat(window, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+                    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
+                        m_pendingLiveFocusWorkspaceChangeTarget.reset();
+                    recordWindowActivation(window, true);
+                    (void)syncScrollingWorkspaceSpotOnWindow(window);
+
                     commitNonScrollingWorkspaceLayout(sourceWorkspace);
                     if (targetWorkspace != sourceWorkspace)
                         commitNonScrollingWorkspaceLayout(targetWorkspace);
 
+                    if (sourceWorkspace && isScrollingWorkspace(sourceWorkspace))
+                        refreshWorkspaceLayoutSnapshot(sourceWorkspace);
+                    if (targetWorkspace && targetWorkspace != sourceWorkspace && isScrollingWorkspace(targetWorkspace))
+                        refreshWorkspaceLayoutSnapshot(targetWorkspace);
+
                     // Keep the dragged window as the overview target and force a full rebuild.
                     // Without the forced rebuild, niri-mode can keep the old lane targets when
                     // the window set is unchanged but the window's workspace/lane changed.
+                    selectWindowInState(m_state, window);
                     m_state.focusDuringOverview = window;
+                    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(targetWorkspace)) {
+                        m_state.ownerWorkspace = targetWorkspace;
+                        const auto targetMonitorForActivity = entry.monitor ? entry.monitor : targetWorkspace->m_monitor.lock();
+                        (void)refreshWorkspaceStripActivity(m_state, targetMonitorForActivity, targetWorkspace->m_id);
+                    }
                     m_queuedOverviewSelectionTarget.reset();
                     m_queuedOverviewSelectionSyncScrollingSpot = false;
                     m_queuedOverviewSelectionCenterCursor = false;
@@ -3620,7 +3644,7 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
     if (!isVisible())
         return;
 
-    if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview())
+    if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview() && kind != WindowSetChangeKind::MoveToWorkspace)
         return;
 
     if (kind == WindowSetChangeKind::MoveToWorkspace && window->m_pinned) {

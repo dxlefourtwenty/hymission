@@ -5090,6 +5090,36 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.ownerMonitor = monitor;
     state.ownerWorkspace = monitor->m_activeWorkspace;
     state.collectionPolicy = loadCollectionPolicy(requestedScope);
+
+    const auto niriOwnerWorkspaceCandidateForWindow = [&](const PHLWINDOW& candidate) -> PHLWORKSPACE {
+        if (!niriModeEnabled() || !state.collectionPolicy.onlyActiveWorkspace || g_niriStripSnapshotSingleWorkspaceOnly)
+            return {};
+        if (!candidate || !candidate->m_isMapped || candidate->m_pinned || !candidate->m_workspace || candidate->m_workspace->m_isSpecialWorkspace)
+            return {};
+
+        const auto candidateWorkspace = candidate->m_workspace;
+        if (!isScrollingWorkspace(candidateWorkspace))
+            return {};
+
+        const auto candidateMonitor = candidateWorkspace->m_monitor.lock();
+        if (candidateMonitor != monitor)
+            return {};
+
+        // While the overview is open, the selected window is allowed to become the live
+        // single-workspace owner. When opening from outside overview, only trust the
+        // focused window if Hyprland already activated its workspace; this prevents stale
+        // focus after silent workspace moves from pulling the overview to the wrong lane.
+        if (!isVisible() && monitor->m_activeWorkspace != candidateWorkspace)
+            return {};
+
+        return candidateWorkspace;
+    };
+
+    if (const auto ownerFromPreferred = niriOwnerWorkspaceCandidateForWindow(preferredSelectedWindow); ownerFromPreferred)
+        state.ownerWorkspace = ownerFromPreferred;
+    else if (const auto ownerFromFocus = niriOwnerWorkspaceCandidateForWindow(Desktop::focusState()->window()); ownerFromFocus)
+        state.ownerWorkspace = ownerFromFocus;
+
     PHLWORKSPACE stripPreviewWorkspace;
     if (g_niriStripSnapshotSingleWorkspaceOnly) {
         const auto stripOverride = std::find_if(workspaceOverrides.begin(), workspaceOverrides.end(),
@@ -5178,6 +5208,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const auto scopedPreferredWindow = windowMatchesOverviewScope(preferredSelectedWindow, state, false) ? preferredSelectedWindow : PHLWINDOW{};
     state.focusBeforeOpen = scopedFocusedWindow;
     state.focusDuringOverview = scopedPreferredWindow ? scopedPreferredWindow : scopedFocusedWindow;
+    if (!g_niriStripSnapshotSingleWorkspaceOnly && niriModeEnabled() && state.collectionPolicy.onlyActiveWorkspace && state.focusDuringOverview &&
+        !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace &&
+        !state.focusDuringOverview->m_workspace->m_isSpecialWorkspace && isScrollingWorkspace(state.focusDuringOverview->m_workspace) &&
+        state.focusDuringOverview->m_workspace->m_monitor.lock() == monitor &&
+        (isVisible() || monitor->m_activeWorkspace == state.focusDuringOverview->m_workspace))
+        state.ownerWorkspace = state.focusDuringOverview->m_workspace;
 
     const auto focusedStripWorkspaceForMonitor = [&](const PHLMONITOR& candidateMonitor) -> PHLWORKSPACE {
         if (!candidateMonitor)
@@ -5454,6 +5490,20 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
                 firstPlaceholderIndex = std::min(firstPlaceholderIndex, index);
                 lastPlaceholderIndex = std::max(lastPlaceholderIndex, index);
+            }
+
+            if (centerWorkspaceId != WORKSPACE_INVALID && activeIndex < laneWorkspaceIds.size()) {
+                constexpr std::size_t DIRECT_NIRI_WORKSPACE_CONTEXT_LANES = 1;
+                const std::size_t contextFirstIndex = activeIndex > DIRECT_NIRI_WORKSPACE_CONTEXT_LANES ? activeIndex - DIRECT_NIRI_WORKSPACE_CONTEXT_LANES : 0;
+                const std::size_t contextLastIndex = std::min(laneWorkspaceIds.size() - 1, activeIndex + DIRECT_NIRI_WORKSPACE_CONTEXT_LANES);
+
+                if (firstPlaceholderIndex == laneWorkspaceIds.size() || lastPlaceholderIndex == laneWorkspaceIds.size()) {
+                    firstPlaceholderIndex = contextFirstIndex;
+                    lastPlaceholderIndex = contextLastIndex;
+                } else {
+                    firstPlaceholderIndex = std::min(firstPlaceholderIndex, contextFirstIndex);
+                    lastPlaceholderIndex = std::max(lastPlaceholderIndex, contextLastIndex);
+                }
             }
 
             if (firstPlaceholderIndex != laneWorkspaceIds.size() && lastPlaceholderIndex != laneWorkspaceIds.size()) {
@@ -5992,6 +6042,20 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             return makeRect(targetMonitor->m_position.x, targetMonitor->m_position.y, targetMonitor->m_size.x, targetMonitor->m_size.y);
         };
 
+        const auto placeholderProxyWorkspaceForMonitor = [&](const PHLMONITOR& targetMonitor) -> PHLWORKSPACE {
+            if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace &&
+                state.focusDuringOverview->m_workspace->m_monitor.lock() == targetMonitor && isScrollingWorkspace(state.focusDuringOverview->m_workspace))
+                return state.focusDuringOverview->m_workspace;
+
+            if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == targetMonitor && isScrollingWorkspace(state.ownerWorkspace))
+                return state.ownerWorkspace;
+
+            if (targetMonitor && targetMonitor->m_activeWorkspace && isScrollingWorkspace(targetMonitor->m_activeWorkspace))
+                return targetMonitor->m_activeWorkspace;
+
+            return state.ownerWorkspace;
+        };
+
         for (const auto& workspace : state.managedWorkspaces) {
             if (!workspace || workspace->m_isSpecialWorkspace)
                 continue;
@@ -6062,13 +6126,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (const auto laneIt = niriWorkspaceLaneById.find(workspaceId); laneIt != niriWorkspaceLaneById.end())
                     content = laneIt->second;
 
-                const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, state.ownerWorkspace, content, state);
+                const auto proxyWorkspace = placeholderProxyWorkspaceForMonitor(targetMonitor);
+                const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, proxyWorkspace, content, state);
                 if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
                     continue;
 
                 const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
                                                    targetLocal.height);
-                const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
+                const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, proxyWorkspace);
                 state.emptyWorkspacePlaceholders.push_back({
                     .monitor = targetMonitor,
                     .workspace = {},
@@ -6098,13 +6163,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 continue;
 
             Rect content = overviewContentRectForMonitor(targetMonitor, state);
-            const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, state.ownerWorkspace, content, state);
+            const auto proxyWorkspace = placeholderProxyWorkspaceForMonitor(targetMonitor);
+            const Rect targetLocal = emptyOverviewPlaceholderLocalRect(targetMonitor, proxyWorkspace, content, state);
             if (targetLocal.width <= 0.0 || targetLocal.height <= 0.0)
                 continue;
 
             const Rect targetGlobal = makeRect(targetMonitor->m_position.x + targetLocal.x, targetMonitor->m_position.y + targetLocal.y, targetLocal.width,
                                                targetLocal.height);
-            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, state.ownerWorkspace);
+            const Rect sourceGlobal = placeholderSourceGlobalForWorkspace(targetMonitor, proxyWorkspace);
             state.emptyWorkspacePlaceholders.push_back({
                 .monitor = targetMonitor,
                 .workspace = {},
