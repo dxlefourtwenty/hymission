@@ -5138,7 +5138,11 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
         std::sort(workspaceIds.begin(), workspaceIds.end());
         workspaceIds.erase(std::unique(workspaceIds.begin(), workspaceIds.end()), workspaceIds.end());
 
-        const auto stripWorkspaceIds = expandWorkspaceStripWorkspaceIds(workspaceIds, emptyMode);
+        // Direct Niri overview rows must be compact and index-based, like Niri's
+        // Monitor::workspaces_render_geo().  Expanding numeric workspace ids here
+        // creates fake holes (for example 1..10), which makes the real neighboring
+        // workspaces get assigned far-away row indexes and visibly slide offscreen.
+        const auto stripWorkspaceIds = singleWorkspaceScrollingNiri ? workspaceIds : expandWorkspaceStripWorkspaceIds(workspaceIds, emptyMode);
 
         std::vector<WorkspaceStripEntry> monitorEntries;
         for (const auto rawWorkspaceId : stripWorkspaceIds) {
@@ -5761,9 +5765,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             std::sort(realWorkspaceIds.begin(), realWorkspaceIds.end());
             realWorkspaceIds.erase(std::unique(realWorkspaceIds.begin(), realWorkspaceIds.end()), realWorkspaceIds.end());
 
-            const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
-                realWorkspaceIds,
-                niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
+            // Keep Direct Niri workspace lanes compact.  Niri lays workspaces out by
+            // their vector index, not by numeric workspace id distance.  Using the
+            // strip expander here inserts every missing id between distant workspaces,
+            // so a real neighbor can become many rows away and appear to fly offscreen.
+            const auto laneWorkspaceIds = realWorkspaceIds;
             auto& syntheticLaneWorkspaceIds = niriSyntheticLaneWorkspaceIdsByMonitor[candidateMonitor->m_id];
             for (const auto rawWorkspaceId : laneWorkspaceIds) {
                 const auto workspaceId = static_cast<WORKSPACEID>(rawWorkspaceId);
