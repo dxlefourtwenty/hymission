@@ -269,7 +269,7 @@ SP<Hyprutils::Animation::SAnimationPropertyConfig> scaledAnimationConfig(
     config->overridden = true;
     config->internalBezier = values->internalBezier;
     config->internalStyle = values->internalStyle;
-    config->internalSpeed = values->internalSpeed * static_cast<float>(speedMultiplier);
+    config->internalSpeed = values->internalSpeed / static_cast<float>(speedMultiplier);
     config->internalEnabled = values->internalEnabled;
     config->pValues = config;
     config->pParentAnimation = baseConfig;
