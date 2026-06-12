@@ -3158,6 +3158,7 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         renderBackdrop();
+        renderNiriWorkspaceBackgrounds();
         renderEmptyOverviewPlaceholder(true);
         if (m_state.emptyWorkspacePlaceholders.empty())
             renderEmptyOverviewPlaceholder();
@@ -3896,8 +3897,7 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (!layerMonitor || layerMonitor != monitor || !layerResource || !layer->m_mapped || layer->m_readyToDelete)
         return false;
 
-    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && niriModeWallpaperZoomEnabled() &&
-        layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+    if (niriWallpaperZoomAppliesToMonitor(m_state, monitor) && layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
         return true;
 
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
@@ -7836,12 +7836,11 @@ void OverviewController::clearNiriWallpaperSnapshots() {
 
 void OverviewController::syncNiriWallpaperSnapshots() {
     clearNiriWallpaperSnapshots();
-    if (!niriModeWallpaperZoomEnabled() || !isVisible() || !niriModeAppliesToState(m_state) ||
-        !m_state.collectionPolicy.onlyActiveWorkspace || !g_pHyprRenderer)
+    if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state) || !g_pHyprRenderer)
         return;
 
     for (const auto& monitor : ownedMonitors()) {
-        if (!monitor)
+        if (!monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor))
             continue;
 
         PHLLS wallpaperLayer;

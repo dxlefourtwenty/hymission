@@ -492,6 +492,8 @@ class OverviewController {
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
+    [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
+    [[nodiscard]] bool         niriWallpaperZoomAppliesToMonitor(const State& state, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
     [[nodiscard]] bool         niriOverviewAnimationsEnabled() const;
     [[nodiscard]] double       niriOverviewOpenCloseSpeedMultiplier() const;
@@ -804,6 +806,8 @@ class OverviewController {
     [[nodiscard]] bool shouldHideLayerSurfaceNamespace(const PHLLS& layer, const std::string& namespaces) const;
     void renderBackdrop() const;
     [[nodiscard]] Rect emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const;
+    [[nodiscard]] Rect currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const;
+    void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;

@@ -1051,6 +1051,23 @@ bool OverviewController::niriModeShowEmptyWorkspacesBetweenEnabled() const {
 bool OverviewController::niriModeWallpaperZoomEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom", 0) != 0;
 }
+bool OverviewController::niriWallpaperZoomAppliesToState(const State& state) const {
+    return niriModeWallpaperZoomEnabled() && niriModeAppliesToState(state) && state.collectionPolicy.onlyActiveWorkspace;
+}
+bool OverviewController::niriWallpaperZoomAppliesToMonitor(const State& state, const PHLMONITOR& monitor) const {
+    if (!monitor || !niriWallpaperZoomAppliesToState(state))
+        return false;
+
+    const auto isScrollingWorkspaceOnMonitor = [&](const PHLWORKSPACE& workspace) {
+        return workspace && workspace->m_monitor.lock() == monitor && isScrollingWorkspace(workspace);
+    };
+    if (isScrollingWorkspaceOnMonitor(state.ownerWorkspace))
+        return true;
+    if (state.focusDuringOverview && isScrollingWorkspaceOnMonitor(state.focusDuringOverview->m_workspace))
+        return true;
+
+    return std::ranges::any_of(state.managedWorkspaces, isScrollingWorkspaceOnMonitor);
+}
 bool OverviewController::niriPreviewDisabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_preview_disabled", 0) != 0;
 }
@@ -4878,9 +4895,119 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
 
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
+Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
+    if (m_gestureSession.active)
+        return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
+                                          lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+
+    switch (m_state.phase) {
+        case Phase::Opening:
+            return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
+        case Phase::ClosingSettle:
+        case Phase::Closing:
+            return lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+        case Phase::Inactive:
+            return placeholder.naturalGlobal;
+        case Phase::Active:
+            break;
+    }
+
+    if (m_state.relayoutActive)
+        return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
+    return placeholder.targetGlobal;
+}
+void OverviewController::renderNiriWorkspaceBackgrounds() const {
+    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    if (!niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))
+        return;
+
+    const double phaseAlpha = clampUnit(visualProgress());
+    if (phaseAlpha <= 0.001)
+        return;
+
+    const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
+    const auto renderBackground = [&](const Rect& globalRect, double alpha) {
+        const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
+        const float renderAlpha = static_cast<float>(clampUnit(alpha));
+        if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
+            return;
+
+        if (wallpaperTexture) {
+            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
+            return;
+        }
+
+        g_pHyprOpenGL->renderRect(toBox(renderRect), CHyprColor(0.03, 0.07, 0.14, renderAlpha), {});
+    };
+
+    if (!m_workspaceTransition.active) {
+        for (const auto& background : m_state.emptyWorkspacePlaceholders) {
+            if (background.monitor == renderMonitor)
+                renderBackground(currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
+        }
+        return;
+    }
+
+    const auto transitionMonitor = m_workspaceTransition.monitor;
+    if (!transitionMonitor || transitionMonitor != renderMonitor)
+        return;
+
+    const double clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
+    const double sourceOffset = -clampedDelta;
+    const int targetDirection =
+        clampedDelta < -0.0001 ? -1 : clampedDelta > 0.0001 ? 1 : (m_workspaceTransition.step < 0 ? -1 : 1);
+    const double targetOffset = sourceOffset + static_cast<double>(targetDirection) * m_workspaceTransition.distance;
+    const double progress =
+        m_workspaceTransition.distance > 0.0 ? clampUnit(std::abs(clampedDelta) / m_workspaceTransition.distance) : 1.0;
+    const auto translated = [&](const Rect& rect, double offset) {
+        return m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? translateRect(rect, 0.0, offset) :
+                                                                                translateRect(rect, offset, 0.0);
+    };
+    const auto backgroundForWorkspace = [&](const State& state, WORKSPACEID workspaceId) -> const EmptyWorkspacePlaceholder* {
+        const auto it = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
+                                     [&](const EmptyWorkspacePlaceholder& background) {
+                                         return background.monitor == renderMonitor && background.workspaceId == workspaceId;
+                                     });
+        return it == state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+    };
+
+    std::unordered_set<WORKSPACEID> workspaceIds;
+    for (const auto& background : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders) {
+        if (background.monitor == renderMonitor)
+            workspaceIds.insert(background.workspaceId);
+    }
+    for (const auto& background : m_workspaceTransition.targetState.emptyWorkspacePlaceholders) {
+        if (background.monitor == renderMonitor)
+            workspaceIds.insert(background.workspaceId);
+    }
+
+    for (const auto workspaceId : workspaceIds) {
+        const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, workspaceId);
+        const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, workspaceId);
+        if (!source && !target)
+            continue;
+
+        Rect backgroundRect;
+        double alpha = phaseAlpha;
+        if (source && target) {
+            backgroundRect = lerpRect(translated(source->targetGlobal, sourceOffset), translated(target->targetGlobal, targetOffset), progress);
+        } else if (source) {
+            backgroundRect = translated(source->targetGlobal, sourceOffset);
+            alpha *= 1.0 - progress;
+        } else {
+            backgroundRect = translated(target->targetGlobal, targetOffset);
+            alpha *= progress;
+        }
+
+        renderBackground(backgroundRect, alpha);
+    }
+}
 void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
+        return;
+
+    if (niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))
         return;
 
     if (!shouldRenderEmptyOverviewPlaceholder(m_state, renderMonitor))
@@ -4889,43 +5016,15 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
     const double progress = visualProgress();
     const double phaseAlpha = clampUnit(progress);
     constexpr double PLACEHOLDER_BASE_ALPHA = 0.24;
-    const auto wallpaperTexture = niriModeWallpaperZoomEnabled() ? niriWallpaperTextureForMonitor(renderMonitor) : nullptr;
     const auto renderWorkspaceBackground = [&](const Rect& rect, double alpha) {
         if (rect.width <= 0.0 || rect.height <= 0.0 || alpha <= 0.001)
             return;
-
-        if (wallpaperTexture) {
-            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(rect), {.a = static_cast<float>(clampUnit(alpha))});
-            return;
-        }
 
         g_pHyprOpenGL->renderRect(toBox(rect), CHyprColor(0.03, 0.07, 0.14, alpha * PLACEHOLDER_BASE_ALPHA),
                                   {.blur = true, .blurA = static_cast<float>(clampUnit(alpha))});
     };
     if (progress <= 0.0 && m_state.phase != Phase::Opening && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle)
         return;
-
-    const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& placeholder) {
-        if (m_gestureSession.active)
-            return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
-                                              lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
-
-        switch (m_state.phase) {
-            case Phase::Opening:
-                return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
-            case Phase::ClosingSettle:
-            case Phase::Closing:
-                return lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
-            case Phase::Inactive:
-                return placeholder.naturalGlobal;
-            case Phase::Active:
-                break;
-        }
-
-        if (m_state.phase == Phase::Active && m_state.relayoutActive)
-            return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
-        return placeholder.targetGlobal;
-    };
 
     bool renderedStatePlaceholder = false;
     if (!backingOnlyPass && m_workspaceTransition.active) {
@@ -4992,7 +5091,7 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
             if (placeholder.backingOnly != backingOnlyPass || !placeholder.monitor || placeholder.monitor != renderMonitor)
                 continue;
 
-            const Rect targetLocal = rectToMonitorLocal(currentPlaceholderRect(placeholder), renderMonitor);
+            const Rect targetLocal = rectToMonitorLocal(currentEmptyWorkspacePlaceholderRect(placeholder), renderMonitor);
             const Rect placeholderRender = scaleRectForRender(targetLocal, renderMonitor);
             if (placeholderRender.width <= 0.0 || placeholderRender.height <= 0.0)
                 continue;
