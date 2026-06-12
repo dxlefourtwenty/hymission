@@ -359,6 +359,29 @@ std::vector<int64_t> expandWorkspaceStripWorkspaceIds(const std::vector<int64_t>
     return expanded;
 }
 
+std::optional<std::pair<int64_t, int64_t>>
+    niriEmptyWorkspacePlaceholderRange(const std::vector<int64_t>& laneWorkspaceIds, const std::vector<int64_t>& occupiedWorkspaceIds,
+                                       std::optional<int64_t> visitedWorkspaceId) {
+    std::optional<std::size_t> firstAnchor;
+    std::optional<std::size_t> lastAnchor;
+
+    for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
+        const int64_t workspaceId = laneWorkspaceIds[index];
+        const bool occupied = std::find(occupiedWorkspaceIds.begin(), occupiedWorkspaceIds.end(), workspaceId) != occupiedWorkspaceIds.end();
+        if (!occupied && visitedWorkspaceId != workspaceId)
+            continue;
+
+        if (!firstAnchor)
+            firstAnchor = index;
+        lastAnchor = index;
+    }
+
+    if (!firstAnchor || !lastAnchor)
+        return std::nullopt;
+
+    return std::pair{laneWorkspaceIds[*firstAnchor], laneWorkspaceIds[*lastAnchor]};
+}
+
 WorkspaceStripReservation reserveWorkspaceStripBand(const Rect& monitorArea, WorkspaceStripAnchor anchor, double thickness, double gap) {
     const Rect monitor = clampRectSize(monitorArea);
     const bool horizontal = isWorkspaceStripHorizontal(anchor);

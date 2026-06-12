@@ -3200,11 +3200,15 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     if (!result.success)
         return result;
 
+    (void)removeOccupiedWorkspacePlaceholder(sourceState, movedWindow);
+    (void)removeOccupiedWorkspacePlaceholder(m_state, movedWindow);
     targetWorkspace->m_lastFocusedWindow = movedWindow;
     if (!beginOverviewWorkspaceTransition(sourceMonitor, targetWorkspace->m_id, targetWorkspace->m_name, targetWorkspace, false,
                                           WorkspaceTransitionMode::TimedCommit, std::move(sourceState), movedWindow))
         return result;
 
+    (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.sourceState, movedWindow);
+    (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.targetState, movedWindow);
     const auto targetManaged = std::find_if(m_workspaceTransition.targetState.windows.begin(), m_workspaceTransition.targetState.windows.end(),
                                             [&](const ManagedWindow& managed) { return managed.window == movedWindow; });
     if (targetManaged != m_workspaceTransition.targetState.windows.end()) {
@@ -4305,6 +4309,19 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
 
 void OverviewController::resetDirectNiriWorkspaceLanes() {
     niri_scrolling_detail::clearRetainedDirectNiriWorkspaceLanes();
+}
+
+bool OverviewController::removeOccupiedWorkspacePlaceholder(State& state, const PHLWINDOW& window) const {
+    if (!window || window->m_pinned || !window->m_workspace)
+        return false;
+
+    const auto workspace = window->m_workspace;
+    const auto monitor = workspace->m_monitor.lock();
+    const auto previousSize = state.emptyWorkspacePlaceholders.size();
+    std::erase_if(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+        return !placeholder.backingOnly && placeholder.workspaceId == workspace->m_id && (!monitor || placeholder.monitor == monitor);
+    });
+    return state.emptyWorkspacePlaceholders.size() != previousSize;
 }
 
 Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
@@ -5675,6 +5692,20 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     std::unordered_map<MONITORID, std::pair<WORKSPACEID, WORKSPACEID>> placeholderRangeByMonitor;
 
     if (allowDirectNiriOverviewLayout) {
+        std::unordered_map<MONITORID, std::unordered_set<WORKSPACEID>> directNiriWorkspacesWithWindowsByMonitor;
+        for (const auto& window : candidates) {
+            if (!shouldManageWindow(window, state) || !window->m_isMapped)
+                continue;
+
+            const auto targetMonitor = preferredMonitorForWindow(window, state);
+            if (!targetMonitor)
+                continue;
+
+            const auto workspace = window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : window->m_workspace;
+            if (workspace && isScrollingWorkspace(workspace))
+                directNiriWorkspacesWithWindowsByMonitor[targetMonitor->m_id].insert(workspace->m_id);
+        }
+
         for (const auto& candidateMonitor : state.participatingMonitors) {
             if (!candidateMonitor)
                 continue;
@@ -5788,25 +5819,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 centerWorkspaceId = candidateMonitor->m_activeWorkspace->m_id;
             }
 
-            // Always allocate the immediate workspace context around the centered
-            // workspace.  Hyprland can drop an empty source workspace after a
-            // move, but Niri's overview still keeps the neighboring workspace
-            // row/slot stable instead of letting the row vanish until refocus.
-            if (centerWorkspaceId != WORKSPACE_INVALID) {
+            if (centerWorkspaceId != WORKSPACE_INVALID)
                 appendLaneWorkspaceId(centerWorkspaceId);
-                if (centerWorkspaceId > 1)
-                    appendLaneWorkspaceId(centerWorkspaceId - 1);
-                appendLaneWorkspaceId(centerWorkspaceId + 1);
-            }
 
-            std::sort(realWorkspaceIds.begin(), realWorkspaceIds.end());
-            realWorkspaceIds.erase(std::unique(realWorkspaceIds.begin(), realWorkspaceIds.end()), realWorkspaceIds.end());
-
-            // Keep Direct Niri workspace lanes compact.  Niri lays workspaces out by
-            // their vector index, not by numeric workspace id distance.  Using the
-            // strip expander here inserts every missing id between distant workspaces,
-            // so a real neighbor can become many rows away and appear to fly offscreen.
-            const auto laneWorkspaceIds = realWorkspaceIds;
+            const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
+                realWorkspaceIds,
+                niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
             auto& syntheticLaneWorkspaceIds = niriSyntheticLaneWorkspaceIdsByMonitor[candidateMonitor->m_id];
             for (const auto rawWorkspaceId : laneWorkspaceIds) {
                 const auto workspaceId = static_cast<WORKSPACEID>(rawWorkspaceId);
@@ -5821,29 +5839,25 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
 
-            std::size_t firstPlaceholderIndex = laneWorkspaceIds.size();
-            std::size_t lastPlaceholderIndex = laneWorkspaceIds.size();
+            std::vector<int64_t> occupiedWorkspaceIds;
+            if (const auto occupiedIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
+                occupiedIt != directNiriWorkspacesWithWindowsByMonitor.end())
+                occupiedWorkspaceIds.assign(occupiedIt->second.begin(), occupiedIt->second.end());
 
-            if (!laneWorkspaceIds.empty()) {
-                // Direct niri single-workspace view still needs workspace-row
-                // object permanence.  The compositor may only report the
-                // focused workspace during a rebuild, or destroy an emptied
-                // source workspace immediately after a move.  Keep every lane
-                // we can derive for this monitor visible and backed by a real
-                // or synthetic placeholder instead of trimming to +/- 1.
-                firstPlaceholderIndex = 0;
-                lastPlaceholderIndex = laneWorkspaceIds.size() - 1;
-
-                auto& visibleWorkspaceIds = directNiriVisibleWorkspaceIdsByMonitor[candidateMonitor->m_id];
-                for (const auto rawWorkspaceId : laneWorkspaceIds)
-                    visibleWorkspaceIds.insert(static_cast<WORKSPACEID>(rawWorkspaceId));
-            }
-
-            if (firstPlaceholderIndex != laneWorkspaceIds.size() && lastPlaceholderIndex != laneWorkspaceIds.size()) {
+            const auto placeholderRange = niriEmptyWorkspacePlaceholderRange(
+                laneWorkspaceIds, occupiedWorkspaceIds,
+                centerWorkspaceId == WORKSPACE_INVALID ? std::nullopt : std::optional<int64_t>{centerWorkspaceId});
+            if (placeholderRange) {
+                const auto [firstPlaceholderId, lastPlaceholderId] = *placeholderRange;
                 placeholderRangeByMonitor[candidateMonitor->m_id] = {
-                    static_cast<WORKSPACEID>(laneWorkspaceIds[firstPlaceholderIndex]),
-                    static_cast<WORKSPACEID>(laneWorkspaceIds[lastPlaceholderIndex]),
+                    static_cast<WORKSPACEID>(firstPlaceholderId),
+                    static_cast<WORKSPACEID>(lastPlaceholderId),
                 };
+                auto& visibleWorkspaceIds = directNiriVisibleWorkspaceIdsByMonitor[candidateMonitor->m_id];
+                for (const auto workspaceId : laneWorkspaceIds) {
+                    if (workspaceId >= firstPlaceholderId && workspaceId <= lastPlaceholderId)
+                        visibleWorkspaceIds.insert(static_cast<WORKSPACEID>(workspaceId));
+                }
             }
 
             const Rect content = overviewContentRectForMonitor(candidateMonitor, state);

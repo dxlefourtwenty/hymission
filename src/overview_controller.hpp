@@ -680,6 +680,7 @@ class OverviewController {
     [[nodiscard]] bool                          prepareSurfaceRenderData(void* surfacePassThisptr, const char* context, CSurfacePassElement::SRenderData*& renderData,
                                                                          PHLMONITOR& monitor, SurfaceRenderDataSnapshot& snapshot) const;
     void                                        restoreSurfaceRenderData(CSurfacePassElement::SRenderData* renderData, const SurfaceRenderDataSnapshot& snapshot) const;
+    [[nodiscard]] bool                          removeOccupiedWorkspacePlaceholder(State& state, const PHLWINDOW& window) const;
     [[nodiscard]] std::optional<std::size_t> hitTestStripTarget(double x, double y) const;
     [[nodiscard]] std::optional<std::size_t> hitTestTarget(double x, double y) const;
     [[nodiscard]] Rect         stablePreviewOrderRect(const ManagedWindow& window) const;

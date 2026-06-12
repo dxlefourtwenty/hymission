@@ -3667,6 +3667,16 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
     if (!isVisible())
         return;
 
+    if (kind == WindowSetChangeKind::MoveToWorkspace && activeDirectNiriSingleWorkspaceOverview()) {
+        bool removedPlaceholder = removeOccupiedWorkspacePlaceholder(m_state, window);
+        if (m_workspaceTransition.active) {
+            removedPlaceholder = removeOccupiedWorkspacePlaceholder(m_workspaceTransition.sourceState, window) || removedPlaceholder;
+            removedPlaceholder = removeOccupiedWorkspacePlaceholder(m_workspaceTransition.targetState, window) || removedPlaceholder;
+        }
+        if (removedPlaceholder)
+            damageOwnedMonitors();
+    }
+
     if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview() && kind != WindowSetChangeKind::MoveToWorkspace)
         return;
 

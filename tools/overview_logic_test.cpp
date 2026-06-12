@@ -189,6 +189,14 @@ int main() {
                  "continuous empty-mode should not expand named workspace ids");
     ok &= expect(expandWorkspaceStripWorkspaceIds({}, WorkspaceStripEmptyMode::Continuous).empty(),
                  "empty workspace id sets should stay empty");
+    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {1, 3}, 1) == std::pair<int64_t, int64_t>{1, 3},
+                 "niri placeholders should include gaps between occupied workspaces");
+    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3, 4}, {1}, 3) == std::pair<int64_t, int64_t>{1, 3},
+                 "niri placeholders should extend only to the visited empty workspace");
+    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {}, 2) == std::pair<int64_t, int64_t>{2, 2},
+                 "niri placeholders should show a visited empty workspace without adjacent cards");
+    ok &= expect(!niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {}, std::nullopt),
+                 "niri placeholders should stay hidden without an occupied or visited workspace");
 
     ok &= expectReservation(reserveWorkspaceStripBand({10, 20, 300, 200}, WorkspaceStripAnchor::Top, 40, 12),
                             {
