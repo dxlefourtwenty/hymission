@@ -4927,6 +4927,39 @@ Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspa
         return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
     return placeholder.targetGlobal;
 }
+Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const {
+    if (!background.monitor || viewportRect.width <= 1.0 || viewportRect.height <= 1.0)
+        return viewportRect;
+
+    PHLWORKSPACE workspace = background.workspace;
+    const auto workspaceMatchesMonitor = [&](const PHLWORKSPACE& candidate) {
+        return candidate && candidate->m_space && candidate->m_monitor.lock() == background.monitor && isScrollingWorkspace(candidate);
+    };
+    if (!workspaceMatchesMonitor(workspace)) {
+        if (state.focusDuringOverview && workspaceMatchesMonitor(state.focusDuringOverview->m_workspace))
+            workspace = state.focusDuringOverview->m_workspace;
+        else if (workspaceMatchesMonitor(state.ownerWorkspace))
+            workspace = state.ownerWorkspace;
+        else if (workspaceMatchesMonitor(background.monitor->m_activeWorkspace))
+            workspace = background.monitor->m_activeWorkspace;
+        else {
+            const auto it = std::find_if(state.managedWorkspaces.begin(), state.managedWorkspaces.end(), workspaceMatchesMonitor);
+            workspace = it == state.managedWorkspaces.end() ? PHLWORKSPACE{} : *it;
+        }
+    }
+
+    if (!workspaceMatchesMonitor(workspace))
+        return viewportRect;
+
+    const CBox workspaceBox = workspace->m_space->workArea();
+    const CBox desktopBox = background.monitor->logicalBoxMinusReserved();
+    const Rect workspaceRect = makeRect(workspaceBox.x, workspaceBox.y, workspaceBox.width, workspaceBox.height);
+    const Rect desktopRect = makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height);
+    if (workspaceRect.width <= 1.0 || workspaceRect.height <= 1.0 || desktopRect.width <= 1.0 || desktopRect.height <= 1.0)
+        return viewportRect;
+
+    return transformLiveOverviewRect(desktopRect, workspaceRect, viewportRect);
+}
 void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))
@@ -4937,6 +4970,17 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         return;
 
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
+    const CBox desktopBox = renderMonitor->logicalBoxMinusReserved();
+    const double monitorWidth = std::max(1.0, static_cast<double>(renderMonitor->m_size.x));
+    const double monitorHeight = std::max(1.0, static_cast<double>(renderMonitor->m_size.y));
+    const Vector2D wallpaperUvTopLeft{
+        std::clamp((desktopBox.x - renderMonitor->m_position.x) / monitorWidth, 0.0, 1.0),
+        std::clamp((desktopBox.y - renderMonitor->m_position.y) / monitorHeight, 0.0, 1.0),
+    };
+    const Vector2D wallpaperUvBottomRight{
+        std::clamp((desktopBox.x + desktopBox.width - renderMonitor->m_position.x) / monitorWidth, 0.0, 1.0),
+        std::clamp((desktopBox.y + desktopBox.height - renderMonitor->m_position.y) / monitorHeight, 0.0, 1.0),
+    };
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
@@ -4944,17 +4988,25 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
             return;
 
         if (wallpaperTexture) {
-            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
+            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect),
+                                         {
+                                             .a = renderAlpha,
+                                             .allowCustomUV = true,
+                                             .primarySurfaceUVTopLeft = wallpaperUvTopLeft,
+                                             .primarySurfaceUVBottomRight = wallpaperUvBottomRight,
+                                         });
             return;
         }
 
-        g_pHyprOpenGL->renderRect(toBox(renderRect), CHyprColor(0.03, 0.07, 0.14, renderAlpha), {});
+        auto color = niriModeWallpaperZoomBackgroundColor();
+        color.a *= renderAlpha;
+        g_pHyprOpenGL->renderRect(toBox(renderRect), color, {});
     };
 
     if (!m_workspaceTransition.active) {
         for (const auto& background : m_state.emptyWorkspacePlaceholders) {
             if (background.monitor == renderMonitor)
-                renderBackground(currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
+                renderBackground(niriWorkspaceBackgroundRect(m_state, background, currentEmptyWorkspacePlaceholderRect(background)), phaseAlpha);
         }
         return;
     }
@@ -5001,12 +5053,14 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         Rect backgroundRect;
         double alpha = phaseAlpha;
         if (source && target) {
-            backgroundRect = lerpRect(translated(source->targetGlobal, sourceOffset), translated(target->targetGlobal, targetOffset), progress);
+            const Rect sourceRect = niriWorkspaceBackgroundRect(m_workspaceTransition.sourceState, *source, source->targetGlobal);
+            const Rect targetRect = niriWorkspaceBackgroundRect(m_workspaceTransition.targetState, *target, target->targetGlobal);
+            backgroundRect = lerpRect(translated(sourceRect, sourceOffset), translated(targetRect, targetOffset), progress);
         } else if (source) {
-            backgroundRect = translated(source->targetGlobal, sourceOffset);
+            backgroundRect = translated(niriWorkspaceBackgroundRect(m_workspaceTransition.sourceState, *source, source->targetGlobal), sourceOffset);
             alpha *= 1.0 - progress;
         } else {
-            backgroundRect = translated(target->targetGlobal, targetOffset);
+            backgroundRect = translated(niriWorkspaceBackgroundRect(m_workspaceTransition.targetState, *target, target->targetGlobal), targetOffset);
             alpha *= progress;
         }
 

@@ -812,6 +812,7 @@ class OverviewController {
     void renderBackdrop() const;
     [[nodiscard]] Rect emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const;
     [[nodiscard]] Rect currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const;
+    [[nodiscard]] Rect niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const;
     void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;

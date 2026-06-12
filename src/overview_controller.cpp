@@ -7905,9 +7905,10 @@ bool OverviewController::isNiriWallpaperLayer(const PHLLS& layer, const PHLMONIT
 
 void OverviewController::syncNiriWallpaperSnapshots() {
     clearNiriWallpaperSnapshots();
-    if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state) || !g_pHyprRenderer)
+    if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state) || !g_pHyprRenderer || !g_pHyprOpenGL)
         return;
 
+    g_pHyprOpenGL->makeEGLCurrent();
     for (const auto& monitor : ownedMonitors()) {
         if (!monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor))
             continue;
