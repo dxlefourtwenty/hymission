@@ -277,6 +277,7 @@ plugin {
         niri_mode_wallpaper_zoom = 0
         niri_mode_wallpaper_zoom_background_color = "#0D0F14FF"
         niri_mode_wallpaper_zoom_layer_namespaces = "awww-daemon"
+        niri_mode_wallpaper_zoom_layer_refresh_ms = 100
         niri_preview_disabled = 0
         niri_overview_animations = 1
         niri_overview_open_close_speed_multiplier = 1.5
@@ -329,6 +330,7 @@ hl.config({
             niri_mode_wallpaper_zoom = 0,
             niri_mode_wallpaper_zoom_background_color = "#0D0F14FF",
             niri_mode_wallpaper_zoom_layer_namespaces = "awww-daemon",
+            niri_mode_wallpaper_zoom_layer_refresh_ms = 100,
             niri_preview_disabled = 0,
             niri_overview_animations = 1,
             niri_overview_open_close_speed_multiplier = 1.5,
@@ -386,6 +388,7 @@ hl.config({
 | `niri_mode_wallpaper_zoom` | bool | `0` | Single-workspace scrolling niri mode only. Capture the full monitor background, reserved work-area space, and top-layer surfaces with positive exclusive zones when overview opens and render them without blur inside each animated workspace viewport, including empty workspaces. When disabled, workspace viewports use the blurred placeholder card. |
 | `niri_mode_wallpaper_zoom_background_color` | string | `#0D0F14FF` | Background behind the scaled workspace wallpapers when `niri_mode_wallpaper_zoom = 1`. Accepts Hyprland color syntax, including `#RRGGBBAA`; the alpha channel controls whether the original desktop remains visible behind the virtual desktops. |
 | `niri_mode_wallpaper_zoom_layer_namespaces` | string | `awww-daemon` | Comma-separated background layer namespaces eligible for wallpaper capture and hiding. |
+| `niri_mode_wallpaper_zoom_layer_refresh_ms` | int | `100` | Refresh interval for retained layout-reserving layer snapshots such as Waybar and docks while overview is open. Set to `0` to disable live refresh. Values below `16` are clamped to `16`. |
 | `niri_preview_disabled` | bool | `0` | Legacy compatibility option. The preview strip is always disabled in single-workspace scrolling niri mode. |
 | `niri_overview_animations` | bool | `1` | Keep live Hyprland window movement available while the niri overview is open. Open/close and relayout motion use `windowsMove`; workspace switching uses `workspaces`. |
 | `niri_overview_open_close_speed_multiplier` | float | `1.5` | Speed multiplier applied to the live `windowsMove` animation for niri single-workspace overview open and close transitions. The configured curve and style are preserved. |

@@ -145,6 +145,7 @@ class OverviewWallpaperPassElement final : public IPassElement {
             return {};
 
         m_controller->renderBackdrop();
+        m_controller->renderNiriWindowBackings();
         m_controller->renderNiriWorkspaceBackgrounds();
         m_controller->renderEmptyOverviewPlaceholder(true);
         if (m_controller->m_state.emptyWorkspacePlaceholders.empty())
@@ -2040,6 +2041,7 @@ OverviewController::~OverviewController() {
     clearThemeSurfaceFeedbackTimer();
     clearThemeWorkspaceActivationRefresh();
     clearWorkspaceStripSnapshotRefreshTimer();
+    clearNiriWallpaperLayoutLayerRefresh();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
     clearPostCloseDispatcher();
@@ -3246,8 +3248,11 @@ void OverviewController::renderStage(eRenderStage stage) {
 
 void OverviewController::handleConfigReloaded() {
     replaceNativeWorkspaceGestures("config-reloaded");
-    if (isVisible())
+    if (isVisible()) {
         syncNiriWallpaperSnapshots();
+        clearNiriWallpaperLayoutLayerRefresh();
+        startNiriWallpaperLayoutLayerRefresh();
+    }
 
     if (!refreshPreviewsOnConfigReloadEnabled())
         return;
@@ -3944,7 +3949,7 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (isNiriWallpaperLayer(layer, monitor))
         return true;
 
-    if (isNiriWallpaperLayoutLayer(layer, monitor))
+    if (isRetainedNiriWallpaperLayoutLayer(layer, monitor))
         return true;
 
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
@@ -3987,6 +3992,10 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
     }
 
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
+        if (m_deactivatePending && !isNiriWallpaperLayer(layer, monitor) && !isRetainedNiriWallpaperLayoutLayer(layer, monitor)) {
+            m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
+            return;
+        }
         if (!hideBarAnimationEffectsEnabled())
             return;
         if (shouldRenderHiddenStripLayerProxy(layer, monitor))
@@ -7917,6 +7926,17 @@ bool OverviewController::isNiriWallpaperLayoutLayer(const PHLLS& layer, const PH
         layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && layerResource->m_current.exclusive > 0;
 }
 
+bool OverviewController::isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
+    if (isNiriWallpaperLayoutLayer(layer, monitor))
+        return true;
+    if (!layer || !monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor) || !layer->m_mapped || layer->m_readyToDelete ||
+        layer->m_monitor.lock() != monitor)
+        return false;
+
+    const auto* proxy = hiddenStripLayerProxyFor(layer, monitor);
+    return proxy && proxy->niriWallpaperLayoutLayer;
+}
+
 void OverviewController::syncNiriWallpaperSnapshots() {
     clearNiriWallpaperSnapshots();
     if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state) || !g_pHyprRenderer || !g_pHyprOpenGL)
@@ -8018,7 +8038,8 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         return false;
     }
 
-    auto* existing = hiddenStripLayerProxyFor(layer, monitor);
+    auto*      existing = hiddenStripLayerProxyFor(layer, monitor);
+    const bool niriLayoutLayer = isNiriWallpaperLayoutLayer(layer, monitor) || (existing && existing->niriWallpaperLayoutLayer);
     if (!existing) {
         HiddenStripLayerProxy proxy;
         proxy.layer = layer;
@@ -8027,8 +8048,11 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         proxy.proxyRectGlobal = proxyRectGlobal;
         proxy.snapshotSize = Vector2D{static_cast<double>(fbWidth), static_cast<double>(fbHeight)};
         proxy.framebuffer = createFramebuffer("hymission hidden strip layer");
-        for (auto& blurredFramebuffer : proxy.blurredFramebuffers)
-            blurredFramebuffer = createFramebuffer("hymission hidden strip layer blur");
+        proxy.niriWallpaperLayoutLayer = niriLayoutLayer;
+        if (!niriLayoutLayer) {
+            for (auto& blurredFramebuffer : proxy.blurredFramebuffers)
+                blurredFramebuffer = createFramebuffer("hymission hidden strip layer blur");
+        }
         m_hiddenStripLayerProxies.push_back(std::move(proxy));
         existing = &m_hiddenStripLayerProxies.back();
     }
@@ -8036,11 +8060,17 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
     existing->capturedRectGlobal = capturedRectGlobal;
     existing->proxyRectGlobal = proxyRectGlobal;
     existing->snapshotSize = Vector2D{static_cast<double>(fbWidth), static_cast<double>(fbHeight)};
+    existing->niriWallpaperLayoutLayer = niriLayoutLayer;
     if (!existing->framebuffer)
         existing->framebuffer = createFramebuffer("hymission hidden strip layer");
-    for (auto& blurredFramebuffer : existing->blurredFramebuffers) {
-        if (!blurredFramebuffer)
-            blurredFramebuffer = createFramebuffer("hymission hidden strip layer blur");
+    if (niriLayoutLayer) {
+        for (auto& blurredFramebuffer : existing->blurredFramebuffers)
+            blurredFramebuffer.reset();
+    } else {
+        for (auto& blurredFramebuffer : existing->blurredFramebuffers) {
+            if (!blurredFramebuffer)
+                blurredFramebuffer = createFramebuffer("hymission hidden strip layer blur");
+        }
     }
 
     if (!existing->framebuffer->isAllocated() || std::abs(existing->framebuffer->m_size.x - fbWidth) > 0.5 || std::abs(existing->framebuffer->m_size.y - fbHeight) > 0.5) {
@@ -8057,19 +8087,22 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         setFramebufferLinearFiltering(*existing->framebuffer);
     }
 
-    for (auto& blurredFramebuffer : existing->blurredFramebuffers) {
-        if (!blurredFramebuffer->isAllocated() || std::abs(blurredFramebuffer->m_size.x - fbWidth) > 0.5 || std::abs(blurredFramebuffer->m_size.y - fbHeight) > 0.5) {
-            blurredFramebuffer->release();
-            if (!blurredFramebuffer->alloc(fbWidth, fbHeight)) {
-                if (debugLogsEnabled()) {
-                    std::ostringstream out;
-                    out << "[hymission] strip-bar capture blur framebuffer alloc failed namespace=" << layer->m_namespace << " monitor=" << monitor->m_name
-                        << " fb=(" << fbWidth << "x" << fbHeight << ")";
-                    debugLog(out.str());
+    if (!niriLayoutLayer) {
+        for (auto& blurredFramebuffer : existing->blurredFramebuffers) {
+            if (!blurredFramebuffer->isAllocated() || std::abs(blurredFramebuffer->m_size.x - fbWidth) > 0.5 ||
+                std::abs(blurredFramebuffer->m_size.y - fbHeight) > 0.5) {
+                blurredFramebuffer->release();
+                if (!blurredFramebuffer->alloc(fbWidth, fbHeight)) {
+                    if (debugLogsEnabled()) {
+                        std::ostringstream out;
+                        out << "[hymission] strip-bar capture blur framebuffer alloc failed namespace=" << layer->m_namespace << " monitor=" << monitor->m_name
+                            << " fb=(" << fbWidth << "x" << fbHeight << ")";
+                        debugLog(out.str());
+                    }
+                    return false;
                 }
-                return false;
+                setFramebufferLinearFiltering(*blurredFramebuffer);
             }
-            setFramebufferLinearFiltering(*blurredFramebuffer);
         }
     }
 
@@ -8157,7 +8190,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         return false;
     }
 
-    if (!buildBlurredProxyFramebuffers(existing->framebuffer, existing->blurredFramebuffers)) {
+    if (!niriLayoutLayer && !buildBlurredProxyFramebuffers(existing->framebuffer, existing->blurredFramebuffers)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] strip-bar capture blur build failed namespace=" << layer->m_namespace << " monitor=" << monitor->m_name;
@@ -8203,6 +8236,72 @@ void OverviewController::syncHiddenStripLayerProxies() {
                                                        });
                                                    }),
                                     m_hiddenStripLayerProxies.end());
+}
+
+void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
+    if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state))
+        return;
+
+    std::vector<std::pair<PHLLS, PHLMONITOR>> desired;
+    for (const auto& layer : g_pCompositor->m_layers) {
+        const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
+        if (!isRetainedNiriWallpaperLayoutLayer(layer, monitor))
+            continue;
+
+        desired.emplace_back(layer, monitor);
+        if (!captureHiddenStripLayerProxy(layer, monitor) && debugLogsEnabled())
+            debugLog("[hymission] niri layout layer refresh failed namespace=" + layer->m_namespace + " monitor=" + monitor->m_name);
+    }
+
+    std::erase_if(m_hiddenStripLayerProxies, [&](const HiddenStripLayerProxy& proxy) {
+        return proxy.niriWallpaperLayoutLayer &&
+            std::none_of(desired.begin(), desired.end(), [&](const auto& entry) {
+                return entry.first == proxy.layer && entry.second == proxy.monitor;
+            });
+    });
+}
+
+void OverviewController::startNiriWallpaperLayoutLayerRefresh() {
+    const auto interval = niriModeWallpaperZoomLayerRefreshInterval();
+    if (interval.count() <= 0 || !g_pEventLoopManager || !isVisible() || !niriWallpaperZoomAppliesToState(m_state))
+        return;
+
+    if (!m_niriWallpaperLayoutLayerRefreshTimer) {
+        m_niriWallpaperLayoutLayerRefreshTimer = makeShared<CEventLoopTimer>(
+            interval,
+            [this](SP<CEventLoopTimer> self, void*) {
+                if (g_controller != this || !isVisible() || !niriWallpaperZoomAppliesToState(m_state) ||
+                    m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) {
+                    self->updateTimeout(std::nullopt);
+                    return;
+                }
+
+                if (g_pHyprRenderer && g_pHyprRenderer->m_renderData.pMonitor) {
+                    self->updateTimeout(THEME_SURFACE_FEEDBACK_INTERVAL);
+                    return;
+                }
+
+                syncNiriWallpaperLayoutLayerProxies();
+                damageOwnedMonitors();
+                const auto nextInterval = niriModeWallpaperZoomLayerRefreshInterval();
+                self->updateTimeout(nextInterval.count() > 0 ? std::optional{nextInterval} : std::nullopt);
+            },
+            nullptr);
+        g_pEventLoopManager->addTimer(m_niriWallpaperLayoutLayerRefreshTimer);
+        return;
+    }
+
+    m_niriWallpaperLayoutLayerRefreshTimer->updateTimeout(interval);
+}
+
+void OverviewController::clearNiriWallpaperLayoutLayerRefresh() {
+    if (!m_niriWallpaperLayoutLayerRefreshTimer)
+        return;
+
+    m_niriWallpaperLayoutLayerRefreshTimer->cancel();
+    if (g_pEventLoopManager)
+        g_pEventLoopManager->removeTimer(m_niriWallpaperLayoutLayerRefreshTimer);
+    m_niriWallpaperLayoutLayerRefreshTimer.reset();
 }
 
 Rect OverviewController::hiddenStripLayerProxyRect(const HiddenStripLayerProxy& proxy) const {
@@ -8261,7 +8360,7 @@ void OverviewController::renderHiddenStripLayerProxies() const {
             continue;
         if (!shouldHideLayerSurface(proxy.layer, renderMonitor))
             continue;
-        if (isNiriWallpaperLayoutLayer(proxy.layer, renderMonitor))
+        if (proxy.niriWallpaperLayoutLayer)
             continue;
 
         auto* sourceFramebuffer = proxy.framebuffer ? proxy.framebuffer.get() : nullptr;
@@ -9873,6 +9972,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     clearHiddenStripLayerProxies();
     syncNiriWallpaperSnapshots();
     syncHiddenStripLayerProxies();
+    startNiriWallpaperLayoutLayerRefresh();
     m_cursorShapeResetFrames = WAYBAR_CURSOR_SHAPE_RESET_FRAMES;
     resetStaleClientCursorShape();
     setInputFollowMouseOverride(true);
@@ -10060,6 +10160,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_deactivatePending = false;
     m_cursorShapeResetFrames = 0;
     resetStaleClientCursorShape();
+    clearNiriWallpaperLayoutLayerRefresh();
     clearHiddenStripLayerProxies();
     syncHiddenStripLayerProxies();
 
@@ -10339,6 +10440,7 @@ void OverviewController::deactivate() {
     clearStripWindowDragState();
     clearHiddenStripLayerProxies();
     clearNiriWallpaperSnapshots();
+    clearNiriWallpaperLayoutLayerRefresh();
     restoreOverviewRenderState();
     deactivateHooks();
     setFullscreenRenderOverride(false);

@@ -425,6 +425,7 @@ class OverviewController {
         Vector2D   snapshotSize;
         SP<Render::IFramebuffer> framebuffer;
         std::array<SP<Render::IFramebuffer>, 4> blurredFramebuffers;
+        bool       niriWallpaperLayoutLayer = false;
     };
 
     using SurfaceGetTexBoxFn = CBox (*)(void*);
@@ -496,6 +497,7 @@ class OverviewController {
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] CHyprColor   niriModeWallpaperZoomBackgroundColor() const;
     [[nodiscard]] std::string  niriModeWallpaperZoomLayerNamespaces() const;
+    [[nodiscard]] std::chrono::milliseconds niriModeWallpaperZoomLayerRefreshInterval() const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToMonitor(const State& state, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
@@ -665,12 +667,16 @@ class OverviewController {
     [[nodiscard]] double                        hiddenStripLayerProgress(const PHLLS& layer, const PHLMONITOR& monitor) const;
     void                                        clearHiddenStripLayerProxies();
     void                                        syncHiddenStripLayerProxies();
+    void                                        syncNiriWallpaperLayoutLayerProxies();
+    void                                        startNiriWallpaperLayoutLayerRefresh();
+    void                                        clearNiriWallpaperLayoutLayerRefresh();
     void                                        clearNiriWallpaperSnapshots();
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
     [[nodiscard]] SP<Render::IFramebuffer>       captureLayerFramebuffer(const PHLLS& layer);
     [[nodiscard]] bool                          isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          isNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] bool                          isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor);
@@ -818,6 +824,7 @@ class OverviewController {
     [[nodiscard]] Rect niriWorkspaceSurfaceRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect,
                                                 const Rect& surfaceRect) const;
     [[nodiscard]] Rect niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const;
+    void renderNiriWindowBackings() const;
     void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
@@ -998,6 +1005,7 @@ class OverviewController {
     bool                     m_stripSnapshotsDirty = false;
     bool                     m_stripSnapshotRefreshScheduled = false;
     SP<CEventLoopTimer>      m_stripSnapshotRefreshTimer;
+    SP<CEventLoopTimer>      m_niriWallpaperLayoutLayerRefreshTimer;
     std::size_t              m_stripSnapshotSurfaceFeedbackFrames = 0;
     std::size_t              m_overviewSurfaceFeedbackFrames = 0;
     std::size_t              m_pendingOverviewSurfaceFeedbackFrames = 0;
