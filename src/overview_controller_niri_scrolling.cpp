@@ -1059,6 +1059,9 @@ CHyprColor OverviewController::niriModeWallpaperZoomBackgroundColor() const {
     const auto parsed = Config::ParserUtils::parseColor(configured);
     return CHyprColor(static_cast<uint64_t>(parsed.value_or(FALLBACK_COLOR)));
 }
+std::string OverviewController::niriModeWallpaperZoomLayerNamespaces() const {
+    return getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
+}
 bool OverviewController::niriWallpaperZoomAppliesToState(const State& state) const {
     return niriModeWallpaperZoomEnabled() && niriModeAppliesToState(state) && state.collectionPolicy.onlyActiveWorkspace;
 }

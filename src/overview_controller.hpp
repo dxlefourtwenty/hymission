@@ -493,6 +493,7 @@ class OverviewController {
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] CHyprColor   niriModeWallpaperZoomBackgroundColor() const;
+    [[nodiscard]] std::string  niriModeWallpaperZoomLayerNamespaces() const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToMonitor(const State& state, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
@@ -665,6 +666,7 @@ class OverviewController {
     void                                        clearNiriWallpaperSnapshots();
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
+    [[nodiscard]] bool                          isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor);
@@ -975,6 +977,7 @@ class OverviewController {
     StripPreviewContext      m_stripPreviewContext;
     std::vector<HiddenStripLayerProxy> m_hiddenStripLayerProxies;
     std::vector<NiriWallpaperSnapshot> m_niriWallpaperSnapshots;
+    PHLLS                    m_niriWallpaperSnapshotLayer;
     bool                     m_applyingWorkspaceTransitionCommit = false;
     bool                     m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     bool                     m_workspaceTransitionCommitScheduled = false;

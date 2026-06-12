@@ -3897,7 +3897,7 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (!layerMonitor || layerMonitor != monitor || !layerResource || !layer->m_mapped || layer->m_readyToDelete)
         return false;
 
-    if (niriWallpaperZoomAppliesToMonitor(m_state, monitor) && layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+    if (isNiriWallpaperLayer(layer, monitor))
         return true;
 
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
@@ -3933,6 +3933,11 @@ bool OverviewController::shouldHideLayerSurfaceNamespace(const PHLLS& layer, con
 void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHLMONITOR monitor, const Time::steady_tp& now, bool popups, bool lockscreen) {
     if (!m_renderLayerOriginal)
         return;
+
+    if (layer && layer == m_niriWallpaperSnapshotLayer) {
+        m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
+        return;
+    }
 
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
         if (!hideBarAnimationEffectsEnabled())
@@ -7831,7 +7836,19 @@ void OverviewController::clearHiddenStripLayerProxies() {
 }
 
 void OverviewController::clearNiriWallpaperSnapshots() {
+    m_niriWallpaperSnapshotLayer.reset();
     m_niriWallpaperSnapshots.clear();
+}
+
+bool OverviewController::isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
+    if (!layer || !monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor))
+        return false;
+
+    const auto layerMonitor = layer->m_monitor.lock();
+    const auto layerResource = layer->m_layerSurface.lock();
+    return layerMonitor == monitor && layerResource && layer->m_mapped && !layer->m_readyToDelete &&
+        layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
+        shouldHideLayerSurfaceNamespace(layer, niriModeWallpaperZoomLayerNamespaces());
 }
 
 void OverviewController::syncNiriWallpaperSnapshots() {
@@ -7846,16 +7863,19 @@ void OverviewController::syncNiriWallpaperSnapshots() {
         PHLLS wallpaperLayer;
         for (const auto& layerRef : monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]) {
             const auto layer = layerRef.lock();
-            if (!layer || !layer->m_mapped || layer->m_readyToDelete)
+            if (!isNiriWallpaperLayer(layer, monitor))
                 continue;
 
             wallpaperLayer = layer;
+            break;
         }
 
         if (!wallpaperLayer)
             continue;
 
+        m_niriWallpaperSnapshotLayer = wallpaperLayer;
         const auto framebuffer = layerFramebufferFor(wallpaperLayer);
+        m_niriWallpaperSnapshotLayer.reset();
         if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture())
             continue;
 
@@ -8084,9 +8104,7 @@ void OverviewController::syncHiddenStripLayerProxies() {
         const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
         if (!shouldHideLayerSurface(layer, monitor))
             continue;
-        const auto layerResource = layer ? layer->m_layerSurface.lock() : nullptr;
-        if (niriModeWallpaperZoomEnabled() && layerResource &&
-            layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND)
+        if (isNiriWallpaperLayer(layer, monitor))
             continue;
 
         desired.emplace_back(layer, monitor);
