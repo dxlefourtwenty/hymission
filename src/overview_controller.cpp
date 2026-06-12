@@ -744,14 +744,6 @@ SP<Render::IFramebuffer> createFramebuffer(const std::string& name) {
     return g_pHyprRenderer ? g_pHyprRenderer->createFB(name) : nullptr;
 }
 
-SP<Render::IFramebuffer> layerFramebufferFor(const PHLLS& layer) {
-    if (!layer || !g_pHyprRenderer)
-        return nullptr;
-
-    g_pHyprRenderer->makeSnapshot(layer);
-    return layer->m_snapshotFB;
-}
-
 void setTextureLinearFiltering(const SP<Render::ITexture>& texture) {
     if (!texture)
         return;
@@ -3989,7 +3981,7 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
     if (!m_renderLayerOriginal)
         return;
 
-    if (layer && layer == m_niriWallpaperSnapshotLayer) {
+    if (layer && layer == m_layerSnapshotCaptureLayer) {
         m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
         return;
     }
@@ -7891,8 +7883,18 @@ void OverviewController::clearHiddenStripLayerProxies() {
 }
 
 void OverviewController::clearNiriWallpaperSnapshots() {
-    m_niriWallpaperSnapshotLayer.reset();
+    m_layerSnapshotCaptureLayer.reset();
     m_niriWallpaperSnapshots.clear();
+}
+
+SP<Render::IFramebuffer> OverviewController::captureLayerFramebuffer(const PHLLS& layer) {
+    if (!layer || !g_pHyprRenderer)
+        return nullptr;
+
+    m_layerSnapshotCaptureLayer = layer;
+    g_pHyprRenderer->makeSnapshot(layer);
+    m_layerSnapshotCaptureLayer.reset();
+    return layer->m_snapshotFB;
 }
 
 bool OverviewController::isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
@@ -7941,9 +7943,7 @@ void OverviewController::syncNiriWallpaperSnapshots() {
             continue;
         }
 
-        m_niriWallpaperSnapshotLayer = wallpaperLayer;
-        const auto framebuffer = layerFramebufferFor(wallpaperLayer);
-        m_niriWallpaperSnapshotLayer.reset();
+        const auto framebuffer = captureLayerFramebuffer(wallpaperLayer);
         if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture()) {
             if (debugLogsEnabled())
                 debugLog("[hymission] niri wallpaper snapshot capture failed namespace=" + wallpaperLayer->m_namespace + " monitor=" + monitor->m_name);
@@ -8008,8 +8008,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
     const int fbHeight = std::max(1, static_cast<int>(std::ceil(proxyRectGlobal.height * renderScaleForMonitor(monitor))));
 
     g_pHyprOpenGL->makeEGLCurrent();
-    g_pHyprRenderer->makeSnapshot(layer);
-    auto sourceFramebuffer = layerFramebufferFor(layer);
+    auto sourceFramebuffer = captureLayerFramebuffer(layer);
     if (!sourceFramebuffer || !sourceFramebuffer->isAllocated() || !sourceFramebuffer->getTexture()) {
         if (debugLogsEnabled()) {
             std::ostringstream out;

@@ -668,6 +668,7 @@ class OverviewController {
     void                                        clearNiriWallpaperSnapshots();
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
+    [[nodiscard]] SP<Render::IFramebuffer>       captureLayerFramebuffer(const PHLLS& layer);
     [[nodiscard]] bool                          isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          isNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
@@ -984,7 +985,7 @@ class OverviewController {
     StripPreviewContext      m_stripPreviewContext;
     std::vector<HiddenStripLayerProxy> m_hiddenStripLayerProxies;
     std::vector<NiriWallpaperSnapshot> m_niriWallpaperSnapshots;
-    PHLLS                    m_niriWallpaperSnapshotLayer;
+    PHLLS                    m_layerSnapshotCaptureLayer;
     bool                     m_applyingWorkspaceTransitionCommit = false;
     bool                     m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     bool                     m_workspaceTransitionCommitScheduled = false;
