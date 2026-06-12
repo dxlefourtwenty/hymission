@@ -5822,9 +5822,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (centerWorkspaceId != WORKSPACE_INVALID)
                 appendLaneWorkspaceId(centerWorkspaceId);
 
-            const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
-                realWorkspaceIds,
-                niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
+            std::vector<int64_t> occupiedWorkspaceIds;
+            if (const auto occupiedIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
+                occupiedIt != directNiriWorkspacesWithWindowsByMonitor.end())
+                occupiedWorkspaceIds.assign(occupiedIt->second.begin(), occupiedIt->second.end());
+
+            const auto emptyMode =
+                niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing;
+            const auto laneWorkspaceIds = niriEmptyWorkspaceLaneIds(realWorkspaceIds, occupiedWorkspaceIds, emptyMode);
             auto& syntheticLaneWorkspaceIds = niriSyntheticLaneWorkspaceIdsByMonitor[candidateMonitor->m_id];
             for (const auto rawWorkspaceId : laneWorkspaceIds) {
                 const auto workspaceId = static_cast<WORKSPACEID>(rawWorkspaceId);
@@ -5838,11 +5843,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (it != laneWorkspaceIds.end())
                     activeIndex = static_cast<std::size_t>(std::distance(laneWorkspaceIds.begin(), it));
             }
-
-            std::vector<int64_t> occupiedWorkspaceIds;
-            if (const auto occupiedIt = directNiriWorkspacesWithWindowsByMonitor.find(candidateMonitor->m_id);
-                occupiedIt != directNiriWorkspacesWithWindowsByMonitor.end())
-                occupiedWorkspaceIds.assign(occupiedIt->second.begin(), occupiedIt->second.end());
 
             const auto placeholderRange = niriEmptyWorkspacePlaceholderRange(
                 laneWorkspaceIds, occupiedWorkspaceIds,

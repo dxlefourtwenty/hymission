@@ -569,6 +569,7 @@ class OverviewController {
     [[nodiscard]] SDispatchResult runOverviewExecDispatcher(std::string args);
     [[nodiscard]] SDispatchResult runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args);
     [[nodiscard]] std::optional<SDispatchResult> tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore);
+    void                       processScheduledVisibleStateRebuild(bool transitionActiveWhenScheduled);
     void                       restoreWrappedDispatchers();
 
     [[nodiscard]] bool         isAnimating() const;

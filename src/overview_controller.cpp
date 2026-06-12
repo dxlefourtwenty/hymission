@@ -4839,6 +4839,7 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
 
         std::unordered_map<WORKSPACEID, PHLWORKSPACE> workspaceById;
         std::vector<int64_t> workspaceIds;
+        std::vector<int64_t> occupiedWorkspaceIds;
         for (const auto& candidate : m_state.managedWorkspaces) {
             if (!candidate || candidate->m_isSpecialWorkspace || candidate->m_id < 0 || candidate->m_monitor.lock() != monitor)
                 continue;
@@ -4847,9 +4848,20 @@ bool OverviewController::resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& 
             workspaceIds.push_back(candidate->m_id);
         }
 
-        const auto laneWorkspaceIds = expandWorkspaceStripWorkspaceIds(
-            workspaceIds,
-            niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing);
+        for (const auto& managed : m_state.windows) {
+            if (!managed.window || managed.window->m_pinned || !managed.window->m_workspace ||
+                managed.window->m_workspace->m_monitor.lock() != monitor)
+                continue;
+            occupiedWorkspaceIds.push_back(managed.window->m_workspace->m_id);
+        }
+        for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+            if (placeholder.monitor == monitor && placeholder.workspaceId != WORKSPACE_INVALID)
+                workspaceIds.push_back(placeholder.workspaceId);
+        }
+
+        const auto emptyMode =
+            niriModeShowEmptyWorkspacesBetweenEnabled() ? WorkspaceStripEmptyMode::Continuous : WorkspaceStripEmptyMode::Existing;
+        const auto laneWorkspaceIds = niriEmptyWorkspaceLaneIds(workspaceIds, occupiedWorkspaceIds, emptyMode);
         const auto it = std::find(laneWorkspaceIds.begin(), laneWorkspaceIds.end(), static_cast<int64_t>(currentWorkspaceId));
         if (it == laneWorkspaceIds.end())
             return false;
@@ -9332,17 +9344,15 @@ void OverviewController::scheduleVisibleStateRebuild() {
     if (m_visibleStateRebuildScheduled)
         return;
 
+    const bool transitionActiveWhenScheduled = m_workspaceTransition.active;
     if (!g_pEventLoopManager) {
-        if (activeDirectNiriSingleWorkspaceOverview() && !m_workspaceTransition.active)
-            refreshVisibleStateMetadata();
-        else
-            rebuildVisibleState();
+        processScheduledVisibleStateRebuild(transitionActiveWhenScheduled);
         return;
     }
 
     m_visibleStateRebuildScheduled = true;
     const auto generation = ++m_visibleStateRebuildGeneration;
-    g_pEventLoopManager->doLater([this, generation] {
+    g_pEventLoopManager->doLater([this, generation, transitionActiveWhenScheduled] {
         if (g_controller != this || generation != m_visibleStateRebuildGeneration)
             return;
 
@@ -9350,11 +9360,26 @@ void OverviewController::scheduleVisibleStateRebuild() {
         if (!isVisible() || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
             return;
 
-        if (activeDirectNiriSingleWorkspaceOverview() && !m_workspaceTransition.active)
-            refreshVisibleStateMetadata();
-        else
-            rebuildVisibleState();
+        processScheduledVisibleStateRebuild(transitionActiveWhenScheduled);
     });
+}
+
+void OverviewController::processScheduledVisibleStateRebuild(bool transitionActiveWhenScheduled) {
+    if (m_workspaceTransition.active) {
+        if (activeDirectNiriSingleWorkspaceOverview() && !transitionActiveWhenScheduled) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] discard stale direct niri rebuild during workspace transition");
+            return;
+        }
+
+        rebuildVisibleState();
+        return;
+    }
+
+    if (activeDirectNiriSingleWorkspaceOverview())
+        refreshVisibleStateMetadata();
+    else
+        rebuildVisibleState();
 }
 
 void OverviewController::scheduleWorkspaceChangeHandling(const PHLWORKSPACE& workspace, OverviewWorkspaceChangeAction action, bool allowExternalTransition) {

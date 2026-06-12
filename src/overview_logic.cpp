@@ -359,11 +359,36 @@ std::vector<int64_t> expandWorkspaceStripWorkspaceIds(const std::vector<int64_t>
     return expanded;
 }
 
+std::vector<int64_t> niriEmptyWorkspaceLaneIds(const std::vector<int64_t>& workspaceIds, const std::vector<int64_t>& occupiedWorkspaceIds,
+                                               WorkspaceStripEmptyMode mode) {
+    std::vector<int64_t> laneAnchors = workspaceIds;
+    laneAnchors.insert(laneAnchors.end(), occupiedWorkspaceIds.begin(), occupiedWorkspaceIds.end());
+    if (mode == WorkspaceStripEmptyMode::Continuous) {
+        std::optional<int64_t> firstOccupied;
+        std::optional<int64_t> lastOccupied;
+        for (const int64_t workspaceId : occupiedWorkspaceIds) {
+            if (workspaceId < 1)
+                continue;
+
+            firstOccupied = firstOccupied ? std::min(*firstOccupied, workspaceId) : workspaceId;
+            lastOccupied = lastOccupied ? std::max(*lastOccupied, workspaceId) : workspaceId;
+        }
+
+        if (firstOccupied && *firstOccupied > 1)
+            laneAnchors.push_back(*firstOccupied - 1);
+        if (lastOccupied && *lastOccupied < std::numeric_limits<int64_t>::max())
+            laneAnchors.push_back(*lastOccupied + 1);
+    }
+
+    return expandWorkspaceStripWorkspaceIds(laneAnchors, mode);
+}
+
 std::optional<std::pair<int64_t, int64_t>>
     niriEmptyWorkspacePlaceholderRange(const std::vector<int64_t>& laneWorkspaceIds, const std::vector<int64_t>& occupiedWorkspaceIds,
                                        std::optional<int64_t> visitedWorkspaceId) {
     std::optional<std::size_t> firstAnchor;
     std::optional<std::size_t> lastAnchor;
+    bool                       hasOccupiedAnchor = false;
 
     for (std::size_t index = 0; index < laneWorkspaceIds.size(); ++index) {
         const int64_t workspaceId = laneWorkspaceIds[index];
@@ -371,6 +396,7 @@ std::optional<std::pair<int64_t, int64_t>>
         if (!occupied && visitedWorkspaceId != workspaceId)
             continue;
 
+        hasOccupiedAnchor = hasOccupiedAnchor || occupied;
         if (!firstAnchor)
             firstAnchor = index;
         lastAnchor = index;
@@ -378,6 +404,13 @@ std::optional<std::pair<int64_t, int64_t>>
 
     if (!firstAnchor || !lastAnchor)
         return std::nullopt;
+
+    if (hasOccupiedAnchor) {
+        if (*firstAnchor > 0)
+            --*firstAnchor;
+        if (*lastAnchor + 1 < laneWorkspaceIds.size())
+            ++*lastAnchor;
+    }
 
     return std::pair{laneWorkspaceIds[*firstAnchor], laneWorkspaceIds[*lastAnchor]};
 }

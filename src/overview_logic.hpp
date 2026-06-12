@@ -89,6 +89,8 @@ struct WorkspaceStripReservation {
 [[nodiscard]] Rect                      centerAnchorOnWorkspaceStripAxis(const Rect& anchorRect, const Rect& focusRect, WorkspaceStripAnchor anchor);
 [[nodiscard]] bool                 isWorkspaceStripHorizontal(WorkspaceStripAnchor anchor);
 [[nodiscard]] std::vector<int64_t> expandWorkspaceStripWorkspaceIds(const std::vector<int64_t>& workspaceIds, WorkspaceStripEmptyMode mode);
+[[nodiscard]] std::vector<int64_t> niriEmptyWorkspaceLaneIds(const std::vector<int64_t>& workspaceIds, const std::vector<int64_t>& occupiedWorkspaceIds,
+                                                             WorkspaceStripEmptyMode mode);
 [[nodiscard]] std::optional<std::pair<int64_t, int64_t>>
     niriEmptyWorkspacePlaceholderRange(const std::vector<int64_t>& laneWorkspaceIds, const std::vector<int64_t>& occupiedWorkspaceIds,
                                        std::optional<int64_t> visitedWorkspaceId);

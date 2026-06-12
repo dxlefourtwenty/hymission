@@ -189,10 +189,18 @@ int main() {
                  "continuous empty-mode should not expand named workspace ids");
     ok &= expect(expandWorkspaceStripWorkspaceIds({}, WorkspaceStripEmptyMode::Continuous).empty(),
                  "empty workspace id sets should stay empty");
-    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {1, 3}, 1) == std::pair<int64_t, int64_t>{1, 3},
-                 "niri placeholders should include gaps between occupied workspaces");
-    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3, 4}, {1}, 3) == std::pair<int64_t, int64_t>{1, 3},
-                 "niri placeholders should extend only to the visited empty workspace");
+    ok &= expect(niriEmptyWorkspaceLaneIds({2, 3}, {2, 3}, WorkspaceStripEmptyMode::Continuous) == std::vector<int64_t>({1, 2, 3, 4}),
+                 "niri lanes should keep one empty leaf workspace on each occupied edge");
+    ok &= expect(niriEmptyWorkspaceLaneIds({1, 3}, {1, 3}, WorkspaceStripEmptyMode::Continuous) == std::vector<int64_t>({1, 2, 3, 4}),
+                 "niri lanes should keep occupied gaps and the available outer leaf");
+    ok &= expect(niriEmptyWorkspaceLaneIds({1}, {3}, WorkspaceStripEmptyMode::Continuous) == std::vector<int64_t>({1, 2, 3, 4}),
+                 "niri lanes should include a newly occupied unvisited destination");
+    ok &= expect(niriEmptyWorkspaceLaneIds({2}, {}, WorkspaceStripEmptyMode::Continuous) == std::vector<int64_t>({2}),
+                 "a visited empty workspace should not manufacture adjacent leaves");
+    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3, 4}, {2, 3}, 2) == std::pair<int64_t, int64_t>{1, 4},
+                 "niri placeholders should include occupied gaps and both leaf workspaces");
+    ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3, 4}, {1}, 3) == std::pair<int64_t, int64_t>{1, 4},
+                 "niri placeholders should keep a visited empty workspace and the occupied outer leaf");
     ok &= expect(niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {}, 2) == std::pair<int64_t, int64_t>{2, 2},
                  "niri placeholders should show a visited empty workspace without adjacent cards");
     ok &= expect(!niriEmptyWorkspacePlaceholderRange({1, 2, 3}, {}, std::nullopt),
