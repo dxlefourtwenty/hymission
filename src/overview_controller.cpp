@@ -7897,9 +7897,8 @@ bool OverviewController::isNiriWallpaperLayer(const PHLLS& layer, const PHLMONIT
         return false;
 
     const auto layerMonitor = layer->m_monitor.lock();
-    const auto layerResource = layer->m_layerSurface.lock();
-    return layerMonitor == monitor && layerResource && layer->m_mapped && !layer->m_readyToDelete &&
-        layerResource->m_current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
+    return layerMonitor == monitor && layer->m_mapped && !layer->m_readyToDelete &&
+        layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
         shouldHideLayerSurfaceNamespace(layer, niriModeWallpaperZoomLayerNamespaces());
 }
 
