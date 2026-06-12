@@ -344,6 +344,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     FLOAT_CONF("niri_strip_workspace_zoom", 2.0F);
     INT_CONF("niri_mode_show_empty_workspaces_btwn", 1);
     INT_CONF("niri_mode_wallpaper_zoom", 0);
+    STRING_CONF("niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
     INT_CONF("niri_preview_disabled", 0);
     INT_CONF("niri_overview_animations", 1);
     FLOAT_CONF("niri_overview_open_close_speed_multiplier", 1.5F);

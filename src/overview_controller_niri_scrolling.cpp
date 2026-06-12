@@ -19,6 +19,7 @@
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
+#include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
 #include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
@@ -1050,6 +1051,13 @@ bool OverviewController::niriModeShowEmptyWorkspacesBetweenEnabled() const {
 }
 bool OverviewController::niriModeWallpaperZoomEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom", 0) != 0;
+}
+CHyprColor OverviewController::niriModeWallpaperZoomBackgroundColor() const {
+    constexpr uint64_t FALLBACK_COLOR = 0xFF0D0F14;
+    const auto configured =
+        getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
+    const auto parsed = Config::ParserUtils::parseColor(configured);
+    return CHyprColor(static_cast<uint64_t>(parsed.value_or(FALLBACK_COLOR)));
 }
 bool OverviewController::niriWallpaperZoomAppliesToState(const State& state) const {
     return niriModeWallpaperZoomEnabled() && niriModeAppliesToState(state) && state.collectionPolicy.onlyActiveWorkspace;

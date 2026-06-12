@@ -492,6 +492,7 @@ class OverviewController {
     [[nodiscard]] double       niriWorkspaceScale() const;
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
+    [[nodiscard]] CHyprColor   niriModeWallpaperZoomBackgroundColor() const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToMonitor(const State& state, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool         niriPreviewDisabled() const;
