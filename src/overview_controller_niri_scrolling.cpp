@@ -4967,7 +4967,7 @@ Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const E
     if (!background.monitor)
         return viewportRect;
 
-    const CBox desktopBox = background.monitor->logicalBoxMinusReserved();
+    const CBox desktopBox = background.monitor->logicalBox();
     return niriWorkspaceSurfaceRect(state, background, viewportRect,
                                     makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height));
 }
@@ -4979,17 +4979,6 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     constexpr double phaseAlpha = 1.0;
 
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
-    const CBox desktopBox = renderMonitor->logicalBoxMinusReserved();
-    const double monitorWidth = std::max(1.0, static_cast<double>(renderMonitor->m_size.x));
-    const double monitorHeight = std::max(1.0, static_cast<double>(renderMonitor->m_size.y));
-    const Vector2D wallpaperUvTopLeft{
-        std::clamp((desktopBox.x - renderMonitor->m_position.x) / monitorWidth, 0.0, 1.0),
-        std::clamp((desktopBox.y - renderMonitor->m_position.y) / monitorHeight, 0.0, 1.0),
-    };
-    const Vector2D wallpaperUvBottomRight{
-        std::clamp((desktopBox.x + desktopBox.width - renderMonitor->m_position.x) / monitorWidth, 0.0, 1.0),
-        std::clamp((desktopBox.y + desktopBox.height - renderMonitor->m_position.y) / monitorHeight, 0.0, 1.0),
-    };
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
@@ -4997,13 +4986,7 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
             return;
 
         if (wallpaperTexture) {
-            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect),
-                                         {
-                                             .a = renderAlpha,
-                                             .allowCustomUV = true,
-                                             .primarySurfaceUVTopLeft = wallpaperUvTopLeft,
-                                             .primarySurfaceUVBottomRight = wallpaperUvBottomRight,
-                                         });
+            g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
             return;
         }
 
@@ -5022,13 +5005,29 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
             if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture())
                 continue;
 
-            const Rect layerGlobal = niriWorkspaceSurfaceRect(state, background, viewportRect, proxy.proxyRectGlobal);
+            const Rect layerGlobal = niriWorkspaceSurfaceRect(state, background, viewportRect, proxy.capturedRectGlobal);
             const Rect layerRender = scaleRectForRender(rectToMonitorLocal(layerGlobal, renderMonitor), renderMonitor);
             const float layerAlpha = static_cast<float>(clampUnit(alpha));
             if (layerRender.width <= 0.0 || layerRender.height <= 0.0 || layerAlpha <= 0.001F)
                 continue;
 
-            g_pHyprOpenGL->renderTexture(framebuffer->getTexture(), toBox(layerRender), {.a = layerAlpha});
+            const double proxyWidth = std::max(1.0, proxy.proxyRectGlobal.width);
+            const double proxyHeight = std::max(1.0, proxy.proxyRectGlobal.height);
+            const Vector2D uvTopLeft{
+                std::clamp((proxy.capturedRectGlobal.x - proxy.proxyRectGlobal.x) / proxyWidth, 0.0, 1.0),
+                std::clamp((proxy.capturedRectGlobal.y - proxy.proxyRectGlobal.y) / proxyHeight, 0.0, 1.0),
+            };
+            const Vector2D uvBottomRight{
+                std::clamp((proxy.capturedRectGlobal.x + proxy.capturedRectGlobal.width - proxy.proxyRectGlobal.x) / proxyWidth, 0.0, 1.0),
+                std::clamp((proxy.capturedRectGlobal.y + proxy.capturedRectGlobal.height - proxy.proxyRectGlobal.y) / proxyHeight, 0.0, 1.0),
+            };
+            g_pHyprOpenGL->renderTexture(framebuffer->getTexture(), toBox(layerRender),
+                                         {
+                                             .a = layerAlpha,
+                                             .allowCustomUV = true,
+                                             .primarySurfaceUVTopLeft = uvTopLeft,
+                                             .primarySurfaceUVBottomRight = uvBottomRight,
+                                         });
         }
     };
 
