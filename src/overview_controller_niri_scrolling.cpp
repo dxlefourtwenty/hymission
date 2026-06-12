@@ -4965,11 +4965,7 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     if (!niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))
         return;
 
-    const bool closing = m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle ||
-        (m_gestureSession.active && !m_gestureSession.opening);
-    const double phaseAlpha = closing ? 1.0 : clampUnit(visualProgress());
-    if (phaseAlpha <= 0.001)
-        return;
+    constexpr double phaseAlpha = 1.0;
 
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
     const CBox desktopBox = renderMonitor->logicalBoxMinusReserved();
