@@ -669,6 +669,7 @@ class OverviewController {
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
     [[nodiscard]] bool                          isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] bool                          isNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor);
@@ -812,6 +813,9 @@ class OverviewController {
     void renderBackdrop() const;
     [[nodiscard]] Rect emptyOverviewPlaceholderLocalRect(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace, const Rect& content, const State& state) const;
     [[nodiscard]] Rect currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const;
+    [[nodiscard]] PHLWORKSPACE niriWorkspaceForBackground(const State& state, const EmptyWorkspacePlaceholder& background) const;
+    [[nodiscard]] Rect niriWorkspaceSurfaceRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect,
+                                                const Rect& surfaceRect) const;
     [[nodiscard]] Rect niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const;
     void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;

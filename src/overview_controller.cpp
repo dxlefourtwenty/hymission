@@ -3952,6 +3952,9 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (isNiriWallpaperLayer(layer, monitor))
         return true;
 
+    if (isNiriWallpaperLayoutLayer(layer, monitor))
+        return true;
+
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
         return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
 
@@ -7902,6 +7905,16 @@ bool OverviewController::isNiriWallpaperLayer(const PHLLS& layer, const PHLMONIT
         shouldHideLayerSurfaceNamespace(layer, niriModeWallpaperZoomLayerNamespaces());
 }
 
+bool OverviewController::isNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
+    if (!layer || !monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor))
+        return false;
+
+    const auto layerMonitor = layer->m_monitor.lock();
+    const auto layerResource = layer->m_layerSurface.lock();
+    return layerMonitor == monitor && layerResource && layer->m_mapped && !layer->m_readyToDelete &&
+        layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && layerResource->m_current.exclusive > 0;
+}
+
 void OverviewController::syncNiriWallpaperSnapshots() {
     clearNiriWallpaperSnapshots();
     if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state) || !g_pHyprRenderer || !g_pHyprOpenGL)
@@ -8158,7 +8171,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
 }
 
 void OverviewController::syncHiddenStripLayerProxies() {
-    if (!isVisible() || !hideBarAnimationEffectsEnabled()) {
+    if (!isVisible() || (!hideBarAnimationEffectsEnabled() && !niriWallpaperZoomAppliesToState(m_state))) {
         clearHiddenStripLayerProxies();
         return;
     }
@@ -8248,6 +8261,8 @@ void OverviewController::renderHiddenStripLayerProxies() const {
         if (!proxy.layer || !proxy.monitor || proxy.monitor != renderMonitor)
             continue;
         if (!shouldHideLayerSurface(proxy.layer, renderMonitor))
+            continue;
+        if (isNiriWallpaperLayoutLayer(proxy.layer, renderMonitor))
             continue;
 
         auto* sourceFramebuffer = proxy.framebuffer ? proxy.framebuffer.get() : nullptr;

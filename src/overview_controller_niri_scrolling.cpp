@@ -4927,10 +4927,7 @@ Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspa
         return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
     return placeholder.targetGlobal;
 }
-Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const {
-    if (!background.monitor || viewportRect.width <= 1.0 || viewportRect.height <= 1.0)
-        return viewportRect;
-
+PHLWORKSPACE OverviewController::niriWorkspaceForBackground(const State& state, const EmptyWorkspacePlaceholder& background) const {
     PHLWORKSPACE workspace = background.workspace;
     const auto workspaceMatchesMonitor = [&](const PHLWORKSPACE& candidate) {
         return candidate && candidate->m_space && candidate->m_monitor.lock() == background.monitor && isScrollingWorkspace(candidate);
@@ -4948,17 +4945,31 @@ Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const E
         }
     }
 
-    if (!workspaceMatchesMonitor(workspace))
+    return workspaceMatchesMonitor(workspace) ? workspace : PHLWORKSPACE{};
+}
+Rect OverviewController::niriWorkspaceSurfaceRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect,
+                                                  const Rect& surfaceRect) const {
+    if (!background.monitor || viewportRect.width <= 1.0 || viewportRect.height <= 1.0)
+        return viewportRect;
+
+    const auto workspace = niriWorkspaceForBackground(state, background);
+    if (!workspace)
         return viewportRect;
 
     const CBox workspaceBox = workspace->m_space->workArea();
-    const CBox desktopBox = background.monitor->logicalBoxMinusReserved();
     const Rect workspaceRect = makeRect(workspaceBox.x, workspaceBox.y, workspaceBox.width, workspaceBox.height);
-    const Rect desktopRect = makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height);
-    if (workspaceRect.width <= 1.0 || workspaceRect.height <= 1.0 || desktopRect.width <= 1.0 || desktopRect.height <= 1.0)
+    if (workspaceRect.width <= 1.0 || workspaceRect.height <= 1.0 || surfaceRect.width <= 1.0 || surfaceRect.height <= 1.0)
         return viewportRect;
 
-    return transformLiveOverviewRect(desktopRect, workspaceRect, viewportRect);
+    return transformLiveOverviewRect(surfaceRect, workspaceRect, viewportRect);
+}
+Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const {
+    if (!background.monitor)
+        return viewportRect;
+
+    const CBox desktopBox = background.monitor->logicalBoxMinusReserved();
+    return niriWorkspaceSurfaceRect(state, background, viewportRect,
+                                    makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height));
 }
 void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
@@ -5000,11 +5011,31 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         color.a *= renderAlpha;
         g_pHyprOpenGL->renderRect(toBox(renderRect), color, {});
     };
+    const auto renderWorkspace = [&](const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect, double alpha) {
+        renderBackground(niriWorkspaceBackgroundRect(state, background, viewportRect), alpha);
+
+        for (const auto& proxy : m_hiddenStripLayerProxies) {
+            if (!proxy.layer || proxy.monitor != renderMonitor || !isNiriWallpaperLayoutLayer(proxy.layer, renderMonitor))
+                continue;
+
+            auto* framebuffer = proxy.framebuffer ? proxy.framebuffer.get() : nullptr;
+            if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture())
+                continue;
+
+            const Rect layerGlobal = niriWorkspaceSurfaceRect(state, background, viewportRect, proxy.proxyRectGlobal);
+            const Rect layerRender = scaleRectForRender(rectToMonitorLocal(layerGlobal, renderMonitor), renderMonitor);
+            const float layerAlpha = static_cast<float>(clampUnit(alpha));
+            if (layerRender.width <= 0.0 || layerRender.height <= 0.0 || layerAlpha <= 0.001F)
+                continue;
+
+            g_pHyprOpenGL->renderTexture(framebuffer->getTexture(), toBox(layerRender), {.a = layerAlpha});
+        }
+    };
 
     if (!m_workspaceTransition.active) {
         for (const auto& background : m_state.emptyWorkspacePlaceholders) {
             if (background.monitor == renderMonitor)
-                renderBackground(niriWorkspaceBackgroundRect(m_state, background, currentEmptyWorkspacePlaceholderRect(background)), phaseAlpha);
+                renderWorkspace(m_state, background, currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
         }
         return;
     }
@@ -5048,21 +5079,22 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         if (!source && !target)
             continue;
 
-        Rect backgroundRect;
+        Rect viewportRect;
         double alpha = phaseAlpha;
         if (source && target) {
-            const Rect sourceRect = niriWorkspaceBackgroundRect(m_workspaceTransition.sourceState, *source, source->targetGlobal);
-            const Rect targetRect = niriWorkspaceBackgroundRect(m_workspaceTransition.targetState, *target, target->targetGlobal);
-            backgroundRect = lerpRect(translated(sourceRect, sourceOffset), translated(targetRect, targetOffset), progress);
+            viewportRect = lerpRect(translated(source->targetGlobal, sourceOffset), translated(target->targetGlobal, targetOffset), progress);
         } else if (source) {
-            backgroundRect = translated(niriWorkspaceBackgroundRect(m_workspaceTransition.sourceState, *source, source->targetGlobal), sourceOffset);
+            viewportRect = translated(source->targetGlobal, sourceOffset);
             alpha *= 1.0 - progress;
         } else {
-            backgroundRect = translated(niriWorkspaceBackgroundRect(m_workspaceTransition.targetState, *target, target->targetGlobal), targetOffset);
+            viewportRect = translated(target->targetGlobal, targetOffset);
             alpha *= progress;
         }
 
-        renderBackground(backgroundRect, alpha);
+        if (target)
+            renderWorkspace(m_workspaceTransition.targetState, *target, viewportRect, alpha);
+        else
+            renderWorkspace(m_workspaceTransition.sourceState, *source, viewportRect, alpha);
     }
 }
 void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) const {
