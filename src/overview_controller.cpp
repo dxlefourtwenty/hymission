@@ -7923,14 +7923,20 @@ void OverviewController::syncNiriWallpaperSnapshots() {
             break;
         }
 
-        if (!wallpaperLayer)
+        if (!wallpaperLayer) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] niri wallpaper snapshot missing layer monitor=" + monitor->m_name);
             continue;
+        }
 
         m_niriWallpaperSnapshotLayer = wallpaperLayer;
         const auto framebuffer = layerFramebufferFor(wallpaperLayer);
         m_niriWallpaperSnapshotLayer.reset();
-        if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture())
+        if (!framebuffer || !framebuffer->isAllocated() || !framebuffer->getTexture()) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] niri wallpaper snapshot capture failed namespace=" + wallpaperLayer->m_namespace + " monitor=" + monitor->m_name);
             continue;
+        }
 
         setFramebufferLinearFiltering(*framebuffer);
         m_niriWallpaperSnapshots.push_back({
@@ -7938,6 +7944,12 @@ void OverviewController::syncNiriWallpaperSnapshots() {
             .layer = wallpaperLayer,
             .framebuffer = framebuffer,
         });
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] niri wallpaper snapshot captured namespace=" << wallpaperLayer->m_namespace << " monitor=" << monitor->m_name
+                << " fb=(" << framebuffer->m_size.x << 'x' << framebuffer->m_size.y << ')';
+            debugLog(out.str());
+        }
     }
 }
 
@@ -8293,9 +8305,6 @@ void OverviewController::renderHiddenStripLayerProxies() const {
 }
 
 bool OverviewController::shouldSuppressSurfaceBlur(void* surfacePassThisptr) const {
-    if (!isAnimating())
-        return false;
-
     const auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
     if (!renderData || !renderData->pWindow || renderData->popup || !renderData->blur)
         return false;
@@ -8304,10 +8313,15 @@ bool OverviewController::shouldSuppressSurfaceBlur(void* surfacePassThisptr) con
     if (!monitor || !ownsMonitor(monitor) || !renderableManagedWindowFor(renderData->pWindow, monitor))
         return false;
 
+    const bool wallpaperWorkspace = niriWallpaperZoomAppliesToMonitor(m_state, monitor);
+    if (!wallpaperWorkspace && !isAnimating())
+        return false;
+
     if (debugSurfaceLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] blur suppress " << debugWindowLabel(renderData->pWindow) << " phase="
-            << (m_state.phase == Phase::Opening ? "opening" : m_state.phase == Phase::Closing ? "closing" : "active");
+            << (m_state.phase == Phase::Opening ? "opening" : m_state.phase == Phase::Closing ? "closing" : "active")
+            << " wallpaperWorkspace=" << (wallpaperWorkspace ? 1 : 0);
         debugSurfaceLog(out.str());
     }
 
@@ -8339,11 +8353,14 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
         .clipBox = renderData->clipBox,
     };
 
+    const bool suppressBlur = shouldSuppressSurfaceBlur(surfacePassThisptr);
     const bool transformed = transformSurfaceRenderDataForWindow(renderData->pWindow, monitor, *renderData);
     if (transformed) {
         renderData->alpha = managedPreviewAlphaFor(renderData->pWindow, snapshot.alpha);
         if (!renderData->pWindow->m_fadingOut)
             renderData->fadeAlpha = 1.0F;
+        if (suppressBlur)
+            renderData->blur = false;
     }
 
     if (transformed && debugSurfaceLogsEnabled()) {
