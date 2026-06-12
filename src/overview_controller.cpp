@@ -133,6 +133,62 @@ class OverviewOverlayPassElement final : public IPassElement {
     PHLMONITORREF       m_monitor;
 };
 
+class OverviewWallpaperPassElement final : public IPassElement {
+  public:
+    OverviewWallpaperPassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
+    }
+
+    std::vector<UP<IPassElement>> draw() override {
+        const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+        const auto expectedMonitor = m_monitor.lock();
+        if (!m_controller || !renderMonitor || !expectedMonitor || renderMonitor != expectedMonitor)
+            return {};
+
+        m_controller->renderBackdrop();
+        m_controller->renderNiriWorkspaceBackgrounds();
+        m_controller->renderEmptyOverviewPlaceholder(true);
+        if (m_controller->m_state.emptyWorkspacePlaceholders.empty())
+            m_controller->renderEmptyOverviewPlaceholder();
+        return {};
+    }
+
+    bool needsLiveBlur() override {
+        return false;
+    }
+
+    bool needsPrecomputeBlur() override {
+        return false;
+    }
+
+    bool undiscardable() override {
+        return true;
+    }
+
+    std::optional<CBox> boundingBox() override {
+        const auto monitor = m_monitor.lock();
+        if (!monitor)
+            return std::nullopt;
+
+        return CBox{{}, monitor->m_size};
+    }
+
+    CRegion opaqueRegion() override {
+        return {};
+    }
+
+    const char* passName() override {
+        return "OverviewWallpaperPassElement";
+    }
+
+    ePassElementType type() override {
+        return EK_CUSTOM;
+    }
+
+  private:
+    OverviewController* m_controller = nullptr;
+    PHLMONITORREF       m_monitor;
+};
+
 namespace {
 
 constexpr double OPEN_DURATION_MS = 180.0;
@@ -3157,11 +3213,7 @@ void OverviewController::renderStage(eRenderStage stage) {
         updateAnimation();
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
-        renderBackdrop();
-        renderNiriWorkspaceBackgrounds();
-        renderEmptyOverviewPlaceholder(true);
-        if (m_state.emptyWorkspacePlaceholders.empty())
-            renderEmptyOverviewPlaceholder();
+        g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewWallpaperPassElement>(this, monitor));
         if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
              m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
             !m_deactivatePending) {

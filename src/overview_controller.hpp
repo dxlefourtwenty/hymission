@@ -45,6 +45,7 @@ namespace Config {
 namespace hymission {
 
 class OverviewOverlayPassElement;
+class OverviewWallpaperPassElement;
 
 class OverviewController {
   public:
@@ -130,6 +131,7 @@ class OverviewController {
     void                       scrollMoveGestureEndHook(void* gestureThisptr, const ITrackpadGesture::STrackpadGestureEnd& e);
   private:
     friend class OverviewOverlayPassElement;
+    friend class OverviewWallpaperPassElement;
 
     enum class Phase {
         Inactive,
