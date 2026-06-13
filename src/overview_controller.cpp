@@ -6687,16 +6687,42 @@ void OverviewController::processQueuedEditDispatchers() {
         }
     }
 
-    // If any dispatcher ran, refresh the workspace strip activity to ensure
-    // the active border matches the new focused workspace/window.
-    // This is critical for niri single-workspace overview where the strip
-    // directly reflects the active layout workspace.
-    if (anyDispatcherRan && isVisible() && m_state.phase == Phase::Active) {
-        if (refreshWorkspaceStripActivity(m_state)) {
-            if (debugLogsEnabled()) {
-                debugLog("[hymission] refreshed workspace strip activity after queued dispatchers");
+    // After all queued dispatchers have run, do a final focus sync to ensure
+    // the overview state and scrolling layout's lastFocusedTarget match the
+    // actual Hyprland focus. This prevents the focus border from getting stuck
+    // on a stale window when multiple movecol/movefocus dispatchers were queued
+    // during a workspace transition.
+    if (anyDispatcherRan && isVisible() && m_state.phase == Phase::Active &&
+        m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        const auto finalFocus = Desktop::focusState()->window();
+        if (finalFocus && finalFocus->m_isMapped && hasManagedWindow(finalFocus)) {
+            const auto currentWorkspace = finalFocus->m_pinned ? activeLayoutWorkspace() : finalFocus->m_workspace;
+            if (currentWorkspace && isScrollingWorkspace(currentWorkspace)) {
+                // Sync overview internal focus state
+                selectWindowInState(m_state, finalFocus);
+                m_state.focusDuringOverview = finalFocus;
+                // Sync scrolling layout focus for the current workspace
+                (void)syncScrollingWorkspaceSpotOnWindow(finalFocus);
+                // Do a complete visible state rebuild with the final focus as anchor.
+                // This ensures the overview state, preview rects, and strip entries
+                // are all consistent with the current Hyprland focus and layout.
+                rebuildVisibleState(finalFocus, true);
+                // Refresh strip activity in case the active workspace changed
+                if (refreshWorkspaceStripActivity(m_state)) {
+                    if (debugLogsEnabled()) {
+                        debugLog("[hymission] refreshed workspace strip activity after final focus sync");
+                    }
+                }
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] process queued edit dispatchers final sync"
+                        << " forcedFocus=" << debugWindowLabel(finalFocus)
+                        << " selected=" << (*m_state.selectedIndex < m_state.windows.size() ? debugWindowLabel(m_state.windows[*m_state.selectedIndex].window) : std::string("<none>"))
+                        << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+                    debugLog(out.str());
+                }
+                damageOwnedMonitors();
             }
-            damageOwnedMonitors();
         }
     }
 }
@@ -13051,6 +13077,24 @@ void OverviewController::renderWorkspaceStrip() const {
         }
     }
 
+    // Check if a workspace transition is active and applies to this monitor.
+    // During a workspace transition, the strip entries should slide with the transition delta.
+    const bool hasWorkspaceTransition = m_workspaceTransition.active &&
+        m_workspaceTransition.monitor && m_workspaceTransition.monitor == renderMonitor;
+    double workspaceTransitionOffset = 0.0;
+    if (hasWorkspaceTransition) {
+        const double clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
+        const double sourceOffset = -clampedDelta;
+        const int targetDirection =
+            clampedDelta < -0.0001 ? -1 : clampedDelta > 0.0001 ? 1 : (m_workspaceTransition.step < 0 ? -1 : 1);
+        const double targetOffset = sourceOffset + static_cast<double>(targetDirection) * m_workspaceTransition.distance;
+        const double t = m_workspaceTransition.distance > 0.0 ? clampUnit(std::abs(clampedDelta) / m_workspaceTransition.distance) : 1.0;
+        if (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical)
+            workspaceTransitionOffset = sourceOffset + (targetOffset - sourceOffset) * t;
+        else
+            workspaceTransitionOffset = sourceOffset + (targetOffset - sourceOffset) * t;
+    }
+
     const Rect bandGlobal = workspaceStripBandRectForMonitor(renderMonitor, m_state);
     if (bandGlobal.width > 0.0 && bandGlobal.height > 0.0) {
         const Rect band = rectToMonitorRenderLocal(animatedWorkspaceStripRect(bandGlobal, renderMonitor), renderMonitor);
@@ -13063,7 +13107,15 @@ void OverviewController::renderWorkspaceStrip() const {
             continue;
 
         const bool hovered = m_state.hoveredStripIndex && *m_state.hoveredStripIndex == index;
-        const Rect outerGlobal = animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), renderMonitor);
+        // Apply workspace transition offset during active transition
+        Rect outerGlobal = currentWorkspaceStripRect(entry);
+        if (hasWorkspaceTransition) {
+            if (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical)
+                outerGlobal = translateRect(outerGlobal, 0.0, workspaceTransitionOffset);
+            else
+                outerGlobal = translateRect(outerGlobal, workspaceTransitionOffset, 0.0);
+        }
+        outerGlobal = animatedWorkspaceStripRect(outerGlobal, renderMonitor);
         const Rect outer = rectToMonitorLocal(outerGlobal, renderMonitor);
         if (outer.width <= 0.0 || outer.height <= 0.0)
             continue;
