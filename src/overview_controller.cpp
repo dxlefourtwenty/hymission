@@ -6584,10 +6584,44 @@ void OverviewController::processQueuedEditDispatchers() {
         m_pendingEditDispatchers.pop_front();
 
         if (debugLogsEnabled()) {
+            const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
+            const bool directNiri = activeDirectNiriSingleWorkspaceOverview();
+            bool directLiveGeometryAvailable = false;
+            if (overviewActive && directNiri) {
+                directLiveGeometryAvailable = std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
+                    return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
+                });
+            }
+            const auto selected = selectedWindow();
+            const auto focused = Desktop::focusState()->window();
+            const auto focusOverview = m_state.focusDuringOverview;
+            const auto activeWorkspace = activeLayoutWorkspace();
+            
             std::ostringstream out;
-            out << "[hymission] process queued edit dispatcher"
+            out << "[hymission] process queued edit dispatcher BEGIN"
                 << " dispatcher=" << pending.dispatcherName
-                << " args=" << pending.args;
+                << " args=" << pending.args
+                << " overviewActive=" << (overviewActive ? 1 : 0)
+                << " directNiri=" << (directNiri ? 1 : 0)
+                << " directLiveGeometryAvailable=" << (directLiveGeometryAvailable ? 1 : 0)
+                << " selected=" << debugWindowLabel(selected)
+                << " focusDuringOverview=" << debugWindowLabel(focusOverview)
+                << " activeWindow=" << debugWindowLabel(focused)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspace);
+            if (activeWorkspace) {
+                auto* scrolling = scrollingAlgorithmForWorkspace(activeWorkspace);
+                if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                    out << " scrollOffset=" << scrolling->m_scrollingData->controller->getOffset()
+                        << " columns=" << scrolling->m_scrollingData->columns.size();
+                    for (std::size_t i = 0; i < scrolling->m_scrollingData->columns.size(); ++i) {
+                        auto col = scrolling->m_scrollingData->columns[i];
+                        if (col) {
+                            auto lft = col->lastFocusedTarget.lock();
+                            out << " col#" << i << " lastFocused=" << debugWindowLabel(lft ? lft->target.lock()->window() : PHLWINDOW{});
+                        }
+                    }
+                }
+            }
             debugLog(out.str());
         }
 
@@ -6595,6 +6629,33 @@ void OverviewController::processQueuedEditDispatchers() {
             // Run the dispatcher with the updated state
             (void)runOverviewEditingDispatcher(pending.dispatcherName.c_str(), pending.original, std::move(pending.args));
             anyDispatcherRan = true;
+        }
+
+        if (debugLogsEnabled()) {
+            const auto selectedAfter = selectedWindow();
+            const auto focusOverviewAfter = m_state.focusDuringOverview;
+            const auto focusedAfter = Desktop::focusState()->window();
+            const auto activeWorkspaceAfter = activeLayoutWorkspace();
+            
+            std::ostringstream out;
+            out << "[hymission] process queued edit dispatcher END"
+                << " selected=" << debugWindowLabel(selectedAfter)
+                << " focusDuringOverview=" << debugWindowLabel(focusOverviewAfter)
+                << " activeWindow=" << debugWindowLabel(focusedAfter)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspaceAfter);
+            if (activeWorkspaceAfter) {
+                auto* scrolling = scrollingAlgorithmForWorkspace(activeWorkspaceAfter);
+                if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                    for (std::size_t i = 0; i < scrolling->m_scrollingData->columns.size(); ++i) {
+                        auto col = scrolling->m_scrollingData->columns[i];
+                        if (col) {
+                            auto lft = col->lastFocusedTarget.lock();
+                            out << " col#" << i << " lastFocused=" << debugWindowLabel(lft ? lft->target.lock()->window() : PHLWINDOW{});
+                        }
+                    }
+                }
+            }
+            debugLog(out.str());
         }
     }
 
