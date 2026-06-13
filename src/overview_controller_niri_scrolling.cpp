@@ -3433,15 +3433,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
         } else {
-            if (dispatcherNameLower == "movefocus")
+            // Sync scrolling layout focus for ALL focus/movement dispatchers (movefocus,
+            // movecol, swapcol) BEFORE state rebuild. This ensures the scrolling
+            // layout's lastFocusedTarget matches the new focus/column when the
+            // overview state is rebuilt. Previously only movefocus was synced here,
+            // causing movecol/swapcol to rebuild state on stale layout data.
+            if (isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage)
                 (void)syncScrollingWorkspaceSpotOnWindow(preferred);
             refreshVisibleStateMetadata(preferred);
 
             // Ensure overview focus state matches the new focused window before
-            // refreshing the layout scroll. This fixes a bug where queued
-            // movefocus/movecol dispatchers (triggered during a workspace
-            // transition) would leave the visual selection border on the old
-            // window while the scrolling layout centered the new window.
+            // refreshing the layout scroll.
             if (preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
