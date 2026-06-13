@@ -2546,7 +2546,7 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
 
     return best && bestDistance2 <= 4.0 ? best : nullptr;
 }
-bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const {
+bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window, ScrollingSpotTargeting targeting) const {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return false;
 
@@ -2588,14 +2588,14 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
     double requestedOffset = offsetBefore;
 
-    if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1) {
-        data->fitCol(column);
-    } else {
+    column->lastFocusedTarget = targetData;
+    if (targeting == ScrollingSpotTargeting::Center || getConfigInt(m_handle, "scrolling:focus_fit_method", 0) != 1) {
         data->centerCol(column);
+    } else {
+        data->fitCol(column);
     }
     requestedOffset = controller->getOffset();
 
-    column->lastFocusedTarget = targetData;
     data->recalculate(true);
 
     if (const auto monitor = window->m_workspace->m_monitor.lock())
@@ -3399,6 +3399,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
         } else {
+            if (dispatcherNameLower == "movefocus")
+                (void)syncScrollingWorkspaceSpotOnWindow(preferred);
             refreshVisibleStateMetadata(preferred);
             if (animateDirectStripRelayout)
                 refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);

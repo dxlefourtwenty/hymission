@@ -3552,7 +3552,8 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
             latchHoverSelectionAnchor(m_pressedWindowPointer);
             if (clickedWindow)
-                (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
+                (void)syncScrollingWorkspaceSpotOnWindow(
+                    clickedWindow, directNiriSingleWorkspaceScrollClick ? ScrollingSpotTargeting::Center : ScrollingSpotTargeting::Configured);
             updateSelectedWindowLayout(previousSelectedWindow);
             refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center",
                                                            directNiriSingleWorkspaceScrollClick ? &previousPreviewRects : nullptr);
@@ -3575,7 +3576,7 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         latchHoverSelectionAnchor(m_pressedWindowPointer);
         updateSelectedWindowLayout(previousSelectedWindow);
         if (directNiriSingleWorkspaceScrollClick) {
-            (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow);
+            (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow, ScrollingSpotTargeting::Center);
             refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center", &previousPreviewRects);
         }
         damageOwnedMonitors();

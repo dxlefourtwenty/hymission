@@ -267,6 +267,11 @@ class OverviewController {
 
     using PreviewRectSnapshot = std::vector<std::pair<PHLWINDOW, Rect>>;
 
+    enum class ScrollingSpotTargeting {
+        Configured,
+        Center,
+    };
+
     struct SurfaceRenderDataSnapshot {
         Vector2D pos;
         Vector2D localPos;
@@ -731,7 +736,8 @@ class OverviewController {
     void                       normalizeDirectNiriWorkspaceActivation(const PHLWORKSPACE& workspace) const;
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
-    [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(
+        const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured) const;
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
                                                           const PreviewRectSnapshot* previousPreviewRects = nullptr);
