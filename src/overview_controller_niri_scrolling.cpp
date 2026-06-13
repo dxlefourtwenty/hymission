@@ -4975,38 +4975,6 @@ Rect OverviewController::niriWorkspaceBackgroundRect(const State& state, const E
     return niriWorkspaceSurfaceRect(state, background, viewportRect,
                                     makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height));
 }
-void OverviewController::renderNiriWindowBackings() const {
-    const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
-    if (!niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))
-        return;
-
-    auto color = niriModeWallpaperZoomBackgroundColor();
-    color.a = 1.0F;
-
-    const auto renderBacking = [&](const ManagedWindow& managed) {
-        if (!managed.window || managed.targetMonitor != renderMonitor)
-            return;
-
-        const auto transform = windowTransformFor(managed.window, renderMonitor);
-        if (!transform)
-            return;
-
-        const Rect renderRect = scaleRectForRender(rectToMonitorLocal(transform->targetGlobal, renderMonitor), renderMonitor);
-        if (renderRect.width <= 0.0 || renderRect.height <= 0.0)
-            return;
-
-        g_pHyprOpenGL->renderRect(toBox(renderRect), color,
-                                  {
-                                      .round = managedWindowBorderRound(managed, renderMonitor),
-                                      .roundingPower = managedWindowBorderRoundingPower(managed),
-                                  });
-    };
-
-    for (const auto& managed : m_state.windows)
-        renderBacking(managed);
-    for (const auto& managed : m_state.transientClosingWindows)
-        renderBacking(managed);
-}
 void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!niriWallpaperZoomAppliesToMonitor(m_state, renderMonitor))

@@ -146,7 +146,6 @@ class OverviewWallpaperPassElement final : public IPassElement {
 
         m_controller->renderBackdrop();
         m_controller->renderNiriWorkspaceBackgrounds();
-        m_controller->renderNiriWindowBackings();
         m_controller->renderEmptyOverviewPlaceholder(true);
         if (m_controller->m_state.emptyWorkspacePlaceholders.empty())
             m_controller->renderEmptyOverviewPlaceholder();
@@ -4340,7 +4339,7 @@ bool OverviewController::surfaceNeedsLiveBlurHook(void* surfacePassThisptr) {
     if (!m_surfaceNeedsLiveBlurOriginal)
         return false;
 
-    if (shouldSuppressSurfaceBlur(surfacePassThisptr))
+    if (suppressSurfaceBlur(surfacePassThisptr))
         return false;
 
     auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
@@ -4360,7 +4359,7 @@ bool OverviewController::surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr
     if (!m_surfaceNeedsPrecomputeBlurOriginal)
         return false;
 
-    if (shouldSuppressSurfaceBlur(surfacePassThisptr))
+    if (suppressSurfaceBlur(surfacePassThisptr))
         return false;
 
     auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
@@ -8416,8 +8415,8 @@ void OverviewController::renderHiddenStripLayerProxies() const {
     }
 }
 
-bool OverviewController::shouldSuppressSurfaceBlur(void* surfacePassThisptr) const {
-    const auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
+bool OverviewController::suppressSurfaceBlur(void* surfacePassThisptr) const {
+    auto* renderData = surfaceRenderDataMutable(surfacePassThisptr);
     if (!renderData || !renderData->pWindow || renderData->popup || !renderData->blur)
         return false;
 
@@ -8437,6 +8436,7 @@ bool OverviewController::shouldSuppressSurfaceBlur(void* surfacePassThisptr) con
         debugSurfaceLog(out.str());
     }
 
+    renderData->blur = false;
     return true;
 }
 
@@ -8465,7 +8465,7 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
         .clipBox = renderData->clipBox,
     };
 
-    const bool suppressBlur = shouldSuppressSurfaceBlur(surfacePassThisptr);
+    const bool suppressBlur = suppressSurfaceBlur(surfacePassThisptr);
     const bool transformed = transformSurfaceRenderDataForWindow(renderData->pWindow, monitor, *renderData);
     if (transformed) {
         renderData->alpha = managedPreviewAlphaFor(renderData->pWindow, snapshot.alpha);

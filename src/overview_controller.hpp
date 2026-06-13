@@ -692,7 +692,7 @@ class OverviewController {
     [[nodiscard]] float                         managedWindowBorderRoundingPower(const ManagedWindow& managed) const;
     void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
     void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
-    [[nodiscard]] bool                          shouldSuppressSurfaceBlur(void* surfacePassThisptr) const;
+    [[nodiscard]] bool                          suppressSurfaceBlur(void* surfacePassThisptr) const;
     [[nodiscard]] bool                          prepareSurfaceRenderData(void* surfacePassThisptr, const char* context, CSurfacePassElement::SRenderData*& renderData,
                                                                          PHLMONITOR& monitor, SurfaceRenderDataSnapshot& snapshot) const;
     void                                        restoreSurfaceRenderData(CSurfacePassElement::SRenderData* renderData, const SurfaceRenderDataSnapshot& snapshot) const;
@@ -824,7 +824,6 @@ class OverviewController {
     [[nodiscard]] Rect niriWorkspaceSurfaceRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect,
                                                 const Rect& surfaceRect) const;
     [[nodiscard]] Rect niriWorkspaceBackgroundRect(const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect) const;
-    void renderNiriWindowBackings() const;
     void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
