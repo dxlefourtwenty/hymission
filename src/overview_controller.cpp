@@ -6379,6 +6379,15 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
         refreshWorkspaceStripSnapshots();
 
+        // Sync scrolling layout focus after state rebuild. The earlier sync at line
+        // ~6310 happens before the state rebuild (which reinitializes the scrolling
+        // layout data), so the focus is lost. Re-sync here to ensure the visual
+        // selection border matches the centered window.
+        if (targetFocus && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+            isScrollingWorkspace(targetFocus->m_workspace)) {
+            (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
+        }
+
         if (!targetActivatedEarly) {
             if (g_pEventManager) {
                 g_pEventManager->postEvent(SHyprIPCEvent{"workspace", targetWorkspace->m_name});
