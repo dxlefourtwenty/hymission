@@ -11442,12 +11442,22 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     const bool previousFullscreenOverrideActive = m_state.fullscreenOverrideActive;
     const bool hyprlandOwnedDirectRelayout = usesDirectNiriScrollingOverview(m_state) &&
         (previousPhase == Phase::Opening || previousPhase == Phase::Active);
+    
+    // When forceRelayout is true (e.g., after queued dispatchers or movecol/swapcol),
+    // and we're in niri scrolling mode, use live window positions instead of stale
+    // overview preview rects. This prevents the focus/animation from getting stuck
+    // on stale positions when the actual Hyprland layout has changed.
+    const bool useLiveRectsForRebuild = forceRelayout && usesDirectNiriScrollingOverview(m_state);
     std::vector<std::pair<PHLWINDOW, Rect>> previousPreviewRects;
     previousPreviewRects.reserve(m_state.windows.size() + m_state.transientClosingWindows.size());
-    for (const auto& window : m_state.windows)
-        previousPreviewRects.emplace_back(window.window, currentPreviewRect(window));
-    for (const auto& window : m_state.transientClosingWindows)
-        previousPreviewRects.emplace_back(window.window, currentPreviewRect(window));
+    for (const auto& window : m_state.windows) {
+        const Rect rect = useLiveRectsForRebuild ? liveGlobalRectForWindow(window.window) : currentPreviewRect(window);
+        previousPreviewRects.emplace_back(window.window, rect);
+    }
+    for (const auto& window : m_state.transientClosingWindows) {
+        const Rect rect = useLiveRectsForRebuild ? liveGlobalRectForWindow(window.window) : currentPreviewRect(window);
+        previousPreviewRects.emplace_back(window.window, rect);
+    }
     std::vector<std::tuple<MONITORID, WORKSPACEID, Rect>> previousPlaceholderRects;
     previousPlaceholderRects.reserve(m_state.emptyWorkspacePlaceholders.size());
     const double relayoutProgress = relayoutVisualProgress();
