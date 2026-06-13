@@ -6569,6 +6569,7 @@ void OverviewController::restoreOverviewRenderState() {
 // deferred during an active workspace transition. Call this after the
 // transition commits and state is rebuilt for the new workspace.
 void OverviewController::processQueuedEditDispatchers() {
+    bool anyDispatcherRan = false;
     while (!m_pendingEditDispatchers.empty()) {
         auto pending = std::move(m_pendingEditDispatchers.front());
         m_pendingEditDispatchers.pop_front();
@@ -6584,6 +6585,20 @@ void OverviewController::processQueuedEditDispatchers() {
         if (pending.original && *pending.original) {
             // Run the dispatcher with the updated state
             (void)runOverviewEditingDispatcher(pending.dispatcherName.c_str(), pending.original, std::move(pending.args));
+            anyDispatcherRan = true;
+        }
+    }
+
+    // If any dispatcher ran, refresh the workspace strip activity to ensure
+    // the active border matches the new focused workspace/window.
+    // This is critical for niri single-workspace overview where the strip
+    // directly reflects the active layout workspace.
+    if (anyDispatcherRan && isVisible() && m_state.phase == Phase::Active) {
+        if (refreshWorkspaceStripActivity(m_state)) {
+            if (debugLogsEnabled()) {
+                debugLog("[hymission] refreshed workspace strip activity after queued dispatchers");
+            }
+            damageOwnedMonitors();
         }
     }
 }
@@ -10174,7 +10189,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
     if (mode != CloseMode::Abort) {
         m_pendingWorkspaceTransitionRequests.clear();
-        m_pendingEditDispatchers.clear();
+        // Don't clear m_pendingEditDispatchers here if a workspace transition is active
+        // and will be committed - let the commit process handle them.
+        if (!m_workspaceTransition.active)
+            m_pendingEditDispatchers.clear();
     }
 
     const WORKSPACEID authoritativeCloseWorkspaceId = authoritativeOverviewWorkspaceId(
