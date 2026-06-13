@@ -11280,6 +11280,17 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     m_relayoutProgressAnimation.reset();
     armOverviewRenderState(m_state);
     applyWorkspaceNameOverrides(m_state);
+
+    // Sync scrolling layout focus after state rebuild. The buildState sets
+    // focusDuringOverview but the scrolling layout's lastFocusedTarget is
+    // not automatically updated. Without this, the visual selection border
+    // (driven by focusDuringOverview) and the viewport centering (driven by
+    // lastFocusedTarget) become desynchronized.
+    if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
+        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+    }
+
     syncHiddenStripLayerProxies();
     refreshWorkspaceStripSnapshots();
     updateHoveredFromPointer(false, false, false, false, "metadata-refresh");
@@ -11624,6 +11635,17 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
         m_relayoutProgressAnimation.reset();
     armOverviewRenderState(m_state);
     applyWorkspaceNameOverrides(m_state);
+
+    // Sync scrolling layout focus after state rebuild. The buildState sets
+    // focusDuringOverview but the scrolling layout's lastFocusedTarget is
+    // not automatically updated. Without this, the visual selection border
+    // (driven by focusDuringOverview) and the viewport centering (driven by
+    // lastFocusedTarget) become desynchronized.
+    if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
+        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+    }
+
     syncHiddenStripLayerProxies();
     refreshWorkspaceStripSnapshots();
     if (selectionRelayoutForced) {
