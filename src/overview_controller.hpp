@@ -738,8 +738,8 @@ class OverviewController {
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(
-        const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured);
-    void                       refreshExitLayoutForFocus(const PHLWINDOW& window);
+        const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured) const;
+    void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
                                                           const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                       syncFocusDuringOverviewFromSelection(bool syncScrollingSpot = true, const char* source = "?", bool centerCursor = false);
