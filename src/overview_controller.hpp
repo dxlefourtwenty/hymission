@@ -659,6 +659,7 @@ class OverviewController {
     void                       commitOverviewWorkspaceTransition(bool followGesture = false, bool forceSync = false);
     [[nodiscard]] bool         activateTimedNiriWorkspaceTransitionTarget();
     void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {}, bool clearPendingRequests = true);
+    void                       processQueuedEditDispatchers();
     void                       commitActiveNiriWorkspaceTransitionForRetarget();
     void                       startNextQueuedOverviewWorkspaceTransition();
     void                       armWorkspaceTransitionRenderState();
@@ -994,6 +995,15 @@ class OverviewController {
     WorkspaceSwipeGestureContext m_workspaceSwipeGesture;
     WorkspaceTransition      m_workspaceTransition;
     std::deque<WorkspaceTransitionRequest> m_pendingWorkspaceTransitionRequests;
+    // Queued overview editing dispatchers (movefocus, movecol, swapcol) to run after
+    // an active workspace transition commits. This ensures animations are independent
+    // and focus properly settles on the new workspace.
+    struct PendingEditDispatcher {
+        std::string dispatcherName;
+        std::string args;
+        DispatcherHandler* original = nullptr;
+    };
+    std::deque<PendingEditDispatcher> m_pendingEditDispatchers;
     std::vector<WorkspaceTransitionRenderStateBackup> m_workspaceTransitionRenderStateBackups;
     std::vector<WorkspaceTransitionRenderStateBackup> m_overviewRenderStateBackups;
     StripPreviewContext      m_stripPreviewContext;

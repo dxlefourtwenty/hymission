@@ -3269,11 +3269,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (!original || !*original)
         return {};
 
-    if (m_workspaceTransition.active && m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit)
-        commitActiveNiriWorkspaceTransitionForRetarget();
-
     const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
-    const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const std::string dispatcherNameLower = asciiLowerCopy(dispatcherName ? std::string(dispatcherName) : std::string{});
     const std::string dispatcherArgsLower = asciiLowerCopy(trimCopy(args));
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
@@ -3281,6 +3277,33 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
+    const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
+
+    // If a workspace transition is active (any mode), queue focus/movement dispatchers
+    // to run after the transition commits. This ensures animations are independent and
+    // focus properly settles on the new workspace.
+    const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
+    if (m_workspaceTransition.active && isFocusOrMovementDispatcher) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] queue edit dispatcher during workspace transition"
+                << " dispatcher=" << dispatcherNameLower
+                << " args=" << dispatcherArgsLower
+                << " transitionMode=" << (m_workspaceTransition.mode == WorkspaceTransitionMode::Gesture ? "gesture"
+                    : m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit ? "commit"
+                    : m_workspaceTransition.mode == WorkspaceTransitionMode::TimedRevert ? "revert" : "unknown");
+            debugLog(out.str());
+        }
+        m_pendingEditDispatchers.push_back({dispatcherNameLower, std::move(args), original});
+        return {};
+    }
+
+    // For timed commit transitions, commit immediately for non-focus/movement dispatchers
+    // (e.g., movetoworkspace) to allow retargeting.
+    if (m_workspaceTransition.active && m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit && !isFocusOrMovementDispatcher)
+        commitActiveNiriWorkspaceTransitionForRetarget();
+
+    const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace";
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||

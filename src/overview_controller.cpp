@@ -5716,6 +5716,10 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     if (!monitor || !isVisible() || m_state.phase != Phase::Active)
         return false;
 
+    // Clear any queued edit dispatchers from a previous transition, as they
+    // would be stale for the new workspace transition.
+    m_pendingEditDispatchers.clear();
+
     if (!sourceStateOverride && m_state.relayoutActive) {
         const bool freezeNiriPlaceholderRelayout = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
         const double relayoutProgress = relayoutVisualProgress();
@@ -6384,6 +6388,10 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
     }
 
+    // Process queued edit dispatchers after the workspace transition commits
+    // and state is rebuilt for the new workspace.
+    processQueuedEditDispatchers();
+
     if (temporarilyDisabledAnimations)
         setAnimationsEnabledOverride(false);
 
@@ -6557,7 +6565,35 @@ void OverviewController::restoreOverviewRenderState() {
     m_overviewRenderStateBackups.clear();
 }
 
+// Process queued edit dispatchers (movefocus, movecol, swapcol) that were
+// deferred during an active workspace transition. Call this after the
+// transition commits and state is rebuilt for the new workspace.
+void OverviewController::processQueuedEditDispatchers() {
+    while (!m_pendingEditDispatchers.empty()) {
+        auto pending = std::move(m_pendingEditDispatchers.front());
+        m_pendingEditDispatchers.pop_front();
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] process queued edit dispatcher"
+                << " dispatcher=" << pending.dispatcherName
+                << " args=" << pending.args;
+            debugLog(out.str());
+        }
+
+        if (pending.original && *pending.original) {
+            // Run the dispatcher with the updated state
+            (void)runOverviewEditingDispatcher(pending.dispatcherName.c_str(), pending.original, std::move(pending.args));
+        }
+    }
+}
+
 void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace, bool clearPendingRequests) {
+    // For revert/abort cases (clearPendingRequests=true), process any queued
+    // edit dispatchers on the current workspace before clearing the transition.
+    if (clearPendingRequests)
+        processQueuedEditDispatchers();
+
     m_workspaceTransitionAnimation.reset();
     restoreWorkspaceTransitionRenderState(committedWorkspace);
     clearPendingWindowGeometryRetry();
@@ -10136,8 +10172,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         return;
 
     const ScopedFlag beginCloseGuard(m_beginCloseInProgress);
-    if (mode != CloseMode::Abort)
+    if (mode != CloseMode::Abort) {
         m_pendingWorkspaceTransitionRequests.clear();
+        m_pendingEditDispatchers.clear();
+    }
 
     const WORKSPACEID authoritativeCloseWorkspaceId = authoritativeOverviewWorkspaceId(
         m_workspaceTransition.active,
