@@ -3425,6 +3425,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (dispatcherNameLower == "movefocus")
                 (void)syncScrollingWorkspaceSpotOnWindow(preferred);
             refreshVisibleStateMetadata(preferred);
+
+            // Ensure overview focus state matches the new focused window before
+            // refreshing the layout scroll. This fixes a bug where queued
+            // movefocus/movecol dispatchers (triggered during a workspace
+            // transition) would leave the visual selection border on the old
+            // window while the scrolling layout centered the new window.
+            if (preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
+                selectWindowInState(m_state, preferred);
+                m_state.focusDuringOverview = preferred;
+            }
+
             if (animateDirectStripRelayout)
                 refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);
         }
