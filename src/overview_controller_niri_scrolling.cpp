@@ -1567,6 +1567,17 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         logOverviewLayoutState("niri-refresh-after", m_state);
     }
 
+    // After rebuilding the state, ensure the scrolling layout's focus matches
+    // the overview's selection. This fixes a bug where the visual selection border
+    // would not match the centered window after workspace transitions or queued
+    // dispatchers that rebuild the layout state.
+    if (usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
+        const auto focusedWindow = m_state.focusDuringOverview;
+        if (focusedWindow && focusedWindow->m_isMapped && hasManagedWindow(focusedWindow)) {
+            (void)syncScrollingWorkspaceSpotOnWindow(focusedWindow);
+        }
+    }
+
     updateHoveredFromPointer(false, false, false, false, source ? source : "niri-scroll");
     damageOwnedMonitors();
 }
