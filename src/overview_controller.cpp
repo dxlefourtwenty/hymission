@@ -2168,6 +2168,8 @@ bool OverviewController::initialize() {
         if (!m_lastActiveWindowMonitor)
             m_lastActiveWindowMonitor = Desktop::focusState()->monitor();
         recordWindowActivation(window);
+        if (m_applyingWorkspaceTransitionCommit)
+            return;
         if (window && hasManagedWindow(window) && windowMatchesOverviewScope(window, m_state, false)) {
             const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
             const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(window, previousActiveMonitor);
@@ -5821,14 +5823,14 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         }
     }
 
+    armWorkspaceTransitionRenderState();
+
     const bool activateTimedNiriTarget = mode == WorkspaceTransitionMode::TimedCommit && m_state.collectionPolicy.onlyActiveWorkspace &&
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
     if (activateTimedNiriTarget && !activateTimedNiriWorkspaceTransitionTarget()) {
-        m_workspaceTransition = {};
+        clearOverviewWorkspaceTransition();
         return false;
     }
-
-    armWorkspaceTransitionRenderState();
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -6124,10 +6126,10 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (!targetFocus)
         targetFocus = focusCandidateForWorkspace(targetWorkspace);
 
+    ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
     const bool alreadyActive = transitionMonitor->m_activeWorkspace == targetWorkspace;
     if (!alreadyActive) {
         const auto oldWorkspace = transitionMonitor->m_activeWorkspace;
-        ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
 
         if (targetFocus)
             targetWorkspace->m_lastFocusedWindow = targetFocus;
