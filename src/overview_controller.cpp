@@ -6625,6 +6625,34 @@ void OverviewController::processQueuedEditDispatchers() {
             debugLog(out.str());
         }
 
+        // Before running the queued dispatcher, force-sync overview focus state
+        // to the current Hyprland focus. This fixes a bug where queued
+        // movefocus/movecol/swapcol dispatchers (triggered during a workspace
+        // transition) would run with stale focus data from before the transition.
+        if (pending.original && *pending.original) {
+            const auto currentFocus = Desktop::focusState()->window();
+            if (currentFocus && currentFocus->m_isMapped && hasManagedWindow(currentFocus)) {
+                // Sync overview internal focus state
+                selectWindowInState(m_state, currentFocus);
+                m_state.focusDuringOverview = currentFocus;
+                // Sync scrolling layout focus for the current workspace
+                if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+                    const auto currentWorkspace = currentFocus->m_pinned ? activeLayoutWorkspace() : currentFocus->m_workspace;
+                    if (currentWorkspace && isScrollingWorkspace(currentWorkspace)) {
+                        (void)syncScrollingWorkspaceSpotOnWindow(currentFocus);
+                    }
+                }
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] process queued edit dispatcher pre-sync"
+                        << " forcedFocus=" << debugWindowLabel(currentFocus)
+                        << " selected=" << (*m_state.selectedIndex < m_state.windows.size() ? debugWindowLabel(m_state.windows[*m_state.selectedIndex].window) : std::string("<none>"))
+                        << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+                    debugLog(out.str());
+                }
+            }
+        }
+
         if (pending.original && *pending.original) {
             // Run the dispatcher with the updated state
             (void)runOverviewEditingDispatcher(pending.dispatcherName.c_str(), pending.original, std::move(pending.args));
