@@ -241,6 +241,17 @@ OverviewWorkspaceChangeAction resolveOverviewWorkspaceChangeAction(bool overview
     return OverviewWorkspaceChangeAction::Abort;
 }
 
+OverviewEditTransitionAction resolveOverviewEditTransitionAction(bool workspaceTransitionActive, bool focusOrMovementDispatcher,
+                                                                 bool timedCommitTransition, bool niriSingleWorkspaceTransition) {
+    if (!workspaceTransitionActive || !focusOrMovementDispatcher)
+        return OverviewEditTransitionAction::Run;
+
+    if (timedCommitTransition && niriSingleWorkspaceTransition)
+        return OverviewEditTransitionAction::Retarget;
+
+    return OverviewEditTransitionAction::Defer;
+}
+
 WorkspaceStripAnchor parseWorkspaceStripAnchor(std::string_view value) {
     value = trimAsciiWhitespace(value);
 

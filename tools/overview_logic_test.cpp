@@ -124,6 +124,16 @@ int main() {
                  "overview workspace transitions should continue rebuilding state");
     ok &= expect(resolveOverviewWorkspaceChangeAction(true, false, false, true, true, true) == OverviewWorkspaceChangeAction::Ignore,
                  "closing overview should ignore workspace changes");
+    ok &= expect(resolveOverviewEditTransitionAction(false, true, true, true) == OverviewEditTransitionAction::Run,
+                 "editing without an active workspace transition should run immediately");
+    ok &= expect(resolveOverviewEditTransitionAction(true, true, true, true) == OverviewEditTransitionAction::Retarget,
+                 "timed niri single-workspace transitions should retarget before focus or movement edits");
+    ok &= expect(resolveOverviewEditTransitionAction(true, true, false, true) == OverviewEditTransitionAction::Defer,
+                 "gesture workspace transitions should continue deferring focus or movement edits");
+    ok &= expect(resolveOverviewEditTransitionAction(true, true, true, false) == OverviewEditTransitionAction::Defer,
+                 "other overview modes should continue deferring focus or movement edits");
+    ok &= expect(resolveOverviewEditTransitionAction(true, false, true, true) == OverviewEditTransitionAction::Run,
+                 "unrelated dispatchers should preserve their existing transition handling");
 
     ok &= expect(parseWorkspaceStripAnchor("top") == WorkspaceStripAnchor::Top, "top anchor should parse");
     ok &= expect(parseWorkspaceStripAnchor(" LEFT ") == WorkspaceStripAnchor::Left, "left anchor parsing should ignore case and whitespace");

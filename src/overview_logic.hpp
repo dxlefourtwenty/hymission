@@ -24,6 +24,12 @@ enum class OverviewWorkspaceChangeAction {
     Abort,
 };
 
+enum class OverviewEditTransitionAction {
+    Run,
+    Retarget,
+    Defer,
+};
+
 enum class WorkspaceStripAnchor {
     Top,
     Left,
@@ -77,6 +83,8 @@ struct WorkspaceStripReservation {
 [[nodiscard]] OverviewWorkspaceChangeAction resolveOverviewWorkspaceChangeAction(bool overviewVisible, bool applyingWorkspaceTransitionCommit,
                                                                                  bool workspaceTransitionActive, bool closing,
                                                                                  bool liveFocusTriggeredWorkspaceChange, bool allowsWorkspaceSwitchInOverview);
+[[nodiscard]] OverviewEditTransitionAction resolveOverviewEditTransitionAction(bool workspaceTransitionActive, bool focusOrMovementDispatcher,
+                                                                                bool timedCommitTransition, bool niriSingleWorkspaceTransition);
 [[nodiscard]] WorkspaceStripAnchor parseWorkspaceStripAnchor(std::string_view value);
 [[nodiscard]] WorkspaceStripEmptyMode parseWorkspaceStripEmptyMode(std::string_view value);
 [[nodiscard]] std::optional<HymissionScrollMode> parseHymissionScrollMode(std::string_view value);

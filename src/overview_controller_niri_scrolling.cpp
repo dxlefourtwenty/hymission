@@ -3289,12 +3289,27 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
-
-    // If a workspace transition is active (any mode), queue focus/movement dispatchers
-    // to run after the transition commits. This ensures animations are independent and
-    // focus properly settles on the new workspace.
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
-    if (m_workspaceTransition.active && isFocusOrMovementDispatcher) {
+    const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    const auto transitionAction = resolveOverviewEditTransitionAction(
+        m_workspaceTransition.active,
+        isFocusOrMovementDispatcher,
+        m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit,
+        niriSingleWorkspaceTransition);
+
+    if (transitionAction == OverviewEditTransitionAction::Retarget) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] retarget workspace transition for edit dispatcher"
+                << " dispatcher=" << dispatcherNameLower
+                << " args=" << dispatcherArgsLower;
+            debugLog(out.str());
+        }
+        commitActiveNiriWorkspaceTransitionForRetarget();
+    }
+
+    if (isFocusOrMovementDispatcher && (transitionAction == OverviewEditTransitionAction::Defer || m_workspaceTransition.active)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] queue edit dispatcher during workspace transition"
@@ -3309,8 +3324,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return {};
     }
 
-    // For timed commit transitions, commit immediately for non-focus/movement dispatchers
-    // (e.g., movetoworkspace) to allow retargeting.
     if (m_workspaceTransition.active && m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit && !isFocusOrMovementDispatcher)
         commitActiveNiriWorkspaceTransitionForRetarget();
 
