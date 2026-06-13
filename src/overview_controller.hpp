@@ -981,6 +981,7 @@ class OverviewController {
     std::optional<ScopeOverride> m_pendingDeferredOpenScope;
     std::optional<ScopeOverride> m_postCloseOpenDebounceScope;
     std::chrono::steady_clock::time_point m_postCloseOpenDebounceUntil = {};
+    mutable std::chrono::steady_clock::time_point m_lastScrollSyncTime = {};
     std::size_t               m_cursorShapeResetFrames = 0;
     std::size_t               m_postCloseCursorShapeResetTicks = 0;
     PHLWINDOWREF              m_postCloseForcedFocus;

@@ -2569,6 +2569,23 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
 
+    // Debounce rapid scroll sync calls (e.g., from spamming movecol).
+    // If called too frequently, the Hyprland scrolling controller's animation
+    // state becomes stale, causing jitter.
+    constexpr std::chrono::milliseconds scrollSyncDebounce{50};
+    const auto now = std::chrono::steady_clock::now();
+    if (now - m_lastScrollSyncTime < scrollSyncDebounce) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] sync scrolling workspace spot skipped (debounce)"
+                << " target=" << debugWindowLabel(window)
+                << " elapsed=" << std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastScrollSyncTime).count() << "ms";
+            debugLog(out.str());
+        }
+        return false;
+    }
+    m_lastScrollSyncTime = now;
+
     const auto targetData = scrolling->dataFor(target);
     if (!targetData)
         return false;
