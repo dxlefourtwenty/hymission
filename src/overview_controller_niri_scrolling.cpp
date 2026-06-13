@@ -2557,7 +2557,7 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
 
     return best && bestDistance2 <= 4.0 ? best : nullptr;
 }
-bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window, ScrollingSpotTargeting targeting) const {
+bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window, ScrollingSpotTargeting targeting) {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return false;
 
@@ -2586,6 +2586,12 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     }
     m_lastScrollSyncTime = now;
 
+    // Skip actual scroll offset change during ongoing relayout animation.
+    // The overview's animation system (relayoutActive) interpolates the view position;
+    // calling centerCol/fitCol here would instantly override the animated position
+    // and cause jitter when spamming movecol.
+    const bool skipOffsetChange = m_state.relayoutActive;
+
     const auto targetData = scrolling->dataFor(target);
     if (!targetData)
         return false;
@@ -2606,7 +2612,8 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " live=" << rectToString(liveGlobalRectForWindow(window))
             << " goal=" << rectToString(goalGlobalRectForWindow(window))
             << " col=" << columnIndex
-            << " offsetBefore=" << offsetBefore;
+            << " offsetBefore=" << offsetBefore
+            << " skipOffsetChange=" << (skipOffsetChange ? 1 : 0);
         debugLog(out.str());
         logScrollingWorkspaceSpotState("before explicit focus offset", window->m_workspace, window);
     }
@@ -2616,21 +2623,25 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
     double requestedOffset = offsetBefore;
 
+    // Always update lastFocusedTarget for correct column focus restoration
     column->lastFocusedTarget = targetData;
-    if (targeting == ScrollingSpotTargeting::Center || getConfigInt(m_handle, "scrolling:focus_fit_method", 0) != 1) {
-        data->centerCol(column);
-    } else {
-        data->fitCol(column);
+
+    if (!skipOffsetChange) {
+        if (targeting == ScrollingSpotTargeting::Center || getConfigInt(m_handle, "scrolling:focus_fit_method", 0) != 1) {
+            data->centerCol(column);
+        } else {
+            data->fitCol(column);
+        }
+        requestedOffset = controller->getOffset();
+
+        data->recalculate(true);
+
+        if (const auto monitor = window->m_workspace->m_monitor.lock())
+            g_layoutManager->recalculateMonitor(monitor);
+
+        if (g_pAnimationManager)
+            g_pAnimationManager->frameTick();
     }
-    requestedOffset = controller->getOffset();
-
-    data->recalculate(true);
-
-    if (const auto monitor = window->m_workspace->m_monitor.lock())
-        g_layoutManager->recalculateMonitor(monitor);
-
-    if (g_pAnimationManager)
-        g_pAnimationManager->frameTick();
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -2641,14 +2652,15 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " col=" << columnIndex
             << " requested=" << requestedOffset
             << " offsetAfter=" << controller->getOffset()
-            << " maxExtent=" << maxExtent;
+            << " maxExtent=" << maxExtent
+            << " skipOffsetChange=" << (skipOffsetChange ? 1 : 0);
         debugLog(out.str());
         logScrollingWorkspaceSpotState("after explicit focus offset", window->m_workspace, window);
     }
 
     return true;
 }
-void OverviewController::refreshExitLayoutForFocus(const PHLWINDOW& window) const {
+void OverviewController::refreshExitLayoutForFocus(const PHLWINDOW& window) {
     if (!window || !window->m_isMapped)
         return;
 
