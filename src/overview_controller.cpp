@@ -6707,6 +6707,15 @@ void OverviewController::processQueuedEditDispatchers() {
                 // This ensures the overview state, preview rects, and strip entries
                 // are all consistent with the current Hyprland focus and layout.
                 rebuildVisibleState(finalFocus, true);
+                // Post-rebuild: ensure scrolling layout's lastFocusedTarget matches
+                // the overview's focusDuringOverview. This is critical because
+                // rebuildVisibleState doesn't call the post-rebuild sync that
+                // refreshVisibleStateMetadata does.
+                if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace &&
+                    niriModeAppliesToState(m_state) &&
+                    isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
+                    (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+                }
                 // Refresh strip activity in case the active workspace changed
                 if (refreshWorkspaceStripActivity(m_state)) {
                     if (debugLogsEnabled()) {
