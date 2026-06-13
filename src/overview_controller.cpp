@@ -145,8 +145,8 @@ class OverviewWallpaperPassElement final : public IPassElement {
             return {};
 
         m_controller->renderBackdrop();
-        m_controller->renderNiriWindowBackings();
         m_controller->renderNiriWorkspaceBackgrounds();
+        m_controller->renderNiriWindowBackings();
         m_controller->renderEmptyOverviewPlaceholder(true);
         if (m_controller->m_state.emptyWorkspacePlaceholders.empty())
             m_controller->renderEmptyOverviewPlaceholder();
