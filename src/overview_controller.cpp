@@ -5820,6 +5820,14 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             beginOverviewRelayoutAnimation("workspace-strip-transition");
         }
     }
+
+    const bool activateTimedNiriTarget = mode == WorkspaceTransitionMode::TimedCommit && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    if (activateTimedNiriTarget && !activateTimedNiriWorkspaceTransitionTarget()) {
+        m_workspaceTransition = {};
+        return false;
+    }
+
     armWorkspaceTransitionRenderState();
 
     if (debugLogsEnabled()) {
@@ -6096,6 +6104,84 @@ void OverviewController::requestOverviewWorkspaceTransitionCommit(bool followGes
     });
 }
 
+bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
+    if (!m_workspaceTransition.active || m_workspaceTransition.mode != WorkspaceTransitionMode::TimedCommit || !m_workspaceTransition.monitor)
+        return false;
+
+    const auto transitionMonitor = m_workspaceTransition.monitor;
+    auto       targetWorkspace = g_pCompositor->getWorkspaceByID(m_workspaceTransition.targetWorkspaceId);
+    if (!targetWorkspace && m_workspaceTransition.targetWorkspaceSyntheticEmpty) {
+        targetWorkspace = g_pCompositor->createNewWorkspace(m_workspaceTransition.targetWorkspaceId, transitionMonitor->m_id,
+                                                            m_workspaceTransition.targetWorkspaceName, false);
+    }
+    if (!targetWorkspace)
+        return false;
+
+    PHLWINDOW targetFocus;
+    if (m_workspaceTransition.targetState.focusDuringOverview && m_workspaceTransition.targetState.focusDuringOverview->m_isMapped &&
+        m_workspaceTransition.targetState.focusDuringOverview->m_workspace == targetWorkspace)
+        targetFocus = m_workspaceTransition.targetState.focusDuringOverview;
+    if (!targetFocus)
+        targetFocus = focusCandidateForWorkspace(targetWorkspace);
+
+    const bool alreadyActive = transitionMonitor->m_activeWorkspace == targetWorkspace;
+    if (!alreadyActive) {
+        const auto oldWorkspace = transitionMonitor->m_activeWorkspace;
+        ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
+
+        if (targetFocus)
+            targetWorkspace->m_lastFocusedWindow = targetFocus;
+        transitionMonitor->changeWorkspace(targetWorkspace, true, true, true);
+
+        if (oldWorkspace) {
+            for (const auto& window : g_pCompositor->m_windows) {
+                if (!window || window->m_workspace != oldWorkspace || !window->m_pinned)
+                    continue;
+
+                window->layoutTarget()->assignToSpace(targetWorkspace->m_space);
+            }
+        }
+
+        targetWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+        targetWorkspace->m_alpha->setValueAndWarp(1.F);
+        g_layoutManager->recalculateMonitor(transitionMonitor);
+
+        if (g_pEventManager) {
+            g_pEventManager->postEvent(SHyprIPCEvent{"workspace", targetWorkspace->m_name});
+            g_pEventManager->postEvent(SHyprIPCEvent{"workspacev2", std::format("{},{}", targetWorkspace->m_id, targetWorkspace->m_name)});
+        }
+        Event::bus()->m_events.workspace.active.emit(targetWorkspace);
+    }
+
+    if (targetFocus) {
+        targetWorkspace->m_lastFocusedWindow = targetFocus;
+        if (Desktop::focusState()->window() != targetFocus) {
+            m_pendingLiveFocusWorkspaceChangeTarget = targetFocus;
+            focusWindowCompat(targetFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetFocus)
+                m_pendingLiveFocusWorkspaceChangeTarget.reset();
+        }
+        (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
+    } else {
+        clearWindowFocusCompat(transitionMonitor);
+    }
+
+    if (g_pAnimationManager)
+        g_pAnimationManager->frameTick();
+
+    m_workspaceTransition.targetActivatedEarly = true;
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] activate timed niri workspace transition target=" << debugWorkspaceLabel(targetWorkspace)
+            << " focus=" << debugWindowLabel(targetFocus)
+            << " alreadyActive=" << (alreadyActive ? 1 : 0);
+        debugLog(out.str());
+    }
+
+    return true;
+}
+
 void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, bool forceSync) {
     if (!m_workspaceTransition.active || !m_workspaceTransition.monitor)
         return;
@@ -6107,6 +6193,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     const auto targetWorkspaceId = m_workspaceTransition.targetWorkspaceId;
     const bool targetWorkspaceSyntheticEmpty = m_workspaceTransition.targetWorkspaceSyntheticEmpty;
     const auto targetWorkspaceName = m_workspaceTransition.targetWorkspaceName;
+    const bool targetActivatedEarly = m_workspaceTransition.targetActivatedEarly;
     State      next = m_workspaceTransition.targetState;
     std::vector<std::tuple<MONITORID, WORKSPACEID, bool, Rect>> transitionPlaceholderRects;
     {
@@ -6172,15 +6259,12 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         if (next.focusDuringOverview && next.focusDuringOverview->m_isMapped && next.focusDuringOverview->m_workspace == targetWorkspace)
             intendedTargetFocus = next.focusDuringOverview;
 
-        bool preserveDirectNiriTwoColumnFocus = false;
-        if (intendedTargetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace)) {
-            auto* scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
-            preserveDirectNiriTwoColumnFocus = scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->columns.size() == 2;
-        }
-        if (preserveDirectNiriTwoColumnFocus)
+        const bool preserveDirectNiriFocus =
+            intendedTargetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
+        if (preserveDirectNiriFocus)
             targetWorkspace->m_lastFocusedWindow = intendedTargetFocus;
 
-        const bool targetHasFocusCandidateBeforeSwitch = preserveDirectNiriTwoColumnFocus || static_cast<bool>(targetWorkspace->getFocusCandidate());
+        const bool targetHasFocusCandidateBeforeSwitch = preserveDirectNiriFocus || static_cast<bool>(targetWorkspace->getFocusCandidate());
         transitionMonitor->changeWorkspace(targetWorkspace, true, true, targetHasFocusCandidateBeforeSwitch);
 
         if (oldWorkspace && oldWorkspace != targetWorkspace) {
@@ -6202,11 +6286,11 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
         g_layoutManager->recalculateMonitor(transitionMonitor);
         PHLWINDOW targetFocus;
-        if (preserveDirectNiriTwoColumnFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
+        if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
         else
             targetFocus = focusCandidateForWorkspace(targetWorkspace);
-        if (preserveDirectNiriTwoColumnFocus && targetFocus) {
+        if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
             if (Desktop::focusState()->window() != targetFocus) {
                 m_pendingLiveFocusWorkspaceChangeTarget = targetFocus;
@@ -6288,11 +6372,13 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
         refreshWorkspaceStripSnapshots();
 
-        if (g_pEventManager) {
-            g_pEventManager->postEvent(SHyprIPCEvent{"workspace", targetWorkspace->m_name});
-            g_pEventManager->postEvent(SHyprIPCEvent{"workspacev2", std::format("{},{}", targetWorkspace->m_id, targetWorkspace->m_name)});
+        if (!targetActivatedEarly) {
+            if (g_pEventManager) {
+                g_pEventManager->postEvent(SHyprIPCEvent{"workspace", targetWorkspace->m_name});
+                g_pEventManager->postEvent(SHyprIPCEvent{"workspacev2", std::format("{},{}", targetWorkspace->m_id, targetWorkspace->m_name)});
+            }
+            Event::bus()->m_events.workspace.active.emit(targetWorkspace);
         }
-        Event::bus()->m_events.workspace.active.emit(targetWorkspace);
     }
 
     if (temporarilyDisabledAnimations)
@@ -7616,6 +7702,10 @@ PHLWINDOW OverviewController::selectedWindow() const {
 
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
     const auto* managed = managedWindowFor(window);
+    if (managed && m_workspaceTransition.active && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState)))
+        return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+
     return managed ? managed->previewAlpha : fallback;
 }
 

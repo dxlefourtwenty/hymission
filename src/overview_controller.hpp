@@ -370,6 +370,7 @@ class OverviewController {
         WORKSPACEID                            targetWorkspaceId = WORKSPACE_INVALID;
         std::string                            targetWorkspaceName;
         bool                                   targetWorkspaceSyntheticEmpty = false;
+        bool                                   targetActivatedEarly = false;
         State                                  sourceState;
         State                                  targetState;
         double                                 animationFromDelta = 0.0;
@@ -651,6 +652,7 @@ class OverviewController {
     void                       updateOverviewWorkspaceTransition();
     void                       requestOverviewWorkspaceTransitionCommit(bool followGesture = false, bool forceSync = false);
     void                       commitOverviewWorkspaceTransition(bool followGesture = false, bool forceSync = false);
+    [[nodiscard]] bool         activateTimedNiriWorkspaceTransitionTarget();
     void                       clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace = {}, bool clearPendingRequests = true);
     void                       commitActiveNiriWorkspaceTransitionForRetarget();
     void                       startNextQueuedOverviewWorkspaceTransition();
