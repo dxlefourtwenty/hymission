@@ -1769,6 +1769,39 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     if (!hasSuper)
         return false;
 
+    // Match the overview-open input gate, but only for overview edit actions.
+    // Plain arrow navigation/workspace switching stays available; Super-based
+    // strip/window movement waits until the workspace transition commits and
+    // the post-switch relayout/timer has settled. This prevents movecol from
+    // running against the old workspace's focused target immediately after a
+    // workspace switch.
+    const bool isOverviewEditArrowAction = hasShift || hasCtrl || hasAlt;
+    if (isOverviewEditArrowAction) {
+        const auto blockNow = std::chrono::steady_clock::now();
+        const bool timedPostWorkspaceSwitchBlock =
+            niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
+            blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+        const bool relayoutPostWorkspaceSwitchBlock =
+            niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state);
+        const bool workspaceTransitionBusy =
+            m_workspaceSwipeGesture.active || m_workspaceTransition.active || m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit;
+        if (workspaceTransitionBusy || timedPostWorkspaceSwitchBlock || relayoutPostWorkspaceSwitchBlock) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] block niri edit arrow during post-workspace-switch settle"
+                    << " key=" << direction
+                    << " shift=" << (hasShift ? 1 : 0)
+                    << " ctrl=" << (hasCtrl ? 1 : 0)
+                    << " alt=" << (hasAlt ? 1 : 0)
+                    << " transitionBusy=" << (workspaceTransitionBusy ? 1 : 0)
+                    << " timedBlock=" << (timedPostWorkspaceSwitchBlock ? 1 : 0)
+                    << " relayoutBlock=" << (relayoutPostWorkspaceSwitchBlock ? 1 : 0);
+                debugLog(out.str());
+            }
+            return true;
+        }
+    }
+
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri arrow keybind"

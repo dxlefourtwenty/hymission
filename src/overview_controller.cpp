@@ -6443,7 +6443,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             next.relayoutStart = {};
         }
         m_state = std::move(next);
-        armWorkspaceSwitchDispatcherBlock(m_state.relayoutActive ? std::chrono::milliseconds{900} : std::chrono::milliseconds{650});
+        armWorkspaceSwitchDispatcherBlock(m_state.relayoutActive ? std::chrono::milliseconds{1200} : std::chrono::milliseconds{950});
         applyWorkspaceNameOverrides(m_state);
         if (targetFocus) {
             selectWindowInState(m_state, targetFocus);
