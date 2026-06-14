@@ -5871,8 +5871,6 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .animationStart = {},
     };
 
-    armWorkspaceSwitchDispatcherBlock(std::chrono::milliseconds{700});
-
     if (mode == WorkspaceTransitionMode::TimedCommit)
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
@@ -6445,7 +6443,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             next.relayoutStart = {};
         }
         m_state = std::move(next);
-        armWorkspaceSwitchDispatcherBlock(m_state.relayoutActive ? std::chrono::milliseconds{700} : std::chrono::milliseconds{320});
+        armWorkspaceSwitchDispatcherBlock(m_state.relayoutActive ? std::chrono::milliseconds{900} : std::chrono::milliseconds{650});
         applyWorkspaceNameOverrides(m_state);
         if (targetFocus) {
             selectWindowInState(m_state, targetFocus);
@@ -6493,7 +6491,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     } else {
         updateHoveredFromPointer(false, false, false, false, "workspace-transition-commit");
     }
-    m_pendingWorkspaceTransitionRequests.clear();
+    startNextQueuedOverviewWorkspaceTransition();
     damageOwnedMonitors();
 }
 
@@ -6752,23 +6750,19 @@ SDispatchResult OverviewController::startOverviewWorkspaceTransitionForDispatche
     if (m_beginCloseInProgress || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
         return {};
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          now < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
-    if (!workspaceSwitchSettling && niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
-        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = {};
-        niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
-    }
+    if (m_workspaceTransition.active)
+        commitActiveNiriWorkspaceTransitionForRetarget();
 
-    if (m_workspaceTransition.active || workspaceSwitchSettling) {
+    if (m_workspaceTransition.active) {
+        m_pendingWorkspaceTransitionRequests.push_back({
+            .args = args,
+            .currentMonitorOnly = currentMonitorOnly,
+        });
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] block workspace dispatcher during workspace switch settle args=" << args
-                << " currentMonitorOnly=" << (currentMonitorOnly ? 1 : 0);
+            out << "[hymission] queue overview workspace transition args=" << args
+                << " currentMonitorOnly=" << (currentMonitorOnly ? 1 : 0)
+                << " pending=" << m_pendingWorkspaceTransitionRequests.size();
             debugLog(out.str());
         }
         return {};
@@ -10023,18 +10017,6 @@ SDispatchResult OverviewController::runHookedDispatcher(PostCloseDispatcher disp
     if (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
         return {};
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          now < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
-    if (workspaceSwitchSettling) {
-        if (debugLogsEnabled())
-            debugLog("[hymission] block post-close dispatcher during workspace switch settle");
-        return {};
-    }
 
     if (!selectedWindow())
         return {.success = false, .error = "no selected window in overview"};

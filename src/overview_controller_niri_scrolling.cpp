@@ -1743,18 +1743,6 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state))
         return false;
 
-    const auto arrowNow = std::chrono::steady_clock::now();
-    const bool arrowWorkspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          arrowNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
-    if (arrowWorkspaceSwitchSettling) {
-        if (debugLogsEnabled())
-            debugLog("[hymission] block niri arrow dispatcher during workspace switch settle");
-        return true;
-    }
 
     std::string direction;
     switch (keysym) {
@@ -3389,23 +3377,31 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher;
 
     const auto blockNow = std::chrono::steady_clock::now();
-    const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
-    if (!workspaceSwitchSettling && niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
+    const bool timedPostWorkspaceSwitchBlock =
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
+        blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+    const bool relayoutPostWorkspaceSwitchBlock =
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state);
+    const bool workspaceTransitionBusy =
+        m_workspaceSwipeGesture.active || m_workspaceTransition.active || m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit;
+    const bool shouldBlockOverviewEditDispatcher = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (workspaceTransitionBusy || timedPostWorkspaceSwitchBlock || relayoutPostWorkspaceSwitchBlock);
+
+    if (!timedPostWorkspaceSwitchBlock && !relayoutPostWorkspaceSwitchBlock &&
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = {};
         niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
     }
 
-    if (workspaceSwitchSettling) {
+    if (shouldBlockOverviewEditDispatcher) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] block overview edit dispatcher during workspace switch settle"
+            out << "[hymission] block overview edit dispatcher during post-workspace-switch settle"
                 << " dispatcher=" << dispatcherNameLower
-                << " args=" << dispatcherArgsLower;
+                << " args=" << dispatcherArgsLower
+                << " transitionBusy=" << (workspaceTransitionBusy ? 1 : 0)
+                << " timedBlock=" << (timedPostWorkspaceSwitchBlock ? 1 : 0)
+                << " relayoutBlock=" << (relayoutPostWorkspaceSwitchBlock ? 1 : 0);
             debugLog(out.str());
         }
         return {};
