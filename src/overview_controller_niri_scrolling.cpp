@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cctype>
+#include <chrono>
 #include <limits>
 #include <ranges>
 #include <sstream>
@@ -35,7 +36,9 @@ using Render::GL::g_pHyprOpenGL;
 namespace {
 
 constexpr double RELAYOUT_DURATION_MS = 140.0;
+constexpr auto   EDGE_COLUMN_MOVE_SETTLE_GUARD = std::chrono::milliseconds(320);
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
+std::unordered_map<const void*, std::chrono::steady_clock::time_point> g_lastDirectNiriColumnMoveByWorkspace;
 
 class ScopedFlag {
   public:
@@ -3405,6 +3408,112 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         commitActiveNiriWorkspaceTransitionForRetarget();
 
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
+
+    const bool isMovePositiveColumnMessage = isMoveColumnLayoutMessage &&
+        (dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
+         dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,"));
+    const bool isMoveNegativeColumnMessage = isMoveColumnLayoutMessage &&
+        (dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
+
+    const auto directNiriColumnMoveWorkspace = [&]() -> PHLWORKSPACE {
+        if (!overviewActive || !m_state.collectionPolicy.onlyActiveWorkspace || !niriModeAppliesToState(m_state) || !usesDirectNiriScrollingOverview(m_state))
+            return {};
+
+        if (const auto focused = Desktop::focusState()->window(); focused && focused->m_workspace && isScrollingWorkspace(focused->m_workspace))
+            return focused->m_workspace;
+        if (selectedBefore && selectedBefore->m_workspace && isScrollingWorkspace(selectedBefore->m_workspace))
+            return selectedBefore->m_workspace;
+        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace && isScrollingWorkspace(m_state.focusDuringOverview->m_workspace))
+            return m_state.focusDuringOverview->m_workspace;
+        if (const auto workspace = activeLayoutWorkspace(); workspace && isScrollingWorkspace(workspace))
+            return workspace;
+
+        return {};
+    };
+
+    const auto directNiriColumnMoveAnchor = [&]() -> PHLWINDOW {
+        if (const auto focused = Desktop::focusState()->window(); focused && focused->m_isMapped && !focused->m_pinned && !isFloatingOverviewWindow(focused))
+            return focused;
+        if (selectedBefore && selectedBefore->m_isMapped && !selectedBefore->m_pinned && !isFloatingOverviewWindow(selectedBefore))
+            return selectedBefore;
+        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
+            !isFloatingOverviewWindow(m_state.focusDuringOverview))
+            return m_state.focusDuringOverview;
+
+        return {};
+    };
+
+    const auto directNiriColumnMoveHitsEdge = [&]() -> bool {
+        if (!isMoveColumnLayoutMessage || (!isMovePositiveColumnMessage && !isMoveNegativeColumnMessage))
+            return false;
+
+        const auto workspace = directNiriColumnMoveWorkspace();
+        const auto anchor = directNiriColumnMoveAnchor();
+        if (!workspace || !anchor || anchor->m_workspace != workspace)
+            return false;
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+        const auto target = anchor->layoutTarget();
+        if (!scrolling || !scrolling->m_scrollingData || !target || target->floating())
+            return false;
+
+        const auto targetData = scrolling->dataFor(target);
+        const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+        if (!column || scrolling->m_scrollingData->columns.empty())
+            return false;
+
+        const auto columnIndex = scrolling->m_scrollingData->idx(column);
+        if (columnIndex < 0)
+            return false;
+
+        const auto lastIndex = static_cast<int64_t>(scrolling->m_scrollingData->columns.size() - 1);
+        return (isMovePositiveColumnMessage && columnIndex >= lastIndex) || (isMoveNegativeColumnMessage && columnIndex <= 0);
+    };
+
+    const auto directNiriColumnMoveNeedsSettle = [&]() -> bool {
+        if (m_state.relayoutActive)
+            return true;
+        if (m_relayoutProgressAnimation && m_relayoutProgressAnimation->isBeingAnimated())
+            return true;
+
+        const auto workspace = directNiriColumnMoveWorkspace();
+        for (const auto& managed : m_state.windows) {
+            const auto window = managed.window;
+            if (!window || !window->m_isMapped || window->m_pinned || !window->m_workspace || window->m_workspace != workspace)
+                continue;
+
+            if ((window->m_realPosition && window->m_realPosition->isBeingAnimated()) || (window->m_realSize && window->m_realSize->isBeingAnimated()))
+                return true;
+        }
+
+        if (workspace) {
+            const auto key = workspace.get();
+            const auto it = g_lastDirectNiriColumnMoveByWorkspace.find(key);
+            if (it != g_lastDirectNiriColumnMoveByWorkspace.end()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - it->second < EDGE_COLUMN_MOVE_SETTLE_GUARD)
+                    return true;
+                g_lastDirectNiriColumnMoveByWorkspace.erase(it);
+            }
+        }
+
+        return false;
+    };
+
+    if (overviewActive && isMoveColumnLayoutMessage && directNiriColumnMoveHitsEdge() && directNiriColumnMoveNeedsSettle()) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] block edge movecol until direct niri strip settles"
+                << " args=" << dispatcherArgsLower
+                << " workspace=" << debugWorkspaceLabel(directNiriColumnMoveWorkspace())
+                << " selected=" << debugWindowLabel(selectedBefore)
+                << " active=" << debugWindowLabel(Desktop::focusState()->window())
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+            debugLog(out.str());
+        }
+        return SDispatchResult{.success = true};
+    }
+
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace";
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
@@ -3541,6 +3650,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
             if (animateDirectStripRelayout)
                 refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);
+        }
+
+        if (isMoveColumnLayoutMessage) {
+            if (const auto workspace = directNiriColumnMoveWorkspace(); workspace)
+                g_lastDirectNiriColumnMoveByWorkspace[workspace.get()] = std::chrono::steady_clock::now();
         }
 
         damageOwnedMonitors();
@@ -4050,6 +4164,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const auto result = (*original)(std::move(args));
     if (!result.success)
         clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+    else if (isMoveColumnLayoutMessage) {
+        if (const auto workspace = directNiriColumnMoveWorkspace(); workspace)
+            g_lastDirectNiriColumnMoveByWorkspace[workspace.get()] = std::chrono::steady_clock::now();
+    }
 
     if (debugLogsEnabled() && isSwapColumnLayoutMessage) {
         std::ostringstream out;
