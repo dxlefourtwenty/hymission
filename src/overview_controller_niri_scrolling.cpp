@@ -1310,6 +1310,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
     const std::size_t columnCount = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
+    const bool skipPostRefreshSpotSync = sourceView.find("edge-scroll") != std::string_view::npos;
     const bool traceColumnRefresh = debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && columnCount >= 2 && columnCount <= 3 &&
         sourceView.find("opening-complete") == std::string_view::npos;
     if (traceColumnRefresh) {
@@ -1571,7 +1572,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     // the overview's selection. This fixes a bug where the visual selection border
     // would not match the centered window after workspace transitions or queued
     // dispatchers that rebuild the layout state.
-    if (usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
+    if (!skipPostRefreshSpotSync && usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
         const auto focusedWindow = m_state.focusDuringOverview;
         if (focusedWindow && focusedWindow->m_isMapped && hasManagedWindow(focusedWindow)) {
             (void)syncScrollingWorkspaceSpotOnWindow(focusedWindow);
@@ -3304,7 +3305,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
-        (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,"));
+        (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
+         dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
+         dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
+         dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
     const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
@@ -3364,7 +3368,54 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         });
     const bool animateDirectStripRelayout =
         directLiveGeometryAvailable && (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage) && niriOverviewAnimationsEnabled();
-    const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
+    // Column camera moves need a live preview origin even when the native
+    // dispatcher lands on the strip edge with no newly focused window.
+    const auto directStripPreviewRects =
+        (animateDirectStripRelayout || (directLiveGeometryAvailable && isMoveColumnLayoutMessage)) ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
+
+    const auto moveColumnStepDirection = [&]() -> int {
+        if (!isMoveColumnLayoutMessage)
+            return 0;
+
+        if (dispatcherArgsLower.find("+col") != std::string::npos || dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") ||
+            dispatcherArgsLower.starts_with("move col,") || dispatcherArgsLower.find(" right") != std::string::npos ||
+            dispatcherArgsLower.find(",right") != std::string::npos || dispatcherArgsLower.find(" next") != std::string::npos ||
+            dispatcherArgsLower.find(",next") != std::string::npos || dispatcherArgsLower == "movecol r" || dispatcherArgsLower.starts_with("movecol r,") ||
+            dispatcherArgsLower == "movecol,r")
+            return 1;
+
+        if (dispatcherArgsLower.find("-col") != std::string::npos || dispatcherArgsLower.find(" left") != std::string::npos ||
+            dispatcherArgsLower.find(",left") != std::string::npos || dispatcherArgsLower.find(" prev") != std::string::npos ||
+            dispatcherArgsLower.find(",prev") != std::string::npos || dispatcherArgsLower == "movecol l" || dispatcherArgsLower.starts_with("movecol l,") ||
+            dispatcherArgsLower == "movecol,l")
+            return -1;
+
+        return 0;
+    };
+
+    const auto moveColumnWouldScrollPastFocusedEdge = [&](const PHLWINDOW& focusWindow) -> bool {
+        if (!overviewActive || !activeDirectNiriSingleWorkspaceOverview())
+            return false;
+
+        const int step = moveColumnStepDirection();
+        if (step == 0 || !focusWindow || !focusWindow->m_isMapped || !focusWindow->m_workspace || !isScrollingWorkspace(focusWindow->m_workspace))
+            return false;
+
+        const auto target = focusWindow->layoutTarget();
+        if (!target || target->floating())
+            return false;
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(focusWindow->m_workspace);
+        if (!scrolling || !scrolling->m_scrollingData)
+            return false;
+
+        const auto targetData = scrolling->dataFor(target);
+        const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+        if (!column)
+            return false;
+
+        return step > 0 ? !scrolling->m_scrollingData->next(column) : !scrolling->m_scrollingData->prev(column);
+    };
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
         if (!overviewActive || !usesDirectNiriScrollingOverview(m_state))
@@ -3441,6 +3492,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = Desktop::focusState()->window();
 
+        const bool moveColumnPastEdge = moveColumnWouldScrollPastFocusedEdge(dispatchFocus);
+
         SDispatchResult result;
         {
             const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
@@ -3462,6 +3515,19 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
+        } else if (moveColumnPastEdge) {
+            // Hyprland's scrolling layout intentionally handles `layoutmsg move +col`
+            // at the final column as a camera-only tape scroll: it sets the controller
+            // offset past the last strip and clears the focused target. Re-syncing the
+            // previous focused window here immediately recenters that last column, which
+            // is the hang-then-snap seen when movecol is spammed before the strip settles.
+            // Keep the old overview selection, but rebuild the preview targets from the
+            // new live scrolling offset.
+            if (preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
+                selectWindowInState(m_state, preferred);
+                m_state.focusDuringOverview = preferred;
+            }
+            refreshNiriScrollingOverviewAfterLayoutScroll("movecol-edge-scroll", &directStripPreviewRects);
         } else {
             // Sync scrolling layout focus for ALL focus/movement dispatchers (movefocus,
             // movecol, swapcol) BEFORE state rebuild. This ensures the scrolling
