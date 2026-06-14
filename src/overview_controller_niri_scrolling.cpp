@@ -37,31 +37,6 @@ namespace {
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
-// Hyprland's scrolling layout has a special camera-only path for
-// `layoutmsg move +col` at the final column.  That path intentionally
-// clears focus and moves the tape offset past the last strip.  While that
-// camera state is active, Hymission must not choose the previous focused
-// column as a synthetic anchor, otherwise the overview fights Hyprland's
-// camera animation and snaps back to the last window.
-bool        g_directNiriUseLiveCameraGeometry = false;
-const void* g_directNiriLiveCameraWorkspaceKey = nullptr;
-
-bool directNiriLiveCameraGeometryForWorkspace(const PHLWORKSPACE& workspace) {
-    return g_directNiriUseLiveCameraGeometry && workspace && workspace.get() == g_directNiriLiveCameraWorkspaceKey;
-}
-
-void armDirectNiriLiveCameraGeometry(const PHLWORKSPACE& workspace) {
-    g_directNiriUseLiveCameraGeometry = static_cast<bool>(workspace);
-    g_directNiriLiveCameraWorkspaceKey = workspace ? workspace.get() : nullptr;
-}
-
-void clearDirectNiriLiveCameraGeometry(const PHLWORKSPACE& workspace = {}) {
-    if (!workspace || !g_directNiriLiveCameraWorkspaceKey || workspace.get() == g_directNiriLiveCameraWorkspaceKey) {
-        g_directNiriUseLiveCameraGeometry = false;
-        g_directNiriLiveCameraWorkspaceKey = nullptr;
-    }
-}
-
 class ScopedFlag {
   public:
     explicit ScopedFlag(bool& flag) : m_flag(flag), m_previous(flag) {
@@ -332,6 +307,51 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
     return snapshotBox;
 }
 
+
+bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox usable = scrolling->usableArea();
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
+    const double offset = controller->getOffset();
+
+    return offset < -0.5 || offset > maxNormalOffset + 0.5;
+}
+
+bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData)
+        return false;
+
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column)
+            continue;
+
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
+                continue;
+
+            const CBox liveBox = targetData->target->position();
+            if (liveBox.width <= 1.0 || liveBox.height <= 1.0)
+                continue;
+
+            if (std::abs(liveBox.x - targetData->layoutBox.x) > 0.5 || std::abs(liveBox.y - targetData->layoutBox.y) > 0.5 ||
+                std::abs(liveBox.width - targetData->layoutBox.width) > 0.5 || std::abs(liveBox.height - targetData->layoutBox.height) > 0.5)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+bool scrollingLiveCameraOwnsOverviewGeometry(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    return scrollingEdgeCameraActive(scrolling) || scrollingNativeGeometryInFlight(scrolling);
+}
+
 double clampUnit(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
@@ -548,7 +568,6 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const auto* const controller = scrolling->m_scrollingData->controller.get();
     const bool        horizontal = controller->isPrimaryHorizontal();
     const Rect        baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-    const bool        useLiveCameraGeometry = directNiriLiveCameraGeometryForWorkspace(window->m_workspace);
 
     struct ColumnEntry {
         SP<Layout::Tiled::SColumnData> column;
@@ -569,9 +588,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            CBox candidateLayoutBox = useLiveCameraGeometry ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
-            if (useLiveCameraGeometry && (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0))
-                candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
             if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
                 continue;
 
@@ -653,10 +670,13 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const auto primaryEnd = [&](const Rect& rect) { return primaryStart(rect) + primarySize(rect); };
     const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
+    const bool liveCameraOwnsGeometry = scrollingLiveCameraOwnsOverviewGeometry(scrolling);
 
-    if (useLiveCameraGeometry) {
-        // Keep Hyprland's live/final camera offset exactly as the scrolling
-        // controller produced it.  Do not re-center on an anchor column.
+    if (liveCameraOwnsGeometry) {
+        // Hyprland is still animating the scroll camera or is doing its edge
+        // camera-only pan past the first/last column. Do not synthesize a
+        // centered/fit virtual tape here; that fights Hyprland's animated
+        // target boxes and causes the overview to hang then snap.
     } else if (!fitFocusMethod) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
         setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
@@ -729,9 +749,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (candidate != targetData)
             continue;
 
-        CBox candidateLayoutBox = useLiveCameraGeometry ? candidate->layoutBox : liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
-        if (useLiveCameraGeometry && (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0))
-            candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
         Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
         const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
@@ -739,8 +757,12 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
 
-        const double anchorX = targetColumn.virtualBounds.centerX();
-        const double anchorY = targetColumn.virtualBounds.centerY();
+        double anchorX = targetColumn.virtualBounds.centerX();
+        double anchorY = targetColumn.virtualBounds.centerY();
+        if (liveCameraOwnsGeometry) {
+            anchorX = baseGlobal.centerX();
+            anchorY = baseGlobal.centerY();
+        }
         targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
         break;
     }
@@ -1343,9 +1365,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
     const std::size_t columnCount = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
-    const bool skipPostRefreshSpotSync = sourceView.find("movecol") != std::string_view::npos ||
-        sourceView.find("native-scroll") != std::string_view::npos || sourceView.find("edge-camera") != std::string_view::npos ||
-        directNiriLiveCameraGeometryForWorkspace(workspace);
     const bool traceColumnRefresh = debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && columnCount >= 2 && columnCount <= 3 &&
         sourceView.find("opening-complete") == std::string_view::npos;
     if (traceColumnRefresh) {
@@ -1607,9 +1626,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     // the overview's selection. This fixes a bug where the visual selection border
     // would not match the centered window after workspace transitions or queued
     // dispatchers that rebuild the layout state.
-    if (!skipPostRefreshSpotSync && usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
+    if (usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
         const auto focusedWindow = m_state.focusDuringOverview;
-        if (focusedWindow && focusedWindow->m_isMapped && hasManagedWindow(focusedWindow)) {
+        const bool cameraOwnsGeometry = scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(workspace));
+        if (!cameraOwnsGeometry && focusedWindow && focusedWindow->m_isMapped && hasManagedWindow(focusedWindow)) {
             (void)syncScrollingWorkspaceSpotOnWindow(focusedWindow);
         }
     }
@@ -2660,7 +2680,8 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     }
     requestedOffset = controller->getOffset();
 
-    data->recalculate(true);
+    const bool allowNativeAnimation = isVisible() && activeDirectNiriSingleWorkspaceOverview() && niriOverviewAnimationsEnabled();
+    data->recalculate(!allowNativeAnimation);
 
     if (const auto monitor = window->m_workspace->m_monitor.lock())
         g_layoutManager->recalculateMonitor(monitor);
@@ -3403,56 +3424,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         });
     const bool animateDirectStripRelayout =
         directLiveGeometryAvailable && (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage) && niriOverviewAnimationsEnabled();
-    const auto directStripPreviewRects =
-        (animateDirectStripRelayout || (directLiveGeometryAvailable && isMoveColumnLayoutMessage)) ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
-
-    const auto moveColumnStepDirection = [&]() -> int {
-        if (!isMoveColumnLayoutMessage)
-            return 0;
-
-        if (dispatcherArgsLower.find("+col") != std::string::npos || dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") ||
-            dispatcherArgsLower.starts_with("move col,") || dispatcherArgsLower.find(" right") != std::string::npos ||
-            dispatcherArgsLower.find(",right") != std::string::npos || dispatcherArgsLower.find(" next") != std::string::npos ||
-            dispatcherArgsLower.find(",next") != std::string::npos || dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") ||
-            dispatcherArgsLower.starts_with("movecol,"))
-            return 1;
-
-        if (dispatcherArgsLower.find("-col") != std::string::npos || dispatcherArgsLower.find(" left") != std::string::npos ||
-            dispatcherArgsLower.find(",left") != std::string::npos || dispatcherArgsLower.find(" prev") != std::string::npos ||
-            dispatcherArgsLower.find(",prev") != std::string::npos)
-            return -1;
-
-        return 0;
-    };
-
-    const auto moveColumnWouldScrollPastFocusedEdge = [&](const PHLWINDOW& focusWindow) -> bool {
-        if (!overviewActive || !activeDirectNiriSingleWorkspaceOverview())
-            return false;
-
-        const int step = moveColumnStepDirection();
-        if (step <= 0 || !focusWindow || !focusWindow->m_isMapped || !focusWindow->m_workspace || !isScrollingWorkspace(focusWindow->m_workspace))
-            return false;
-
-        const auto target = focusWindow->layoutTarget();
-        if (!target || target->floating())
-            return false;
-
-        auto* const scrolling = scrollingAlgorithmForWorkspace(focusWindow->m_workspace);
-        if (!scrolling || !scrolling->m_scrollingData)
-            return false;
-
-        const auto targetData = scrolling->dataFor(target);
-        const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-        if (!column)
-            return false;
-
-        return !scrolling->m_scrollingData->next(column);
-    };
-
-    const auto clearEdgeCameraIfNeeded = [&](const PHLWORKSPACE& workspace, const PHLWINDOW& focusAfter) {
-        if (!isMoveColumnLayoutMessage || moveColumnStepDirection() <= 0 || (focusAfter && focusAfter->m_isMapped))
-            clearDirectNiriLiveCameraGeometry(workspace);
-    };
+    const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
         if (!overviewActive || !usesDirectNiriScrollingOverview(m_state))
@@ -3529,9 +3501,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!dispatchFocus || !dispatchFocus->m_isMapped || !hasManagedWindow(dispatchFocus))
             dispatchFocus = Desktop::focusState()->window();
 
-        const auto directMoveWorkspaceBefore = dispatchFocus && dispatchFocus->m_workspace ? dispatchFocus->m_workspace : activeLayoutWorkspace();
-        const bool moveColumnPastEdge = moveColumnWouldScrollPastFocusedEdge(dispatchFocus);
-
         SDispatchResult result;
         {
             const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
@@ -3547,58 +3516,21 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!result.success)
             return result;
 
-        if (isMoveColumnLayoutMessage && g_pAnimationManager)
-            g_pAnimationManager->frameTick();
-
-        if (moveColumnPastEdge) {
-            // Hyprland handled this by moving the scroll camera past the final
-            // column and clearing focus.  Preserve that camera-only state in the
-            // overview.  Do not fall back to the previously focused window and do
-            // not run metadata refresh, because both paths re-center the previous
-            // column and cause the visible hang/snap when movecol is spammed.
-            armDirectNiriLiveCameraGeometry(directMoveWorkspaceBefore);
-            m_state.focusDuringOverview.reset();
-            m_state.selectedIndex.reset();
-            m_queuedOverviewSelectionTarget.reset();
-            m_queuedOverviewSelectionSyncScrollingSpot = false;
-            m_queuedOverviewSelectionCenterCursor = false;
-            m_queuedOverviewLiveFocusTarget.reset();
-            m_queuedOverviewLiveFocusSyncScrollingSpot = false;
-            m_queuedOverviewLiveFocusCenterCursor = false;
-
-            if (insideRenderLifecycle())
-                scheduleVisibleStateRebuild();
-            else
-                refreshNiriScrollingOverviewAfterLayoutScroll("movecol-edge-camera", &directStripPreviewRects);
-
-            damageOwnedMonitors();
-            return result;
-        }
-
         PHLWINDOW preferred = Desktop::focusState()->window();
-        clearEdgeCameraIfNeeded(directMoveWorkspaceBefore, preferred);
         if (!preferred || !preferred->m_isMapped)
             preferred = dispatchFocus;
 
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
         } else {
-            // Hyprland's scrolling layout message already updates the tape offset,
-            // recalculates targets, and updates focus for column movement. Running
-            // an extra spot sync here restarts/cancels the native scroll animation
-            // when repeated movecol dispatches arrive before the previous animation
-            // has settled. Keep explicit spot sync for focus/swap operations only.
+            // Sync scrolling layout focus for ALL focus/movement dispatchers (movefocus,
+            // movecol, swapcol) BEFORE state rebuild. This ensures the scrolling
+            // layout's lastFocusedTarget matches the new focus/column when the
+            // overview state is rebuilt. Previously only movefocus was synced here,
+            // causing movecol/swapcol to rebuild state on stale layout data.
             if (isMoveFocusDispatcher || isSwapColumnLayoutMessage)
                 (void)syncScrollingWorkspaceSpotOnWindow(preferred);
-
-            // Metadata refresh ends by syncing the scrolling spot to
-            // focusDuringOverview. That is correct for focus/swap/geometry edits,
-            // but it conflicts with Hyprland's still-running column scroll
-            // animation. For movecol, keep the current overview state and let the
-            // targeted Niri refresh below retarget window rects from the live
-            // preview snapshot.
-            if (!isMoveColumnLayoutMessage)
-                refreshVisibleStateMetadata(preferred);
+            refreshVisibleStateMetadata(preferred);
 
             // Ensure overview focus state matches the new focused window before
             // refreshing the layout scroll.
@@ -3607,8 +3539,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 m_state.focusDuringOverview = preferred;
             }
 
-            if (animateDirectStripRelayout || isMoveColumnLayoutMessage)
-                refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol-native-scroll" : "movefocus", &directStripPreviewRects);
+            if (animateDirectStripRelayout)
+                refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);
         }
 
         damageOwnedMonitors();

@@ -1289,6 +1289,51 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
     return snapshotBox;
 }
 
+
+bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox usable = scrolling->usableArea();
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
+    const double offset = controller->getOffset();
+
+    return offset < -0.5 || offset > maxNormalOffset + 0.5;
+}
+
+bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData)
+        return false;
+
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column)
+            continue;
+
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
+                continue;
+
+            const CBox liveBox = targetData->target->position();
+            if (liveBox.width <= 1.0 || liveBox.height <= 1.0)
+                continue;
+
+            if (std::abs(liveBox.x - targetData->layoutBox.x) > 0.5 || std::abs(liveBox.y - targetData->layoutBox.y) > 0.5 ||
+                std::abs(liveBox.width - targetData->layoutBox.width) > 0.5 || std::abs(liveBox.height - targetData->layoutBox.height) > 0.5)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+bool scrollingLiveCameraOwnsOverviewGeometry(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    return scrollingEdgeCameraActive(scrolling) || scrollingNativeGeometryInFlight(scrolling);
+}
+
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -1454,8 +1499,14 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const auto primaryEnd = [&](const Rect& rect) { return primaryStart(rect) + primarySize(rect); };
     const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
+    const bool liveCameraOwnsGeometry = scrollingLiveCameraOwnsOverviewGeometry(scrolling);
 
-    if (!fitFocusMethod) {
+    if (liveCameraOwnsGeometry) {
+        // Hyprland is still animating the scroll camera or is doing its edge
+        // camera-only pan past the first/last column. Do not synthesize a
+        // centered/fit virtual tape here; that fights Hyprland's animated
+        // target boxes and causes the overview to hang then snap.
+    } else if (!fitFocusMethod) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
         setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
 
@@ -1535,8 +1586,12 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
 
-        const double anchorX = targetColumn.virtualBounds.centerX();
-        const double anchorY = targetColumn.virtualBounds.centerY();
+        double anchorX = targetColumn.virtualBounds.centerX();
+        double anchorY = targetColumn.virtualBounds.centerY();
+        if (liveCameraOwnsGeometry) {
+            anchorX = baseGlobal.centerX();
+            anchorY = baseGlobal.centerY();
+        }
         targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
         break;
     }
@@ -11412,7 +11467,10 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     // lastFocusedTarget) become desynchronized.
     if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
-        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        const bool cameraOwnsGeometry = usesDirectNiriScrollingOverview(m_state) &&
+            scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(m_state.focusDuringOverview->m_workspace));
+        if (!cameraOwnsGeometry)
+            (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
     }
 
     syncHiddenStripLayerProxies();
@@ -11777,7 +11835,10 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     // lastFocusedTarget) become desynchronized.
     if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
-        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        const bool cameraOwnsGeometry = usesDirectNiriScrollingOverview(m_state) &&
+            scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(m_state.focusDuringOverview->m_workspace));
+        if (!cameraOwnsGeometry)
+            (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
     }
 
     syncHiddenStripLayerProxies();
