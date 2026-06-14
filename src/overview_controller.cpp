@@ -231,10 +231,11 @@ bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnaps
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return lowered == "movecol" || lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
-        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
-        lowered.starts_with("movecol") || lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+    return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
+        lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "movecol" || lowered == "movecolumn" ||
+        lowered == "resizeactive" || lowered == "swapactive" || lowered == "togglefloating" || lowered == "setfloating" ||
+        lowered == "settiled" || lowered == "pin" ||
+        lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
         lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
         lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
@@ -7283,13 +7284,14 @@ bool OverviewController::installHooks() {
 
     m_overviewEditingDispatchersOriginal.clear();
     std::vector<std::string> overviewEditingDispatchers = {
-        "movecol",
         "movewindow",
         "movewindoworgroup",
         "swapwindow",
         "movetoworkspace",
         "movetoworkspacesilent",
         "moveactive",
+        "movecol",
+        "movecolumn",
         "resizeactive",
         "togglefloating",
         "setfloating",

@@ -3367,10 +3367,33 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
          dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
          dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
+    const bool isDirectMoveColumnDispatcher = dispatcherNameLower == "movecol" || dispatcherNameLower == "movecolumn";
+    const bool isMoveColumnDispatcher = isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher;
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
-    const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
+    const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnDispatcher || isSwapColumnLayoutMessage;
     const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
-        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+        (niriModeAppliesToState(m_state) || niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    const bool workspaceTransitionStillSettling = m_workspaceTransition.active || m_workspaceSwipeGesture.active || m_workspaceTransitionCommitScheduled ||
+        m_pendingWorkspaceTransitionCommitFollowGesture || (m_workspaceTransitionAnimation && m_workspaceTransitionAnimation->isBeingAnimated()) ||
+        m_state.relayoutActive || (isVisible() && m_state.phase != Phase::Active);
+
+    if (isMoveColumnDispatcher && workspaceTransitionStillSettling && m_state.collectionPolicy.onlyActiveWorkspace && niriSingleWorkspaceTransition) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] block movecol while workspace transition settles"
+                << " dispatcher=" << dispatcherNameLower
+                << " args=" << dispatcherArgsLower
+                << " phase=" << static_cast<int>(m_state.phase)
+                << " transitionActive=" << (m_workspaceTransition.active ? 1 : 0)
+                << " swipeActive=" << (m_workspaceSwipeGesture.active ? 1 : 0)
+                << " commitScheduled=" << (m_workspaceTransitionCommitScheduled ? 1 : 0)
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                << " animationActive=" << (m_workspaceTransitionAnimation && m_workspaceTransitionAnimation->isBeingAnimated() ? 1 : 0);
+            debugLog(out.str());
+        }
+        return {};
+    }
+
     const auto transitionAction = resolveOverviewEditTransitionAction(
         m_workspaceTransition.active,
         isFocusOrMovementDispatcher,
@@ -3425,7 +3448,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
         });
     const bool animateDirectStripRelayout =
-        directLiveGeometryAvailable && (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage) && niriOverviewAnimationsEnabled();
+        directLiveGeometryAvailable && (dispatcherNameLower == "movefocus" || isMoveColumnDispatcher) && niriOverviewAnimationsEnabled();
     const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
@@ -3542,14 +3565,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             }
 
             if (animateDirectStripRelayout)
-                refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnLayoutMessage ? "movecol" : "movefocus", &directStripPreviewRects);
+                refreshNiriScrollingOverviewAfterLayoutScroll(isMoveColumnDispatcher ? "movecol" : "movefocus", &directStripPreviewRects);
         }
 
         damageOwnedMonitors();
         return result;
     }
 
-    if (debugLogsEnabled() && overviewActive && (isSwapColumnLayoutMessage || isMoveColumnLayoutMessage)) {
+    if (debugLogsEnabled() && overviewActive && (isSwapColumnLayoutMessage || isMoveColumnDispatcher)) {
         const auto workspace = activeLayoutWorkspace();
         std::ostringstream out;
         out << "[hymission] overview column edit before pending commit"
