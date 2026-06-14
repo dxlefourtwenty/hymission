@@ -36,7 +36,7 @@ using Render::GL::g_pHyprOpenGL;
 namespace {
 
 constexpr double RELAYOUT_DURATION_MS = 140.0;
-constexpr auto   EDGE_COLUMN_MOVE_SETTLE_GUARD = std::chrono::milliseconds(320);
+constexpr auto   EDGE_COLUMN_MOVE_SETTLE_GUARD = std::chrono::milliseconds(420);
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 std::unordered_map<const void*, std::chrono::steady_clock::time_point> g_lastDirectNiriColumnMoveByWorkspace;
 
@@ -3363,11 +3363,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
     const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
-    const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
+    const bool isColumnFocusLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower == "focus l" || dispatcherArgsLower.starts_with("focus l ") || dispatcherArgsLower.starts_with("focus l,") ||
+         dispatcherArgsLower == "focus r" || dispatcherArgsLower.starts_with("focus r ") || dispatcherArgsLower.starts_with("focus r,") ||
+         dispatcherArgsLower == "focus u" || dispatcherArgsLower.starts_with("focus u ") || dispatcherArgsLower.starts_with("focus u,") ||
+         dispatcherArgsLower == "focus d" || dispatcherArgsLower.starts_with("focus d ") || dispatcherArgsLower.starts_with("focus d,"));
+    const bool isMoveColumnDispatcher = dispatcherNameLower == "movecol" || dispatcherNameLower.ends_with(".movecol") || dispatcherNameLower.ends_with(":movecol");
+    const bool isMoveColumnLayoutMessage = isMoveColumnDispatcher || isColumnFocusLayoutMessage || (isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
          dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
          dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
-         dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
+         dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,")));
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
     const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
@@ -3500,14 +3506,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return false;
     };
 
-    if (overviewActive && isMoveColumnLayoutMessage && directNiriColumnMoveHitsEdge() && directNiriColumnMoveNeedsSettle()) {
+    if (overviewActive && isMoveColumnLayoutMessage && activeDirectNiriSingleWorkspaceOverview() && directNiriColumnMoveNeedsSettle()) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] block edge movecol until direct niri strip settles"
+            out << "[hymission] block direct niri column move until strip settles"
+                << " dispatcher=" << dispatcherNameLower
                 << " args=" << dispatcherArgsLower
                 << " workspace=" << debugWorkspaceLabel(directNiriColumnMoveWorkspace())
                 << " selected=" << debugWindowLabel(selectedBefore)
                 << " active=" << debugWindowLabel(Desktop::focusState()->window())
+                << " edge=" << (directNiriColumnMoveHitsEdge() ? 1 : 0)
                 << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
             debugLog(out.str());
         }
