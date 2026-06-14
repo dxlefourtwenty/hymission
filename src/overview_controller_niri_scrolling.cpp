@@ -114,45 +114,6 @@ std::string trimCopy(std::string value) {
     return value;
 }
 
-enum class NiriColumnMoveDirection : uint8_t {
-    None,
-    Previous,
-    Next,
-};
-
-NiriColumnMoveDirection parseNiriColumnMoveDirection(std::string_view dispatcherName, std::string_view dispatcherArgs) {
-    std::string dispatcher = asciiLowerCopy(trimCopy(std::string{dispatcherName}));
-    std::string args = asciiLowerCopy(trimCopy(std::string{dispatcherArgs}));
-    std::ranges::replace(args, ',', ' ');
-
-    const auto directionFromToken = [](std::string_view token) {
-        if (token == "+col" || token == "col" || token == "+" || token == "next" || token == "right" || token == "r" || token == "down" || token == "d")
-            return NiriColumnMoveDirection::Next;
-        if (token == "-col" || token == "-" || token == "prev" || token == "previous" || token == "left" || token == "l" || token == "up" || token == "u")
-            return NiriColumnMoveDirection::Previous;
-        return NiriColumnMoveDirection::None;
-    };
-
-    std::istringstream stream(args);
-    std::string first;
-    std::string second;
-    stream >> first >> second;
-
-    if ((dispatcher == "layoutmsg" || dispatcher == "layout") && first == "move")
-        return directionFromToken(second);
-
-    if (dispatcher == "movecol" || dispatcher.starts_with("movecol")) {
-        if (first.empty())
-            return NiriColumnMoveDirection::Next;
-        return directionFromToken(first);
-    }
-
-    if (first == "movecol")
-        return second.empty() ? NiriColumnMoveDirection::Next : directionFromToken(second);
-
-    return NiriColumnMoveDirection::None;
-}
-
 Rect makeRect(double x, double y, double width, double height) {
     return {
         x,
@@ -187,40 +148,6 @@ bool isFloatingOverviewWindow(const PHLWINDOW& window) {
     const auto target = window->layoutTarget();
     return target && target->floating();
 }
-
-bool isDirectNiriLeafEdgeColumnMove(const PHLWORKSPACE& workspace, const PHLWINDOW& anchor, NiriColumnMoveDirection direction) {
-    if (!workspace || !anchor || direction == NiriColumnMoveDirection::None || anchor->m_workspace != workspace || anchor->m_pinned || isFloatingOverviewWindow(anchor))
-        return false;
-
-    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-    const auto  target = anchor->layoutTarget();
-    if (!scrolling || !scrolling->m_scrollingData || !target || target->floating() || scrolling->m_scrollingData->columns.empty())
-        return false;
-
-    const auto targetData = scrolling->dataFor(target);
-    const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-    if (!column)
-        return false;
-
-    // Match Hyprland's leaf-window edge condition for scrolling columns: the
-    // focused tiled target is alone in its column and there is no neighbor column
-    // in the requested direction.  Letting layoutmsg "move +col" run in this
-    // exact state enters Hyprland's camera-only edge-scroll path and fights the
-    // overview's strip animation, so consume it here instead.
-    if (column->targetDatas.size() != 1)
-        return false;
-
-    const auto columnIndex = scrolling->m_scrollingData->idx(column);
-    if (columnIndex < 0)
-        return false;
-
-    const auto lastIndex = static_cast<int64_t>(scrolling->m_scrollingData->columns.size() - 1);
-    if (direction == NiriColumnMoveDirection::Next)
-        return columnIndex >= lastIndex;
-
-    return columnIndex <= 0;
-}
-
 
 std::string vectorToString(const Vector2D& value) {
     std::ostringstream out;
@@ -1105,7 +1032,8 @@ bool OverviewController::niriModeAppliesToState(const State& state) const {
     if (state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace))
         return true;
 
-    if (state.focusDuringOverview && state.focusDuringOverview->m_workspace && isScrollingWorkspace(state.focusDuringOverview->m_workspace))
+    if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned && state.focusDuringOverview->m_workspace &&
+        isScrollingWorkspace(state.focusDuringOverview->m_workspace))
         return true;
 
     return std::ranges::any_of(state.managedWorkspaces, [this](const PHLWORKSPACE& workspace) { return isScrollingWorkspace(workspace); });
@@ -1206,7 +1134,8 @@ bool OverviewController::niriWallpaperZoomAppliesToMonitor(const State& state, c
     };
     if (isScrollingWorkspaceOnMonitor(state.ownerWorkspace))
         return true;
-    if (state.focusDuringOverview && isScrollingWorkspaceOnMonitor(state.focusDuringOverview->m_workspace))
+    if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned &&
+        isScrollingWorkspaceOnMonitor(state.focusDuringOverview->m_workspace))
         return true;
 
     return std::ranges::any_of(state.managedWorkspaces, isScrollingWorkspaceOnMonitor);
@@ -1232,12 +1161,12 @@ PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
         if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor); centeredEmptyWorkspace)
             return centeredEmptyWorkspace;
 
-        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_workspace)
+        if (m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace)
             return m_state.focusDuringOverview->m_workspace;
 
         if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
             const auto selected = m_state.windows[*m_state.selectedIndex].window;
-            if (selected && selected->m_workspace)
+            if (selected && !selected->m_pinned && selected->m_workspace)
                 return selected->m_workspace;
         }
     }
@@ -1866,58 +1795,7 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         return false;
     };
 
-    const auto directNiriLeafEdgeAnchor = [&]() -> PHLWINDOW {
-        const auto valid = [&](const PHLWINDOW& window) -> PHLWINDOW {
-            if (!window || !window->m_isMapped || window->m_pinned || isFloatingOverviewWindow(window) || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
-                return {};
-
-            const auto target = window->layoutTarget();
-            if (!target || target->floating())
-                return {};
-
-            return window;
-        };
-
-        if (const auto focused = valid(Desktop::focusState()->window()); focused)
-            return focused;
-        if (const auto selected = valid(selectedWindow()); selected)
-            return selected;
-        if (const auto overviewFocus = valid(m_state.focusDuringOverview); overviewFocus)
-            return overviewFocus;
-
-        return {};
-    };
-
-    const auto blockDirectNiriLeafEdgeColumnMove = [&](std::string_view dispatcherName, std::string_view dispatcherArgs) {
-        if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
-            return false;
-
-        const auto direction = parseNiriColumnMoveDirection(dispatcherName, dispatcherArgs);
-        if (direction == NiriColumnMoveDirection::None)
-            return false;
-
-        const auto anchor = directNiriLeafEdgeAnchor();
-        const auto workspace = anchor ? anchor->m_workspace : activeLayoutWorkspace();
-        if (!workspace || !isScrollingWorkspace(workspace) || !isDirectNiriLeafEdgeColumnMove(workspace, anchor, direction))
-            return false;
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] blocked niri leaf edge column move from arrow keybind"
-                << " dispatcher=" << dispatcherName
-                << " args=" << dispatcherArgs
-                << " workspace=" << debugWorkspaceLabel(workspace)
-                << " anchor=" << debugWindowLabel(anchor);
-            debugLog(out.str());
-        }
-
-        return true;
-    };
-
     const auto runLayoutMessage = [&](std::string args) {
-        if (blockDirectNiriLeafEdgeColumnMove("layoutmsg", args))
-            return true;
-
         const std::string logArgs = args;
         const auto logResult = [&](bool success, std::string_view source) {
             if (!debugLogsEnabled())
@@ -3484,8 +3362,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
     const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
-    const auto niriColumnMoveDirection = parseNiriColumnMoveDirection(dispatcherNameLower, dispatcherArgsLower);
-    const bool isMoveColumnLayoutMessage = niriColumnMoveDirection != NiriColumnMoveDirection::None;
+    const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
+         dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
+         dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
+         dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage;
     const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
@@ -3526,47 +3407,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         commitActiveNiriWorkspaceTransitionForRetarget();
 
     const auto selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
-
-    const auto directNiriLeafEdgeAnchor = [&]() -> PHLWINDOW {
-        const auto valid = [&](const PHLWINDOW& window) -> PHLWINDOW {
-            if (!window || !window->m_isMapped || window->m_pinned || isFloatingOverviewWindow(window) || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
-                return {};
-
-            const auto target = window->layoutTarget();
-            if (!target || target->floating())
-                return {};
-
-            return window;
-        };
-
-        if (const auto focused = valid(Desktop::focusState()->window()); focused)
-            return focused;
-        if (const auto selected = valid(selectedBefore); selected)
-            return selected;
-        if (const auto overviewFocus = valid(m_state.focusDuringOverview); overviewFocus)
-            return overviewFocus;
-
-        return {};
-    };
-
-    if (overviewActive && isMoveColumnLayoutMessage && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
-        const auto anchor = directNiriLeafEdgeAnchor();
-        const auto workspace = anchor ? anchor->m_workspace : activeLayoutWorkspace();
-        if (workspace && isScrollingWorkspace(workspace) && isDirectNiriLeafEdgeColumnMove(workspace, anchor, niriColumnMoveDirection)) {
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] blocked niri leaf edge column move before dispatcher"
-                    << " dispatcher=" << dispatcherNameLower
-                    << " args=" << dispatcherArgsLower
-                    << " workspace=" << debugWorkspaceLabel(workspace)
-                    << " anchor=" << debugWindowLabel(anchor);
-                debugLog(out.str());
-                logScrollingWorkspaceSpotState("blocked-leaf-edge-movecol", workspace, anchor);
-            }
-            return SDispatchResult{.success = true};
-        }
-    }
-
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace";
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
@@ -5241,7 +5081,8 @@ PHLWORKSPACE OverviewController::niriWorkspaceForBackground(const State& state, 
         return candidate && candidate->m_space && candidate->m_monitor.lock() == background.monitor && isScrollingWorkspace(candidate);
     };
     if (!workspaceMatchesMonitor(workspace)) {
-        if (state.focusDuringOverview && workspaceMatchesMonitor(state.focusDuringOverview->m_workspace))
+        if (state.focusDuringOverview && !state.focusDuringOverview->m_pinned &&
+            workspaceMatchesMonitor(state.focusDuringOverview->m_workspace))
             workspace = state.focusDuringOverview->m_workspace;
         else if (workspaceMatchesMonitor(state.ownerWorkspace))
             workspace = state.ownerWorkspace;
@@ -6699,7 +6540,19 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
 
         std::optional<Rect> anchorOverride;
-        if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
+        if (window && window->m_pinned) {
+            if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0 && sourceGlobal.width > 1.0 && sourceGlobal.height > 1.0) {
+                // Pinned windows are monitor-global overlays, not scrolling-tape
+                // members. Never let a pinned window's compositor position, or
+                // its stale stored workspace, become the wallpaper/viewport
+                // anchor. Keep the 1.0 workspace viewport centered, then place
+                // the pinned card over that viewport below.
+                anchorOverride = makeRect(baseGlobal.centerX() - sourceGlobal.width * 0.5,
+                                          baseGlobal.centerY() - sourceGlobal.height * 0.5,
+                                          sourceGlobal.width,
+                                          sourceGlobal.height);
+            }
+        } else if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
             anchorOverride = *anchor;
             resolvedSourceGlobal = makeRect(anchor->centerX() - sourceGlobal.width * 0.5,
                                             anchor->centerY() - sourceGlobal.height * 0.5,
