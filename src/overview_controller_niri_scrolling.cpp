@@ -1807,6 +1807,40 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         debugLog(out.str());
     }
 
+    const auto activeWorkspace = activeLayoutWorkspace();
+    const auto validTiledDispatchFocus = [&](const PHLWINDOW& window) {
+        if (!window || !window->m_isMapped || window->m_pinned || !hasManagedWindow(window))
+            return false;
+
+        if (!window->m_workspace || window->m_workspace != activeWorkspace || !isScrollingWorkspace(window->m_workspace))
+            return false;
+
+        const auto target = window->layoutTarget();
+        return target && !target->floating() && !isFloatingOverviewWindow(window);
+    };
+
+    const bool editAction = hasShift || hasCtrl || hasAlt;
+    if (editAction) {
+        PHLWINDOW dispatchFocus = selectedWindow();
+        if (!validTiledDispatchFocus(dispatchFocus))
+            dispatchFocus = m_state.focusDuringOverview;
+        if (!validTiledDispatchFocus(dispatchFocus))
+            dispatchFocus = Desktop::focusState()->window();
+
+        if (!validTiledDispatchFocus(dispatchFocus)) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] consume niri edit keybind without tiled focus"
+                    << " selected=" << debugWindowLabel(selectedWindow())
+                    << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+                    << " active=" << debugWindowLabel(Desktop::focusState()->window())
+                    << " workspace=" << debugWorkspaceLabel(activeWorkspace);
+                debugLog(out.str());
+            }
+            return true;
+        }
+    }
+
     const auto runNamedEditingDispatcher = [&](std::string_view name, std::string args) {
         const auto original = m_overviewEditingDispatchersOriginal.find(std::string{name});
         if (original == m_overviewEditingDispatchersOriginal.end())
@@ -1896,8 +1930,18 @@ bool OverviewController::usesDirectNiriScrollingOverview(const State& state) con
     });
 }
 bool OverviewController::activeDirectNiriSingleWorkspaceOverview() const {
-    return isVisible() && (m_state.phase == Phase::Opening || m_state.phase == Phase::Active) && m_state.collectionPolicy.onlyActiveWorkspace &&
-        usesDirectNiriScrollingOverview(m_state);
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !m_state.collectionPolicy.onlyActiveWorkspace)
+        return false;
+
+    if (usesDirectNiriScrollingOverview(m_state))
+        return true;
+
+    // Empty scrolling workspaces still use the direct Niri overview model: the
+    // workspace lane/backing placeholder is the thing being zoomed even though
+    // there are no tiled window targets. Treating it as non-direct lets focus and
+    // edit paths fall back to Hyprland's live focus, which can belong to another
+    // monitor/layout and can leave the renderer with mismatched workspace state.
+    return niriModeEnabled() && centeredEmptyWorkspacePlaceholder(m_state) != nullptr;
 }
 bool OverviewController::shouldSuppressNiriFocusScrollForMonitorReturn(const PHLWINDOW& window, const PHLMONITOR& previousFocusMonitor) const {
     if (!window || !previousFocusMonitor || !m_state.ownerMonitor)
@@ -3616,6 +3660,27 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             dispatchFocus = validDispatchFocus(Desktop::focusState()->window()) ? Desktop::focusState()->window() : PHLWINDOW{};
         if (!validDispatchFocus(dispatchFocus) && dispatchWorkspace)
             dispatchFocus = focusCandidateForWorkspace(dispatchWorkspace);
+
+        const auto activeDispatchWorkspace = activeLayoutWorkspace();
+        const auto dispatchTarget = dispatchFocus ? dispatchFocus->layoutTarget() : nullptr;
+        const bool dispatchFocusIsTiledScrolling = dispatchFocus && dispatchFocus->m_isMapped && !dispatchFocus->m_pinned && hasManagedWindow(dispatchFocus) &&
+            dispatchFocus->m_workspace && dispatchFocus->m_workspace == activeDispatchWorkspace && isScrollingWorkspace(dispatchFocus->m_workspace) &&
+            dispatchTarget && !dispatchTarget->floating() && !isFloatingOverviewWindow(dispatchFocus);
+
+        if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage) && !dispatchFocusIsTiledScrolling) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] consume niri edit dispatcher without tiled focus"
+                    << " dispatcher=" << dispatcherName
+                    << " selected=" << debugWindowLabel(selectedBefore)
+                    << " dispatchFocus=" << debugWindowLabel(dispatchFocus)
+                    << " active=" << debugWindowLabel(Desktop::focusState()->window())
+                    << " workspace=" << debugWorkspaceLabel(activeDispatchWorkspace);
+                debugLog(out.str());
+            }
+            damageOwnedMonitors();
+            return {};
+        }
 
         SDispatchResult result;
         {

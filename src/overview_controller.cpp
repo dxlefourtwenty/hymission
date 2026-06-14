@@ -10178,6 +10178,15 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     clearPendingStripWorkspaceChange();
     clearStripWindowDragState();
     m_primaryButtonPressed = false;
+    if (next.collectionPolicy.onlyActiveWorkspace && next.ownerMonitor && niriModeAppliesToState(next) && next.windows.empty()) {
+        const auto focusWorkspace = next.focusDuringOverview && !next.focusDuringOverview->m_pinned ? next.focusDuringOverview->m_workspace : PHLWORKSPACE{};
+        if (!focusWorkspace || focusWorkspace->m_monitor.lock() != next.ownerMonitor) {
+            next.focusBeforeOpen.reset();
+            next.focusDuringOverview.reset();
+            next.selectedIndex.reset();
+        }
+    }
+
     next.phase = Phase::Opening;
     next.animationProgress = 0.0;
     next.animationFromVisual = fromVisual;
@@ -12630,6 +12639,21 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     const auto targetWorkspace = entry.workspace ? entry.workspace : g_pCompositor->getWorkspaceByID(entry.workspaceId);
     if (!targetWorkspace && !entry.syntheticEmpty)
         return;
+
+    if (targetWorkspace) {
+        const auto workspaceMonitor = targetWorkspace->m_monitor.lock();
+        if (!workspaceMonitor || workspaceMonitor != monitor) {
+            // Hyprland's renderer assumes the workspace being rendered belongs to
+            // the monitor currently being rendered. When the overview is opened on
+            // an empty monitor while another monitor owns the only focused/windowed
+            // workspace, stale strip/retained lane data can otherwise point a strip
+            // entry at a foreign workspace. Do not snapshot that: falling back to
+            // the placeholder card is safe and avoids renderWorkspace() aborts.
+            entry.snapshot.reset();
+            return;
+        }
+    }
+
     auto snapshot = std::make_shared<WorkspaceStripEntry::Snapshot>();
     snapshot->framebuffer = createFramebuffer("hymission workspace strip snapshot");
     if (!snapshot->framebuffer || !snapshot->framebuffer->alloc(fbWidth, fbHeight))
