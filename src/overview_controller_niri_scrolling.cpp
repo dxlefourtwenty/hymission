@@ -6224,7 +6224,6 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         };
 
         std::optional<AnchorCandidate> bestTiled;
-        std::optional<AnchorCandidate> bestAny;
 
         const auto betterAnchor = [](const AnchorCandidate& candidate, const std::optional<AnchorCandidate>& current) {
             if (!current)
@@ -6273,15 +6272,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             if (candidateIsTiledScrolling && betterAnchor(anchor, bestTiled))
                 bestTiled = anchor;
-
-            if (betterAnchor(anchor, bestAny))
-                bestAny = anchor;
         }
 
         if (bestTiled)
             return bestTiled->rect;
-        if (bestAny)
-            return bestAny->rect;
+
+        // Floating windows are not part of the scrolling tape.  When a
+        // workspace has no tiled targets, using another floating window as the
+        // anchor makes the workspace viewport and wallpaper follow that floating
+        // window's off-center position.  In that case, leave the anchor unset so
+        // the caller can center the 1.0 workspace viewport and place the floating
+        // window inside it with its real offset.
         return std::nullopt;
     };
 
@@ -6482,6 +6483,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                             anchor->centerY() - sourceGlobal.height * 0.5,
                                             sourceGlobal.width,
                                             sourceGlobal.height);
+        } else if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0 && sourceGlobal.width > 1.0 && sourceGlobal.height > 1.0) {
+            // Floating-only scrolling workspaces still need a stable workspace
+            // viewport.  Center the viewport on the workspace itself; the
+            // floating window target is then derived from its real position
+            // relative to that centered viewport.
+            anchorOverride = makeRect(baseGlobal.centerX() - sourceGlobal.width * 0.5,
+                                      baseGlobal.centerY() - sourceGlobal.height * 0.5,
+                                      sourceGlobal.width,
+                                      sourceGlobal.height);
         }
 
         return niriOverviewSlotForSource(window, targetMonitor, resolvedSourceGlobal, baseGlobal, windowIndex, true, std::nullopt, anchorOverride);
