@@ -9143,8 +9143,12 @@ OverviewController::EmptyWorkspacePlaceholder* OverviewController::pendingExitWo
     if (!m_state.pendingExitWorkspace)
         return nullptr;
 
+    const WORKSPACEID pendingWorkspaceId = m_state.pendingExitWorkspace->m_id;
     const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
-                                 [&](const EmptyWorkspacePlaceholder& placeholder) { return placeholder.workspace == m_state.pendingExitWorkspace; });
+                                 [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                     return placeholder.workspace == m_state.pendingExitWorkspace ||
+                                         (pendingWorkspaceId != WORKSPACE_INVALID && placeholder.workspaceId == pendingWorkspaceId);
+                                 });
     return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
 }
 
@@ -10643,6 +10647,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         bool appliedPlaceholderCameraExit = false;
         if (auto* placeholder = pendingExitWorkspacePlaceholder())
             appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
+        if (!appliedPlaceholderCameraExit) {
+            if (const auto* centeredPlaceholder = centeredEmptyWorkspacePlaceholder(m_state))
+                appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*centeredPlaceholder);
+        }
 
         if (mode != CloseMode::Abort) {
             if (m_state.pendingExitWorkspace)

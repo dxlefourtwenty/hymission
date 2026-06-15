@@ -2440,8 +2440,13 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     return true;
 }
 bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder) {
-    if (!placeholder.workspace || !isScrollingWorkspace(placeholder.workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
-        !usesDirectNiriScrollingOverview(m_state))
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    if (placeholder.workspace && !isScrollingWorkspace(placeholder.workspace))
+        return false;
+
+    if (!placeholder.workspace && (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID))
         return false;
 
     const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& current) {
@@ -2538,8 +2543,13 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
     return true;
 }
 bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspacePlaceholder& placeholder) {
-    if (!placeholder.workspace || !isScrollingWorkspace(placeholder.workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
-        !usesDirectNiriScrollingOverview(m_state))
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    if (placeholder.workspace && !isScrollingWorkspace(placeholder.workspace))
+        return false;
+
+    if (!placeholder.workspace && (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID))
         return false;
 
     const Rect selectedStart = placeholder.naturalGlobal;
