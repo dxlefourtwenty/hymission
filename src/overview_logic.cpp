@@ -416,7 +416,7 @@ std::optional<std::pair<int64_t, int64_t>>
     if (!firstAnchor || !lastAnchor)
         return std::nullopt;
 
-    if (hasOccupiedAnchor) {
+    if (hasOccupiedAnchor || visitedWorkspaceId) {
         if (*firstAnchor > 0)
             --*firstAnchor;
         if (*lastAnchor + 1 < laneWorkspaceIds.size())
