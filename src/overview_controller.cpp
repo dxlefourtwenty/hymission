@@ -75,11 +75,6 @@ using niri_scrolling_detail::twoColumnSwapTraceActive;
 using niri_scrolling_detail::windowsMoveAnimationConfig;
 using niri_scrolling_detail::workspaceAnimationConfig;
 
-namespace niri_scrolling_detail {
-extern std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
-extern bool workspaceSwitchDispatcherBlockRelayout;
-}
-
 class OverviewOverlayPassElement final : public IPassElement {
   public:
     OverviewOverlayPassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
@@ -233,25 +228,11 @@ OverviewController* g_controller = nullptr;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
-
-void armWorkspaceSwitchDispatcherBlock(std::chrono::milliseconds duration) {
-    if (duration <= std::chrono::milliseconds{0})
-        duration = std::chrono::milliseconds{320};
-
-    const auto until = std::chrono::steady_clock::now() + duration;
-    if (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil == std::chrono::steady_clock::time_point{} ||
-        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil < until)
-        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = until;
-
-    niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = true;
-}
-
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::string lowered{name};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
         lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
         lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
@@ -1308,51 +1289,6 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
     return snapshotBox;
 }
 
-
-bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
-    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return false;
-
-    auto* const controller = scrolling->m_scrollingData->controller.get();
-    const CBox usable = scrolling->usableArea();
-    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
-    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
-    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
-    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
-    const double offset = controller->getOffset();
-
-    return offset < -0.5 || offset > maxNormalOffset + 0.5;
-}
-
-bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolling) {
-    if (!scrolling || !scrolling->m_scrollingData)
-        return false;
-
-    for (const auto& column : scrolling->m_scrollingData->columns) {
-        if (!column)
-            continue;
-
-        for (const auto& targetData : column->targetDatas) {
-            if (!targetData || !targetData->target || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
-                continue;
-
-            const CBox liveBox = targetData->target->position();
-            if (liveBox.width <= 1.0 || liveBox.height <= 1.0)
-                continue;
-
-            if (std::abs(liveBox.x - targetData->layoutBox.x) > 0.5 || std::abs(liveBox.y - targetData->layoutBox.y) > 0.5 ||
-                std::abs(liveBox.width - targetData->layoutBox.width) > 0.5 || std::abs(liveBox.height - targetData->layoutBox.height) > 0.5)
-                return true;
-        }
-    }
-
-    return false;
-}
-
-bool scrollingLiveCameraOwnsOverviewGeometry(Layout::Tiled::CScrollingAlgorithm* scrolling) {
-    return scrollingEdgeCameraActive(scrolling) || scrollingNativeGeometryInFlight(scrolling);
-}
-
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -1518,14 +1454,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const auto primaryEnd = [&](const Rect& rect) { return primaryStart(rect) + primarySize(rect); };
     const bool fitFocusMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1;
-    const bool liveCameraOwnsGeometry = scrollingLiveCameraOwnsOverviewGeometry(scrolling);
 
-    if (liveCameraOwnsGeometry) {
-        // Hyprland is still animating the scroll camera or is doing its edge
-        // camera-only pan past the first/last column. Do not synthesize a
-        // centered/fit virtual tape here; that fights Hyprland's animated
-        // target boxes and causes the overview to hang then snap.
-    } else if (!fitFocusMethod) {
+    if (!fitFocusMethod) {
         const double anchorCenter = horizontal ? baseGlobal.centerX() : baseGlobal.centerY();
         setPrimaryStart(columns[*anchorColumnIndex].virtualBounds, anchorCenter - primarySize(columns[*anchorColumnIndex].bounds) * 0.5);
 
@@ -1605,12 +1535,8 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
 
-        double anchorX = targetColumn.virtualBounds.centerX();
-        double anchorY = targetColumn.virtualBounds.centerY();
-        if (liveCameraOwnsGeometry) {
-            anchorX = baseGlobal.centerX();
-            anchorY = baseGlobal.centerY();
-        }
+        const double anchorX = targetColumn.virtualBounds.centerX();
+        const double anchorY = targetColumn.virtualBounds.centerY();
         targetAnchor = makeRect(anchorX - targetSource->width * 0.5, anchorY - targetSource->height * 0.5, targetSource->width, targetSource->height);
         break;
     }
@@ -2593,6 +2519,9 @@ void OverviewController::pumpThemeSurfaceFeedbackFrames() {
 void OverviewController::armThemeWorkspaceActivationRefresh() {
     if (!stripThemeWorkspaceActivationRefreshEnabled() || !g_pEventLoopManager || !isVisible() || !workspaceStripEnabled(m_state) || m_state.stripEntries.empty() ||
         !m_focusWorkspaceOnCurrentMonitorOriginal)
+        return;
+
+    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty())
         return;
 
     clearThemeWorkspaceActivationRefresh();
@@ -5871,8 +5800,6 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .animationStart = {},
     };
 
-    armWorkspaceSwitchDispatcherBlock(std::chrono::milliseconds{700});
-
     if (mode == WorkspaceTransitionMode::TimedCommit)
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
@@ -6445,7 +6372,6 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             next.relayoutStart = {};
         }
         m_state = std::move(next);
-        armWorkspaceSwitchDispatcherBlock(m_state.relayoutActive ? std::chrono::milliseconds{700} : std::chrono::milliseconds{320});
         applyWorkspaceNameOverrides(m_state);
         if (targetFocus) {
             selectWindowInState(m_state, targetFocus);
@@ -6493,7 +6419,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     } else {
         updateHoveredFromPointer(false, false, false, false, "workspace-transition-commit");
     }
-    m_pendingWorkspaceTransitionRequests.clear();
+    startNextQueuedOverviewWorkspaceTransition();
     damageOwnedMonitors();
 }
 
@@ -6655,21 +6581,162 @@ void OverviewController::restoreOverviewRenderState() {
 // deferred during an active workspace transition. Call this after the
 // transition commits and state is rebuilt for the new workspace.
 void OverviewController::processQueuedEditDispatchers() {
-    if (m_pendingEditDispatchers.empty())
-        return;
+    bool anyDispatcherRan = false;
+    while (!m_pendingEditDispatchers.empty()) {
+        auto pending = std::move(m_pendingEditDispatchers.front());
+        m_pendingEditDispatchers.pop_front();
 
-    if (debugLogsEnabled()) {
-        std::ostringstream out;
-        out << "[hymission] drop queued edit dispatchers during workspace-settle block count=" << m_pendingEditDispatchers.size();
-        debugLog(out.str());
+        if (debugLogsEnabled()) {
+            const bool overviewActive = isVisible() && m_state.phase == Phase::Active;
+            const bool directNiri = activeDirectNiriSingleWorkspaceOverview();
+            bool directLiveGeometryAvailable = false;
+            if (overviewActive && directNiri) {
+                directLiveGeometryAvailable = std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
+                    return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
+                });
+            }
+            const auto selected = selectedWindow();
+            const auto focused = Desktop::focusState()->window();
+            const auto focusOverview = m_state.focusDuringOverview;
+            const auto activeWorkspace = activeLayoutWorkspace();
+            
+            std::ostringstream out;
+            out << "[hymission] process queued edit dispatcher BEGIN"
+                << " dispatcher=" << pending.dispatcherName
+                << " args=" << pending.args
+                << " overviewActive=" << (overviewActive ? 1 : 0)
+                << " directNiri=" << (directNiri ? 1 : 0)
+                << " directLiveGeometryAvailable=" << (directLiveGeometryAvailable ? 1 : 0)
+                << " selected=" << debugWindowLabel(selected)
+                << " focusDuringOverview=" << debugWindowLabel(focusOverview)
+                << " activeWindow=" << debugWindowLabel(focused)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspace);
+            if (activeWorkspace) {
+                auto* scrolling = scrollingAlgorithmForWorkspace(activeWorkspace);
+                if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                    out << " scrollOffset=" << scrolling->m_scrollingData->controller->getOffset()
+                        << " columns=" << scrolling->m_scrollingData->columns.size();
+                    for (std::size_t i = 0; i < scrolling->m_scrollingData->columns.size(); ++i) {
+                        auto col = scrolling->m_scrollingData->columns[i];
+                        if (col) {
+                            auto lft = col->lastFocusedTarget.lock();
+                            out << " col#" << i << " lastFocused=" << debugWindowLabel(lft ? lft->target.lock()->window() : PHLWINDOW{});
+                        }
+                    }
+                }
+            }
+            debugLog(out.str());
+        }
+
+        // Before running the queued dispatcher, force-sync overview focus state
+        // to the current Hyprland focus. This fixes a bug where queued
+        // movefocus/movecol/swapcol dispatchers (triggered during a workspace
+        // transition) would run with stale focus data from before the transition.
+        if (pending.original && *pending.original) {
+            const auto currentFocus = Desktop::focusState()->window();
+            if (currentFocus && currentFocus->m_isMapped && hasManagedWindow(currentFocus)) {
+                // Sync overview internal focus state
+                selectWindowInState(m_state, currentFocus);
+                m_state.focusDuringOverview = currentFocus;
+                // Sync scrolling layout focus for the current workspace
+                if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+                    const auto currentWorkspace = currentFocus->m_pinned ? activeLayoutWorkspace() : currentFocus->m_workspace;
+                    if (currentWorkspace && isScrollingWorkspace(currentWorkspace)) {
+                        (void)syncScrollingWorkspaceSpotOnWindow(currentFocus);
+                    }
+                }
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] process queued edit dispatcher pre-sync"
+                        << " forcedFocus=" << debugWindowLabel(currentFocus)
+                        << " selected=" << (*m_state.selectedIndex < m_state.windows.size() ? debugWindowLabel(m_state.windows[*m_state.selectedIndex].window) : std::string("<none>"))
+                        << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+                    debugLog(out.str());
+                }
+            }
+        }
+
+        if (pending.original && *pending.original) {
+            // Run the dispatcher with the updated state
+            (void)runOverviewEditingDispatcher(pending.dispatcherName.c_str(), pending.original, std::move(pending.args));
+            anyDispatcherRan = true;
+        }
+
+        if (debugLogsEnabled()) {
+            const auto selectedAfter = selectedWindow();
+            const auto focusOverviewAfter = m_state.focusDuringOverview;
+            const auto focusedAfter = Desktop::focusState()->window();
+            const auto activeWorkspaceAfter = activeLayoutWorkspace();
+            
+            std::ostringstream out;
+            out << "[hymission] process queued edit dispatcher END"
+                << " selected=" << debugWindowLabel(selectedAfter)
+                << " focusDuringOverview=" << debugWindowLabel(focusOverviewAfter)
+                << " activeWindow=" << debugWindowLabel(focusedAfter)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspaceAfter);
+            if (activeWorkspaceAfter) {
+                auto* scrolling = scrollingAlgorithmForWorkspace(activeWorkspaceAfter);
+                if (scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                    for (std::size_t i = 0; i < scrolling->m_scrollingData->columns.size(); ++i) {
+                        auto col = scrolling->m_scrollingData->columns[i];
+                        if (col) {
+                            auto lft = col->lastFocusedTarget.lock();
+                            out << " col#" << i << " lastFocused=" << debugWindowLabel(lft ? lft->target.lock()->window() : PHLWINDOW{});
+                        }
+                    }
+                }
+            }
+            debugLog(out.str());
+        }
     }
 
-    // Do not replay edit dispatchers after a workspace transition. Replaying a
-    // queued movecol/movefocus after the target workspace rebuild can run
-    // against stale Hyprland focus and leave the border on the old window.
-    // The overview-enter -> workspace-switch path consumes input until active;
-    // workspace-switch settle should do the same.
-    m_pendingEditDispatchers.clear();
+    // After all queued dispatchers have run, do a final focus sync to ensure
+    // the overview state and scrolling layout's lastFocusedTarget match the
+    // actual Hyprland focus. This prevents the focus border from getting stuck
+    // on a stale window when multiple movecol/movefocus dispatchers were queued
+    // during a workspace transition.
+    if (anyDispatcherRan && isVisible() && m_state.phase == Phase::Active &&
+        m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        const auto finalFocus = Desktop::focusState()->window();
+        if (finalFocus && finalFocus->m_isMapped && hasManagedWindow(finalFocus)) {
+            const auto currentWorkspace = finalFocus->m_pinned ? activeLayoutWorkspace() : finalFocus->m_workspace;
+            if (currentWorkspace && isScrollingWorkspace(currentWorkspace)) {
+                // Sync overview internal focus state
+                selectWindowInState(m_state, finalFocus);
+                m_state.focusDuringOverview = finalFocus;
+                // Sync scrolling layout focus for the current workspace
+                (void)syncScrollingWorkspaceSpotOnWindow(finalFocus);
+                // Do a complete visible state rebuild with the final focus as anchor.
+                // This ensures the overview state, preview rects, and strip entries
+                // are all consistent with the current Hyprland focus and layout.
+                rebuildVisibleState(finalFocus, true);
+                // Post-rebuild: ensure scrolling layout's lastFocusedTarget matches
+                // the overview's focusDuringOverview. This is critical because
+                // rebuildVisibleState doesn't call the post-rebuild sync that
+                // refreshVisibleStateMetadata does.
+                if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace &&
+                    niriModeAppliesToState(m_state) &&
+                    isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
+                    (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+                }
+                // Refresh strip activity in case the active workspace changed
+                if (refreshWorkspaceStripActivity(m_state)) {
+                    if (debugLogsEnabled()) {
+                        debugLog("[hymission] refreshed workspace strip activity after final focus sync");
+                    }
+                }
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] process queued edit dispatchers final sync"
+                        << " forcedFocus=" << debugWindowLabel(finalFocus)
+                        << " selected=" << (*m_state.selectedIndex < m_state.windows.size() ? debugWindowLabel(m_state.windows[*m_state.selectedIndex].window) : std::string("<none>"))
+                        << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview);
+                    debugLog(out.str());
+                }
+                damageOwnedMonitors();
+            }
+        }
+    }
 }
 
 void OverviewController::clearOverviewWorkspaceTransition(const PHLWORKSPACE& committedWorkspace, bool clearPendingRequests) {
@@ -7167,10 +7234,6 @@ bool OverviewController::installHooks() {
         "movewindow",
         "movewindoworgroup",
         "swapwindow",
-        "movecol",
-        "movecolumn",
-        "swapcol",
-        "swapcolumn",
         "movetoworkspace",
         "movetoworkspacesilent",
         "moveactive",
@@ -8424,6 +8487,11 @@ void OverviewController::syncHiddenStripLayerProxies() {
         return;
     }
 
+    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
+        clearHiddenStripLayerProxies();
+        return;
+    }
+
     std::vector<std::pair<PHLLS, PHLMONITOR>> desired;
     for (const auto& layer : g_pCompositor->m_layers) {
         const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
@@ -8458,6 +8526,11 @@ void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
     if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state))
         return;
 
+    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
+        std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return proxy.niriWallpaperLayoutLayer; });
+        return;
+    }
+
     std::vector<std::pair<PHLLS, PHLMONITOR>> desired;
     for (const auto& layer : g_pCompositor->m_layers) {
         const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
@@ -8482,6 +8555,9 @@ void OverviewController::startNiriWallpaperLayoutLayerRefresh() {
     if (interval.count() <= 0 || !g_pEventLoopManager || !isVisible() || !niriWallpaperZoomAppliesToState(m_state))
         return;
 
+    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty())
+        return;
+
     if (!m_niriWallpaperLayoutLayerRefreshTimer) {
         m_niriWallpaperLayoutLayerRefreshTimer = makeShared<CEventLoopTimer>(
             interval,
@@ -8494,6 +8570,11 @@ void OverviewController::startNiriWallpaperLayoutLayerRefresh() {
 
                 if (g_pHyprRenderer && g_pHyprRenderer->m_renderData.pMonitor) {
                     self->updateTimeout(THEME_SURFACE_FEEDBACK_INTERVAL);
+                    return;
+                }
+
+                if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
+                    self->updateTimeout(std::nullopt);
                     return;
                 }
 
@@ -8946,7 +9027,6 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutProgress = 1.0;
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
-    niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
 }
 
 void OverviewController::beginOverviewVisibilityAnimation(const char* source) {
@@ -10019,19 +10099,6 @@ SDispatchResult OverviewController::runHookedDispatcher(PostCloseDispatcher disp
     if (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
         return {};
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          now < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
-    if (workspaceSwitchSettling) {
-        if (debugLogsEnabled())
-            debugLog("[hymission] block post-close dispatcher during workspace switch settle");
-        return {};
-    }
-
     if (!selectedWindow())
         return {.success = false, .error = "no selected window in overview"};
 
@@ -10178,15 +10245,6 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     clearPendingStripWorkspaceChange();
     clearStripWindowDragState();
     m_primaryButtonPressed = false;
-    if (next.collectionPolicy.onlyActiveWorkspace && next.ownerMonitor && niriModeAppliesToState(next) && next.windows.empty()) {
-        const auto focusWorkspace = next.focusDuringOverview && !next.focusDuringOverview->m_pinned ? next.focusDuringOverview->m_workspace : PHLWORKSPACE{};
-        if (!focusWorkspace || focusWorkspace->m_monitor.lock() != next.ownerMonitor) {
-            next.focusBeforeOpen.reset();
-            next.focusDuringOverview.reset();
-            next.selectedIndex.reset();
-        }
-    }
-
     next.phase = Phase::Opening;
     next.animationProgress = 0.0;
     next.animationFromVisual = fromVisual;
@@ -10211,8 +10269,19 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     applyWorkspaceNameOverrides(m_state);
     clearHiddenStripLayerProxies();
     syncNiriWallpaperSnapshots();
-    syncHiddenStripLayerProxies();
-    startNiriWallpaperLayoutLayerRefresh();
+    const bool emptyDirectNiriOpen = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty();
+    if (emptyDirectNiriOpen) {
+        // Opening from a layer surface on an empty scrolling workspace can leave
+        // Hyprland's focused monitor/workspace pointing at another monitor for a
+        // frame.  Do not snapshot/hide layer surfaces in that state; those
+        // snapshot paths can make Hyprland render a foreign workspace through
+        // the owner monitor and trip renderAllClientsForWorkspace.
+        clearHiddenStripLayerProxies();
+        clearNiriWallpaperLayoutLayerRefresh();
+    } else {
+        syncHiddenStripLayerProxies();
+        startNiriWallpaperLayoutLayerRefresh();
+    }
     m_cursorShapeResetFrames = WAYBAR_CURSOR_SHAPE_RESET_FRAMES;
     resetStaleClientCursorShape();
     setInputFollowMouseOverride(true);
@@ -11375,10 +11444,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     // lastFocusedTarget) become desynchronized.
     if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
-        const bool cameraOwnsGeometry = usesDirectNiriScrollingOverview(m_state) &&
-            scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(m_state.focusDuringOverview->m_workspace));
-        if (!cameraOwnsGeometry)
-            (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
     }
 
     syncHiddenStripLayerProxies();
@@ -11743,10 +11809,7 @@ void OverviewController::rebuildVisibleState(PHLWINDOW preferredSelectedWindow, 
     // lastFocusedTarget) become desynchronized.
     if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
-        const bool cameraOwnsGeometry = usesDirectNiriScrollingOverview(m_state) &&
-            scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(m_state.focusDuringOverview->m_workspace));
-        if (!cameraOwnsGeometry)
-            (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
     }
 
     syncHiddenStripLayerProxies();
@@ -12636,24 +12699,22 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     }
 
     const auto monitor = entry.monitor;
-    const auto targetWorkspace = entry.workspace ? entry.workspace : g_pCompositor->getWorkspaceByID(entry.workspaceId);
-    if (!targetWorkspace && !entry.syntheticEmpty)
-        return;
-
+    auto       targetWorkspace = entry.workspace ? entry.workspace : g_pCompositor->getWorkspaceByID(entry.workspaceId);
     if (targetWorkspace) {
-        const auto workspaceMonitor = targetWorkspace->m_monitor.lock();
-        if (!workspaceMonitor || workspaceMonitor != monitor) {
-            // Hyprland's renderer assumes the workspace being rendered belongs to
-            // the monitor currently being rendered. When the overview is opened on
-            // an empty monitor while another monitor owns the only focused/windowed
-            // workspace, stale strip/retained lane data can otherwise point a strip
-            // entry at a foreign workspace. Do not snapshot that: falling back to
-            // the placeholder card is safe and avoids renderWorkspace() aborts.
-            entry.snapshot.reset();
-            return;
+        const auto targetWorkspaceMonitor = targetWorkspace->m_monitor.lock();
+        if (!targetWorkspaceMonitor || targetWorkspaceMonitor != monitor) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] strip snapshot skipped foreign workspace monitor=" << monitor->m_name
+                    << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                    << " workspaceMonitor=" << (targetWorkspaceMonitor ? targetWorkspaceMonitor->m_name : std::string{"<none>"});
+                debugLog(out.str());
+            }
+            targetWorkspace = PHLWORKSPACE{};
         }
     }
-
+    if (!targetWorkspace && !entry.syntheticEmpty)
+        return;
     auto snapshot = std::make_shared<WorkspaceStripEntry::Snapshot>();
     snapshot->framebuffer = createFramebuffer("hymission workspace strip snapshot");
     if (!snapshot->framebuffer || !snapshot->framebuffer->alloc(fbWidth, fbHeight))
@@ -12894,6 +12955,18 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
 
     if (renderWorkspaceContents && targetWorkspace)
         monitor->m_activeSpecialWorkspace.reset();
+
+    if (renderWorkspaceContents && targetWorkspace && targetWorkspace->m_monitor.lock() != monitor) {
+        applyFullscreenOverrideForState(m_stripPreviewContext.state, false);
+        m_stripPreviewContext.state = {};
+        m_stripPreviewContext.framebufferSize = {};
+        m_stripPreviewContext.monitor.reset();
+        m_stripPreviewContext.active = false;
+        g_pHyprRenderer->m_bRenderingSnapshot = previousRenderingSnapshot;
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = previousBlockSurfaceFeedback;
+        --m_stripSnapshotRenderDepth;
+        return;
+    }
 
     if (renderWorkspaceContents && targetWorkspace) {
         monitor->m_activeWorkspace = targetWorkspace;

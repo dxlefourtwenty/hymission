@@ -1159,55 +1159,65 @@ double OverviewController::niriOverviewOpenCloseSpeedMultiplier() const {
     return std::clamp(getConfigFloat(m_handle, "plugin:hymission:niri_overview_open_close_speed_multiplier", 1.5), 0.1, 10.0);
 }
 PHLWORKSPACE OverviewController::activeLayoutWorkspace() const {
-    PHLMONITOR liveMonitor = Desktop::focusState()->monitor();
-    if (!liveMonitor)
-        liveMonitor = m_state.ownerMonitor;
-    if (!liveMonitor)
-        liveMonitor = g_pCompositor->getMonitorFromCursor();
-
-    const auto liveActiveWorkspace = liveMonitor ? liveMonitor->m_activeWorkspace : PHLWORKSPACE{};
+    const auto workspaceOnMonitor = [](const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
+        return workspace && monitor && workspace->m_monitor.lock() == monitor;
+    };
+    const auto scrollingWorkspaceOnMonitor = [&](const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
+        return workspaceOnMonitor(workspace, monitor) && isScrollingWorkspace(workspace);
+    };
 
     if (isVisible() && niriModeAppliesToState(m_state)) {
-        if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, m_state.ownerMonitor); centeredEmptyWorkspace)
+        PHLMONITOR ownerMonitor = m_state.ownerMonitor;
+        if (!ownerMonitor)
+            ownerMonitor = g_pCompositor->getMonitorFromCursor();
+
+        // When the overview is launched from a layer surface (for example Waybar),
+        // Hyprland's focused monitor/window can still belong to another monitor for
+        // the first few frames.  In direct single-workspace Niri mode, the overview
+        // geometry must stay tied to the monitor that opened it; otherwise an empty
+        // scrolling workspace can borrow a foreign dwindle workspace and feed that
+        // workspace into snapshot/render paths that expect the owner monitor.
+        if (const auto centeredEmptyWorkspace = centeredEmptyPlaceholderWorkspace(m_state, ownerMonitor);
+            scrollingWorkspaceOnMonitor(centeredEmptyWorkspace, ownerMonitor))
             return centeredEmptyWorkspace;
 
-        // After a workspace switch commits, Hyprland's active workspace is the
-        // source of truth. The overview selection/focus can briefly still point
-        // at the source workspace while the target strip relayout is settling;
-        // using that stale window as the layout workspace is what makes the
-        // old focused preview stay pinned in the viewport while movecol scrolls
-        // the new strip underneath it.
-        if (!m_workspaceTransition.active && m_state.collectionPolicy.onlyActiveWorkspace && liveActiveWorkspace &&
-            isScrollingWorkspace(liveActiveWorkspace)) {
-            const bool staleFocusWorkspace = m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned &&
-                m_state.focusDuringOverview->m_workspace && m_state.focusDuringOverview->m_workspace != liveActiveWorkspace;
-            bool staleSelectedWorkspace = false;
-            if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
-                const auto selected = m_state.windows[*m_state.selectedIndex].window;
-                staleSelectedWorkspace = selected && !selected->m_pinned && selected->m_workspace && selected->m_workspace != liveActiveWorkspace;
-            }
+        if (m_state.collectionPolicy.onlyActiveWorkspace) {
+            if (scrollingWorkspaceOnMonitor(m_state.ownerWorkspace, ownerMonitor))
+                return m_state.ownerWorkspace;
 
-            if (!m_state.ownerWorkspace || m_state.ownerWorkspace != liveActiveWorkspace || staleFocusWorkspace || staleSelectedWorkspace)
-                return liveActiveWorkspace;
+            if (ownerMonitor && scrollingWorkspaceOnMonitor(ownerMonitor->m_activeWorkspace, ownerMonitor))
+                return ownerMonitor->m_activeWorkspace;
         }
 
-        if (m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace)
+        if (m_state.focusDuringOverview && !m_state.focusDuringOverview->m_pinned && m_state.focusDuringOverview->m_workspace &&
+            (!ownerMonitor || workspaceOnMonitor(m_state.focusDuringOverview->m_workspace, ownerMonitor)))
             return m_state.focusDuringOverview->m_workspace;
 
         if (m_state.selectedIndex && *m_state.selectedIndex < m_state.windows.size()) {
             const auto selected = m_state.windows[*m_state.selectedIndex].window;
-            if (selected && !selected->m_pinned && selected->m_workspace)
+            if (selected && !selected->m_pinned && selected->m_workspace && (!ownerMonitor || workspaceOnMonitor(selected->m_workspace, ownerMonitor)))
                 return selected->m_workspace;
+        }
+
+        if (ownerMonitor) {
+            if (ownerMonitor->m_activeSpecialWorkspace)
+                return ownerMonitor->m_activeSpecialWorkspace;
+            return ownerMonitor->m_activeWorkspace;
         }
     }
 
-    if (!liveMonitor)
+    PHLMONITOR monitor = Desktop::focusState()->monitor();
+    if (!monitor)
+        monitor = m_state.ownerMonitor;
+    if (!monitor)
+        monitor = g_pCompositor->getMonitorFromCursor();
+    if (!monitor)
         return {};
 
-    if (liveMonitor->m_activeSpecialWorkspace)
-        return liveMonitor->m_activeSpecialWorkspace;
+    if (monitor->m_activeSpecialWorkspace)
+        return monitor->m_activeSpecialWorkspace;
 
-    return liveMonitor->m_activeWorkspace;
+    return monitor->m_activeWorkspace;
 }
 bool OverviewController::isScrollingWorkspace(const PHLWORKSPACE& workspace) const {
     if (!workspace || !workspace->m_space)
