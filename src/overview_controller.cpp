@@ -10484,8 +10484,19 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_cursorShapeResetFrames = 0;
     resetStaleClientCursorShape();
     clearNiriWallpaperLayoutLayerRefresh();
-    clearHiddenStripLayerProxies();
-    syncHiddenStripLayerProxies();
+    const bool emptyDirectNiriClose = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() &&
+        centeredEmptyWorkspacePlaceholder(m_state);
+    if (emptyDirectNiriClose) {
+        // Keep the delayed-captured Waybar/hypr-dock Niri layout proxies alive
+        // for the close animation.  Clearing them here makes shouldHideLayerSurface()
+        // hand rendering back to the real layer immediately, so the layer snaps
+        // full-size while the wallpaper viewport zooms in.  The proxies are still
+        // cleared in deactivate(), after the close animation has completed.
+        std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return !proxy.niriWallpaperLayoutLayer; });
+    } else {
+        clearHiddenStripLayerProxies();
+        syncHiddenStripLayerProxies();
+    }
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
