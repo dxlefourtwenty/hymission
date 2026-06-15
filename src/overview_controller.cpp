@@ -3954,11 +3954,24 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     if (isNiriWallpaperLayer(layer, monitor))
         return true;
 
+    const bool emptyDirectNiriOwnerMonitor = monitor == m_state.ownerMonitor && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() &&
+        niriModeAppliesToState(m_state) && centeredEmptyWorkspacePlaceholder(m_state);
+    const bool hideBarLayer = layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
+
+    if (emptyDirectNiriOwnerMonitor && hideBarLayer) {
+        // The empty direct-Niri open path intentionally avoids layer snapshot
+        // capture because opening from Waybar/hypr-dock while another monitor
+        // owns live focus can make Hyprland render a foreign workspace through
+        // this monitor.  In that no-window state, keep layout-affecting layers
+        // live instead of hiding them without a proxy.
+        return false;
+    }
+
     if (isRetainedNiriWallpaperLayoutLayer(layer, monitor))
         return true;
 
     if (workspaceStripEnabled(m_state) && hideBarsWhenStripShownEnabled())
-        return layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
+        return hideBarLayer;
 
     if (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) {
         if (hideBarsWhenStripShownEnabled() && (layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces())))
