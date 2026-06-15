@@ -3959,12 +3959,13 @@ bool OverviewController::shouldHideLayerSurface(const PHLLS& layer, const PHLMON
     const bool hideBarLayer = layerResource->m_current.exclusive > 0 || shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
 
     if (emptyDirectNiriOwnerMonitor && hideBarLayer) {
-        // The empty direct-Niri open path intentionally avoids layer snapshot
-        // capture because opening from Waybar/hypr-dock while another monitor
-        // owns live focus can make Hyprland render a foreign workspace through
-        // this monitor.  In that no-window state, keep layout-affecting layers
-        // live instead of hiding them without a proxy.
-        return false;
+        // Keep the live layer visible until the first safe delayed proxy capture
+        // has succeeded.  Once a Niri wallpaper-layout proxy exists, hide the
+        // real layer so renderNiriWorkspaceBackgrounds() can draw the proxy
+        // inside the zoomed workspace viewport, matching the normal window-present path.
+        const auto* proxy = hiddenStripLayerProxyFor(layer, monitor);
+        auto*       framebuffer = proxy && proxy->framebuffer ? proxy->framebuffer.get() : nullptr;
+        return proxy && proxy->niriWallpaperLayoutLayer && framebuffer && framebuffer->isAllocated() && framebuffer->getTexture();
     }
 
     if (isRetainedNiriWallpaperLayoutLayer(layer, monitor))
@@ -8298,7 +8299,11 @@ const OverviewController::HiddenStripLayerProxy* OverviewController::hiddenStrip
 }
 
 bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) {
-    if (!layer || !monitor || !g_pHyprRenderer || !g_pHyprOpenGL || !shouldHideLayerSurface(layer, monitor))
+    const bool allowEmptyDirectNiriLayoutLayerCapture = layer && monitor && monitor == m_state.ownerMonitor &&
+        m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() && niriModeAppliesToState(m_state) &&
+        centeredEmptyWorkspacePlaceholder(m_state) && isNiriWallpaperLayoutLayer(layer, monitor);
+
+    if (!layer || !monitor || !g_pHyprRenderer || !g_pHyprOpenGL || (!shouldHideLayerSurface(layer, monitor) && !allowEmptyDirectNiriLayoutLayerCapture))
         return false;
 
     constexpr double kHiddenStripBlurPaddingLogical = 24.0;
@@ -8501,7 +8506,11 @@ void OverviewController::syncHiddenStripLayerProxies() {
     }
 
     if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
-        clearHiddenStripLayerProxies();
+        // In the empty direct-Niri path, regular hide-bar snapshots are unsafe
+        // during open, but wallpaper-layout proxies are captured by the delayed
+        // niri_mode_wallpaper_zoom_layer_refresh_ms timer and must be retained
+        // so those layers keep zooming with the workspace viewport.
+        std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return !proxy.niriWallpaperLayoutLayer; });
         return;
     }
 
@@ -8539,11 +8548,6 @@ void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
     if (!isVisible() || !niriWallpaperZoomAppliesToState(m_state))
         return;
 
-    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
-        std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return proxy.niriWallpaperLayoutLayer; });
-        return;
-    }
-
     std::vector<std::pair<PHLLS, PHLMONITOR>> desired;
     for (const auto& layer : g_pCompositor->m_layers) {
         const auto monitor = layer ? layer->m_monitor.lock() : PHLMONITOR{};
@@ -8568,9 +8572,6 @@ void OverviewController::startNiriWallpaperLayoutLayerRefresh() {
     if (interval.count() <= 0 || !g_pEventLoopManager || !isVisible() || !niriWallpaperZoomAppliesToState(m_state))
         return;
 
-    if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty())
-        return;
-
     if (!m_niriWallpaperLayoutLayerRefreshTimer) {
         m_niriWallpaperLayoutLayerRefreshTimer = makeShared<CEventLoopTimer>(
             interval,
@@ -8583,11 +8584,6 @@ void OverviewController::startNiriWallpaperLayoutLayerRefresh() {
 
                 if (g_pHyprRenderer && g_pHyprRenderer->m_renderData.pMonitor) {
                     self->updateTimeout(THEME_SURFACE_FEEDBACK_INTERVAL);
-                    return;
-                }
-
-                if (niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty()) {
-                    self->updateTimeout(std::nullopt);
                     return;
                 }
 
@@ -10284,13 +10280,13 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     syncNiriWallpaperSnapshots();
     const bool emptyDirectNiriOpen = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty();
     if (emptyDirectNiriOpen) {
-        // Opening from a layer surface on an empty scrolling workspace can leave
-        // Hyprland's focused monitor/workspace pointing at another monitor for a
-        // frame.  Do not snapshot/hide layer surfaces in that state; those
-        // snapshot paths can make Hyprland render a foreign workspace through
-        // the owner monitor and trip renderAllClientsForWorkspace.
+        // Do not synchronously snapshot layers while opening from a layer
+        // surface on an empty scrolling workspace; focus can still belong to a
+        // different monitor for that event.  Start the normal wallpaper-layout
+        // refresh timer instead so Waybar/hypr-dock stay live until a safe
+        // delayed capture exists, then render as zoomed Niri layout proxies.
         clearHiddenStripLayerProxies();
-        clearNiriWallpaperLayoutLayerRefresh();
+        startNiriWallpaperLayoutLayerRefresh();
     } else {
         syncHiddenStripLayerProxies();
         startNiriWallpaperLayoutLayerRefresh();
