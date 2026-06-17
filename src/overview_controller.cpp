@@ -6038,6 +6038,15 @@ void OverviewController::updateOverviewWorkspaceTransition() {
     if (!m_workspaceTransition.active || m_workspaceTransition.mode == WorkspaceTransitionMode::Gesture)
         return;
 
+    // Closing the overview owns the camera. If a workspace transition is still
+    // active when an empty Niri overview closes, committing/rebuilding that
+    // transition mid-close can replace the close geometry with the transition
+    // geometry and make all empty wallpaper viewports collapse onto the same
+    // monitor-sized target. Leave the transition frozen; deactivate() will clear
+    // the overview state after the close animation finishes.
+    if (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
+        return;
+
     const bool hyprlandOwnedAnimation = niriModeAppliesToState(m_workspaceTransition.sourceState) ||
         niriModeAppliesToState(m_workspaceTransition.targetState);
     if (hyprlandOwnedAnimation) {
@@ -6217,6 +6226,9 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
 
 void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, bool forceSync) {
     if (!m_workspaceTransition.active || !m_workspaceTransition.monitor)
+        return;
+
+    if (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle)
         return;
 
     clearPendingWindowGeometryRetry();
