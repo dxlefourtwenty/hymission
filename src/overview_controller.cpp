@@ -10704,17 +10704,17 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         if (auto* placeholder = pendingExitWorkspacePlaceholder())
             appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
 
+        m_state.phase = Phase::Closing;
+        m_state.animationProgress = 0.0;
+        m_state.animationFromVisual = fromVisual;
+        m_state.animationToVisual = 0.0;
+        m_state.animationStart = {};
         if (mode != CloseMode::Abort) {
             if (m_state.pendingExitWorkspace)
                 (void)activateWorkspaceForExit(m_state.pendingExitWorkspace);
             else
                 commitOverviewExitFocus(m_state.pendingExitFocus);
         }
-        m_state.phase = Phase::Closing;
-        m_state.animationProgress = 0.0;
-        m_state.animationFromVisual = fromVisual;
-        m_state.animationToVisual = 0.0;
-        m_state.animationStart = {};
         if (!appliedPlaceholderCameraExit) {
             for (auto& managed : m_state.windows)
                 managed.exitGlobal = liveGlobalRectForWindow(managed.window);

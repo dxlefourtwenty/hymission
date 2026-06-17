@@ -5290,6 +5290,81 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
+    const bool closingLike = (m_gestureSession.active && !m_gestureSession.opening) || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing;
+    if (closingLike && placeholder.monitor && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) &&
+        niriModeAppliesToState(m_state)) {
+        const bool hasManagedWindowOnMonitor = std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
+            return managed.window && managed.window->m_isMapped && managed.targetMonitor == placeholder.monitor;
+        });
+
+        const auto* anchor = centeredEmptyWorkspacePlaceholder(m_state);
+        if (!hasManagedWindowOnMonitor && anchor && anchor->monitor == placeholder.monitor && anchor->workspaceId != WORKSPACE_INVALID &&
+            placeholder.workspaceId != WORKSPACE_INVALID) {
+            const auto sourceGlobalFor = [&](const EmptyWorkspacePlaceholder& current) {
+                PHLWORKSPACE workspace = current.workspace;
+                if (!workspace || !isScrollingWorkspace(workspace))
+                    workspace = niriWorkspaceForBackground(m_state, current);
+
+                if (workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
+                    const CBox workArea = workspace->m_space->workArea();
+                    if (workArea.width > 1.0 && workArea.height > 1.0)
+                        return makeRect(workArea.x, workArea.y, workArea.width, workArea.height);
+                }
+
+                if (current.monitor) {
+                    const CBox monitorBox = current.monitor->logicalBox();
+                    if (monitorBox.width > 1.0 && monitorBox.height > 1.0)
+                        return makeRect(monitorBox.x, monitorBox.y, monitorBox.width, monitorBox.height);
+
+                    return makeRect(current.monitor->m_position.x, current.monitor->m_position.y, current.monitor->m_size.x, current.monitor->m_size.y);
+                }
+
+                return current.naturalGlobal;
+            };
+
+            const double progress = visualProgress();
+            const Rect   anchorExit = sourceGlobalFor(*anchor);
+            const Rect   anchorCurrent = lerpRect(anchorExit, anchor->targetGlobal, progress);
+            if (anchorCurrent.width > 1.0 && anchorCurrent.height > 1.0) {
+                const WORKSPACEID anchorId = anchor->workspaceId;
+                const WORKSPACEID currentId = placeholder.workspaceId;
+                const long long rawIdDelta = static_cast<long long>(currentId) - static_cast<long long>(anchorId);
+
+                if (rawIdDelta == 0)
+                    return anchorCurrent;
+
+                const double targetDx = placeholder.targetGlobal.centerX() - anchor->targetGlobal.centerX();
+                const double targetDy = placeholder.targetGlobal.centerY() - anchor->targetGlobal.centerY();
+                const bool   vertical = std::abs(targetDy) >= std::abs(targetDx);
+                const double targetDelta = vertical ? targetDy : targetDx;
+                const double sign = std::abs(targetDelta) > 0.5 ? (targetDelta < 0.0 ? -1.0 : 1.0) : (rawIdDelta < 0 ? -1.0 : 1.0);
+                double       steps = std::max(1.0, static_cast<double>((rawIdDelta < 0 ? -rawIdDelta : rawIdDelta)));
+
+                if (std::abs(targetDelta) > 0.5) {
+                    const double targetLength = std::max(1.0, vertical ? anchor->targetGlobal.height : anchor->targetGlobal.width);
+                    const double configuredTargetPitch = targetLength + std::max(0.0, niriWorkspaceGap());
+                    const double measuredSteps = std::round(std::abs(targetDelta) / std::max(1.0, configuredTargetPitch));
+                    if (measuredSteps >= 1.0)
+                        steps = measuredSteps;
+                }
+
+                const double targetPitch = std::abs(targetDelta) > 0.5 ? std::abs(targetDelta) / steps :
+                    ((vertical ? anchor->targetGlobal.height : anchor->targetGlobal.width) + std::max(0.0, niriWorkspaceGap()));
+                const double exitPitch = (vertical ? anchorExit.height : anchorExit.width) + std::max(0.0, niriWorkspaceGap());
+                const double currentLength = vertical ? anchorCurrent.height : anchorCurrent.width;
+                const double interpolatedPitch = exitPitch + (targetPitch - exitPitch) * progress;
+                const double currentPitch = std::max(currentLength + 0.5, interpolatedPitch);
+
+                Rect result = anchorCurrent;
+                if (vertical)
+                    result.y = anchorCurrent.centerY() + sign * steps * currentPitch - result.height * 0.5;
+                else
+                    result.x = anchorCurrent.centerX() + sign * steps * currentPitch - result.width * 0.5;
+                return result;
+            }
+        }
+    }
+
     if (m_gestureSession.active)
         return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
                                           lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
@@ -5415,7 +5490,14 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         }
     };
 
-    if (!m_workspaceTransition.active) {
+    const bool closingEmptyDirectNiri = (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle ||
+                                         (m_gestureSession.active && !m_gestureSession.opening)) &&
+        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) &&
+        !std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
+            return managed.window && managed.window->m_isMapped && managed.targetMonitor == renderMonitor;
+        });
+
+    if (!m_workspaceTransition.active || closingEmptyDirectNiri) {
         for (const auto& background : m_state.emptyWorkspacePlaceholders) {
             if (background.monitor == renderMonitor)
                 renderWorkspace(m_state, background, currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
