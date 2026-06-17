@@ -1931,12 +1931,29 @@ bool OverviewController::usesDirectNiriScrollingOverview(const State& state) con
     if (!niriModeAppliesToState(state))
         return false;
 
-    return std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
-        if (!managed.window || managed.isNiriFloatingOverlay || !managed.window->m_workspace || !isScrollingWorkspace(managed.window->m_workspace))
+    if (std::ranges::any_of(state.windows, [&](const ManagedWindow& managed) {
+            if (!managed.window || managed.isNiriFloatingOverlay || !managed.window->m_workspace || !isScrollingWorkspace(managed.window->m_workspace))
+                return false;
+
+            const auto target = managed.window->layoutTarget();
+            return target && !target->floating();
+        }))
+        return true;
+
+    // Empty scrolling workspaces must stay on the same direct-Niri path as
+    // window-backed scrolling workspaces.  Otherwise close/open code falls back
+    // to the generic empty-placeholder path where every viewport's exit rect is
+    // just its monitor-sized natural rect, making adjacent wallpaper viewports
+    // converge during zoom-in.  The persistent empty workspace placeholders are
+    // the direct-Niri "surfaces" in this case.
+    if (!state.collectionPolicy.onlyActiveWorkspace || !state.ownerMonitor || state.emptyWorkspacePlaceholders.empty())
+        return false;
+
+    return std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+        if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != state.ownerMonitor || placeholder.workspaceId == WORKSPACE_INVALID)
             return false;
 
-        const auto target = managed.window->layoutTarget();
-        return target && !target->floating();
+        return !placeholder.workspace || isScrollingWorkspace(placeholder.workspace);
     });
 }
 bool OverviewController::activeDirectNiriSingleWorkspaceOverview() const {
@@ -2463,97 +2480,6 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
-    // Match the window-backed direct-Niri close path by using one selected
-    // camera anchor and transforming every workspace viewport relative to it.
-    // Empty workspaces do not have a real selected window, so use a stable
-    // synthetic lane ordering as the window-path's preview positions. This keeps
-    // adjacent empty workspace viewports separated while the selected viewport
-    // zooms into the real workspace rectangle.
-    std::vector<EmptyWorkspacePlaceholder*> lanePlaceholders;
-    lanePlaceholders.reserve(m_state.emptyWorkspacePlaceholders.size());
-    for (auto& candidate : m_state.emptyWorkspacePlaceholders) {
-        if (!candidate.monitor || candidate.monitor != placeholder.monitor || candidate.workspaceId == WORKSPACE_INVALID)
-            continue;
-        lanePlaceholders.push_back(&candidate);
-    }
-
-    double xSpread = 0.0;
-    double ySpread = 0.0;
-    if (!lanePlaceholders.empty()) {
-        double minX = std::numeric_limits<double>::infinity();
-        double maxX = -std::numeric_limits<double>::infinity();
-        double minY = std::numeric_limits<double>::infinity();
-        double maxY = -std::numeric_limits<double>::infinity();
-        for (const auto* candidate : lanePlaceholders) {
-            const Rect preview = currentPlaceholderRect(*candidate);
-            minX = std::min(minX, preview.centerX());
-            maxX = std::max(maxX, preview.centerX());
-            minY = std::min(minY, preview.centerY());
-            maxY = std::max(maxY, preview.centerY());
-        }
-        xSpread = maxX - minX;
-        ySpread = maxY - minY;
-    }
-    const bool verticalLane = ySpread >= xSpread;
-    const auto primaryCenter = [&](const Rect& rect) { return verticalLane ? rect.centerY() : rect.centerX(); };
-    const auto withPrimaryCenter = [&](const Rect& rect, double center) {
-        if (verticalLane)
-            return makeRect(rect.x, center - rect.height * 0.5, rect.width, rect.height);
-        return makeRect(center - rect.width * 0.5, rect.y, rect.width, rect.height);
-    };
-
-    std::stable_sort(lanePlaceholders.begin(), lanePlaceholders.end(), [&](const EmptyWorkspacePlaceholder* lhs, const EmptyWorkspacePlaceholder* rhs) {
-        const Rect lhsPreview = currentPlaceholderRect(*lhs);
-        const Rect rhsPreview = currentPlaceholderRect(*rhs);
-        const double lhsPrimary = primaryCenter(lhsPreview);
-        const double rhsPrimary = primaryCenter(rhsPreview);
-        if (std::abs(lhsPrimary - rhsPrimary) > 0.5)
-            return lhsPrimary < rhsPrimary;
-        return lhs->workspaceId < rhs->workspaceId;
-    });
-
-    std::optional<std::size_t> selectedLaneIndex;
-    for (std::size_t index = 0; index < lanePlaceholders.size(); ++index) {
-        if (lanePlaceholders[index] == &placeholder || lanePlaceholders[index]->workspaceId == placeholder.workspaceId) {
-            selectedLaneIndex = index;
-            break;
-        }
-    }
-
-    double laneStep = 0.0;
-    std::vector<double> positiveSteps;
-    positiveSteps.reserve(lanePlaceholders.size());
-    for (std::size_t index = 1; index < lanePlaceholders.size(); ++index) {
-        const double previous = primaryCenter(currentPlaceholderRect(*lanePlaceholders[index - 1]));
-        const double current = primaryCenter(currentPlaceholderRect(*lanePlaceholders[index]));
-        const double step = current - previous;
-        if (step > 1.0)
-            positiveSteps.push_back(step);
-    }
-    if (!positiveSteps.empty()) {
-        std::sort(positiveSteps.begin(), positiveSteps.end());
-        laneStep = positiveSteps[positiveSteps.size() / 2];
-    }
-    if (laneStep <= 1.0)
-        laneStep = (verticalLane ? selectedPreview.height : selectedPreview.width) + std::max(0.0, niriWorkspaceGap());
-
-    const auto effectivePlaceholderPreview = [&](const EmptyWorkspacePlaceholder& current) {
-        Rect preview = currentPlaceholderRect(current);
-        if (!selectedLaneIndex || laneStep <= 1.0)
-            return preview;
-
-        const auto it = std::find_if(lanePlaceholders.begin(), lanePlaceholders.end(), [&](const EmptyWorkspacePlaceholder* candidate) {
-            return candidate == &current || candidate->workspaceId == current.workspaceId;
-        });
-        if (it == lanePlaceholders.end())
-            return preview;
-
-        const auto laneIndex = static_cast<long long>(std::distance(lanePlaceholders.begin(), it));
-        const auto selectedIndex = static_cast<long long>(*selectedLaneIndex);
-        const double center = primaryCenter(selectedPreview) + static_cast<double>(laneIndex - selectedIndex) * laneStep;
-        return withPrimaryCenter(preview, center);
-    };
-
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
             continue;
@@ -2565,7 +2491,7 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     }
 
     for (auto& current : m_state.emptyWorkspacePlaceholders) {
-        const Rect preview = effectivePlaceholderPreview(current);
+        const Rect preview = currentPlaceholderRect(current);
         current.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
                                       selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
                                       preview.width * scaleX, preview.height * scaleY);
@@ -2576,10 +2502,7 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
         out << "[hymission] niri scrolling camera exit placeholder=" << (placeholder.workspace ? debugWorkspaceLabel(placeholder.workspace) : std::to_string(placeholder.workspaceId))
             << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")"
-            << " lane=" << (verticalLane ? "vertical" : "horizontal")
-            << " laneStep=" << laneStep
-            << " laneCount=" << lanePlaceholders.size();
+            << " scale=(" << scaleX << "," << scaleY << ")";
         debugLog(out.str());
     }
 
@@ -5463,13 +5386,28 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
             return proxy.layer && proxy.monitor == renderMonitor && proxy.niriWallpaperLayoutLayer &&
                 proxy.niriWallpaperWorkspaceId == background.workspaceId;
         });
+        WORKSPACEID fallbackWorkspaceId = WORKSPACE_INVALID;
+        if (state.ownerWorkspace && state.ownerWorkspace->m_monitor.lock() == renderMonitor && !state.ownerWorkspace->m_isSpecialWorkspace)
+            fallbackWorkspaceId = state.ownerWorkspace->m_id;
+        else if (renderMonitor->m_activeWorkspace && !renderMonitor->m_activeWorkspace->m_isSpecialWorkspace)
+            fallbackWorkspaceId = renderMonitor->m_activeWorkspace->m_id;
 
         for (const auto& proxy : m_hiddenStripLayerProxies) {
             if (!proxy.layer || proxy.monitor != renderMonitor || !proxy.niriWallpaperLayoutLayer)
                 continue;
             if (proxy.niriWallpaperWorkspaceId != WORKSPACE_INVALID) {
-                if (proxy.niriWallpaperWorkspaceId != background.workspaceId)
+                if (hasWorkspaceSpecificProxy) {
+                    if (proxy.niriWallpaperWorkspaceId != background.workspaceId)
+                        continue;
+                } else if (fallbackWorkspaceId != WORKSPACE_INVALID && proxy.niriWallpaperWorkspaceId != fallbackWorkspaceId) {
+                    // If this adjacent empty workspace has not been focused yet,
+                    // there is no workspace-specific capture for its bar/dock
+                    // layers.  Reuse the active/owner workspace's layout-layer
+                    // proxy for the same monitor so leaf/+1 empty lanes show the
+                    // layer stack immediately.  Once that workspace is focused,
+                    // its exact proxy wins through hasWorkspaceSpecificProxy.
                     continue;
+                }
             } else if (hasWorkspaceSpecificProxy) {
                 continue;
             }
@@ -5504,10 +5442,12 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         }
     };
 
-    const bool closingEmptyDirectNiri = (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) &&
-        m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() && usesDirectNiriScrollingOverview(m_state);
-
-    if (!m_workspaceTransition.active || closingEmptyDirectNiri) {
+    if (!m_workspaceTransition.active || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) {
+        // Close must use the same camera-exit rects as the window-backed path.
+        // The workspace-transition renderer ignores placeholder.exitGlobal and
+        // keeps translating source/target viewports, which is the separate
+        // no-window path that made empty wallpaper lanes collapse together while
+        // closing.
         for (const auto& background : m_state.emptyWorkspacePlaceholders) {
             if (background.monitor == renderMonitor)
                 renderWorkspace(m_state, background, currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
