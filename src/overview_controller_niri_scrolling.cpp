@@ -2460,7 +2460,11 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     };
 
     const Rect selectedPreview = currentPlaceholderRect(placeholder);
-    const Rect selectedExit = placeholder.naturalGlobal;
+    Rect       selectedExit = placeholder.naturalGlobal;
+    if (selectedExit.width <= 1.0 || selectedExit.height <= 1.0) {
+        if (placeholder.monitor)
+            selectedExit = makeRect(placeholder.monitor->m_position.x, placeholder.monitor->m_position.y, placeholder.monitor->m_size.x, placeholder.monitor->m_size.y);
+    }
     if (selectedPreview.width <= 1.0 || selectedPreview.height <= 1.0 || selectedExit.width <= 1.0 || selectedExit.height <= 1.0)
         return false;
 
@@ -2469,10 +2473,57 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
-    const auto cameraExitRect = [&](const Rect& preview) {
+    const auto scaledCameraRect = [&](const Rect& preview) {
         return makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
                         selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
                         preview.width * scaleX, preview.height * scaleY);
+    };
+
+    double maxAbsDx = 0.0;
+    double maxAbsDy = 0.0;
+    for (const auto& current : m_state.emptyWorkspacePlaceholders) {
+        if (current.monitor != placeholder.monitor || current.backingOnly != placeholder.backingOnly)
+            continue;
+
+        const Rect preview = currentPlaceholderRect(current);
+        maxAbsDx = std::max(maxAbsDx, std::abs(preview.centerX() - selectedPreview.centerX()));
+        maxAbsDy = std::max(maxAbsDy, std::abs(preview.centerY() - selectedPreview.centerY()));
+    }
+    const bool laneIsVertical = maxAbsDy >= maxAbsDx;
+
+    const double selectedPreviewLaneLength = std::max(1.0, laneIsVertical ? selectedPreview.height : selectedPreview.width);
+    const double selectedExitLaneLength = std::max(1.0, laneIsVertical ? selectedExit.height : selectedExit.width);
+    const double selectedExitCrossLength = std::max(1.0, laneIsVertical ? selectedExit.width : selectedExit.height);
+    const double laneGap = std::max(0.0, niriWorkspaceGap()) * (laneIsVertical ? scaleY : scaleX);
+
+    const auto laneCameraRect = [&](const EmptyWorkspacePlaceholder& current, const Rect& preview) {
+        const double primaryDelta = laneIsVertical ? (preview.centerY() - selectedPreview.centerY()) :
+                                                     (preview.centerX() - selectedPreview.centerX());
+        const double sign = primaryDelta < -0.5 ? -1.0 : primaryDelta > 0.5 ? 1.0 : 0.0;
+        double laneSteps = 0.0;
+        if (current.workspaceId != WORKSPACE_INVALID && placeholder.workspaceId != WORKSPACE_INVALID && current.workspaceId != placeholder.workspaceId) {
+            const long long idDelta = static_cast<long long>(current.workspaceId - placeholder.workspaceId);
+            laneSteps = static_cast<double>(idDelta < 0 ? -idDelta : idDelta);
+        }
+        if (laneSteps < 1.0 && std::abs(primaryDelta) > 0.5)
+            laneSteps = std::max(1.0, std::round(std::abs(primaryDelta) / selectedPreviewLaneLength));
+        if (sign == 0.0 || laneSteps <= 0.0)
+            return selectedExit;
+
+        const double exitPrimaryCenter = (laneIsVertical ? selectedExit.centerY() : selectedExit.centerX()) +
+            sign * laneSteps * (selectedExitLaneLength + laneGap);
+
+        if (laneIsVertical) {
+            return makeRect(selectedExit.centerX() - selectedExitCrossLength * 0.5,
+                            exitPrimaryCenter - selectedExitLaneLength * 0.5,
+                            selectedExitCrossLength,
+                            selectedExitLaneLength);
+        }
+
+        return makeRect(exitPrimaryCenter - selectedExitLaneLength * 0.5,
+                        selectedExit.centerY() - selectedExitCrossLength * 0.5,
+                        selectedExitLaneLength,
+                        selectedExitCrossLength);
     };
 
     for (auto& managed : m_state.windows) {
@@ -2480,27 +2531,34 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
             continue;
 
         const Rect preview = useStableExitPreview ? managed.targetGlobal : currentPreviewRect(managed);
-        managed.exitGlobal = cameraExitRect(preview);
+        managed.exitGlobal = scaledCameraRect(preview);
     }
 
     for (auto& current : m_state.emptyWorkspacePlaceholders) {
-        if (current.monitor != placeholder.monitor)
+        if (current.monitor != placeholder.monitor || current.backingOnly != placeholder.backingOnly)
             continue;
 
         const Rect preview = currentPlaceholderRect(current);
-        current.exitGlobal = cameraExitRect(preview);
+        // Empty wallpaper workspaces do not have a selected real window to define the
+        // exit camera.  Treat the chosen empty workspace as the full-size live
+        // workspace viewport, then place every adjacent empty viewport in the same
+        // persistent lane around it.  This matches the window-backed path where the
+        // selected workspace zooms in and neighboring workspace viewports move behind
+        // the monitor instead of converging into the same monitor-sized rectangle.
+        current.exitGlobal = laneCameraRect(current, preview);
     }
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] niri scrolling camera exit placeholder=";
+        out << "[hymission] niri scrolling camera exit empty-placeholder=";
         if (placeholder.workspace)
             out << debugWorkspaceLabel(placeholder.workspace);
         else
             out << "synthetic:" << placeholder.workspaceId;
         out << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")";
+            << " scale=(" << scaleX << "," << scaleY << ")"
+            << " laneAxis=" << (laneIsVertical ? "vertical" : "horizontal");
         debugLog(out.str());
     }
 
