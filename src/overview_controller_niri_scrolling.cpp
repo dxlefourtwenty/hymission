@@ -2440,15 +2440,16 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     return true;
 }
 bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder) {
-    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state) || !placeholder.monitor ||
+        placeholder.workspaceId == WORKSPACE_INVALID)
         return false;
 
-    if (placeholder.workspace) {
-        if (!isScrollingWorkspace(placeholder.workspace))
-            return false;
-    } else if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID) {
+    if (placeholder.workspace && !isScrollingWorkspace(placeholder.workspace))
         return false;
-    }
+
+    const auto proxyWorkspace = placeholder.workspace ? placeholder.workspace : niriWorkspaceForBackground(m_state, placeholder);
+    if (proxyWorkspace && !isScrollingWorkspace(proxyWorkspace))
+        return false;
 
     const bool useStableExitPreview = m_beginCloseInProgress && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
     const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& current) {
@@ -2460,10 +2461,15 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     };
 
     const Rect selectedPreview = currentPlaceholderRect(placeholder);
-    Rect       selectedExit = placeholder.naturalGlobal;
+    Rect selectedExit = placeholder.naturalGlobal;
     if (selectedExit.width <= 1.0 || selectedExit.height <= 1.0) {
-        if (placeholder.monitor)
-            selectedExit = makeRect(placeholder.monitor->m_position.x, placeholder.monitor->m_position.y, placeholder.monitor->m_size.x, placeholder.monitor->m_size.y);
+        if (proxyWorkspace && proxyWorkspace->m_space) {
+            const CBox workAreaBox = proxyWorkspace->m_space->workArea();
+            selectedExit = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        } else {
+            selectedExit = makeRect(placeholder.monitor->m_position.x, placeholder.monitor->m_position.y,
+                                    placeholder.monitor->m_size.x, placeholder.monitor->m_size.y);
+        }
     }
     if (selectedPreview.width <= 1.0 || selectedPreview.height <= 1.0 || selectedExit.width <= 1.0 || selectedExit.height <= 1.0)
         return false;
@@ -2473,57 +2479,10 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
-    const auto scaledCameraRect = [&](const Rect& preview) {
+    const auto cameraExitRect = [&](const Rect& preview) {
         return makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
                         selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
                         preview.width * scaleX, preview.height * scaleY);
-    };
-
-    double maxAbsDx = 0.0;
-    double maxAbsDy = 0.0;
-    for (const auto& current : m_state.emptyWorkspacePlaceholders) {
-        if (current.monitor != placeholder.monitor || current.backingOnly != placeholder.backingOnly)
-            continue;
-
-        const Rect preview = currentPlaceholderRect(current);
-        maxAbsDx = std::max(maxAbsDx, std::abs(preview.centerX() - selectedPreview.centerX()));
-        maxAbsDy = std::max(maxAbsDy, std::abs(preview.centerY() - selectedPreview.centerY()));
-    }
-    const bool laneIsVertical = maxAbsDy >= maxAbsDx;
-
-    const double selectedPreviewLaneLength = std::max(1.0, laneIsVertical ? selectedPreview.height : selectedPreview.width);
-    const double selectedExitLaneLength = std::max(1.0, laneIsVertical ? selectedExit.height : selectedExit.width);
-    const double selectedExitCrossLength = std::max(1.0, laneIsVertical ? selectedExit.width : selectedExit.height);
-    const double laneGap = std::max(0.0, niriWorkspaceGap()) * (laneIsVertical ? scaleY : scaleX);
-
-    const auto laneCameraRect = [&](const EmptyWorkspacePlaceholder& current, const Rect& preview) {
-        const double primaryDelta = laneIsVertical ? (preview.centerY() - selectedPreview.centerY()) :
-                                                     (preview.centerX() - selectedPreview.centerX());
-        const double sign = primaryDelta < -0.5 ? -1.0 : primaryDelta > 0.5 ? 1.0 : 0.0;
-        double laneSteps = 0.0;
-        if (current.workspaceId != WORKSPACE_INVALID && placeholder.workspaceId != WORKSPACE_INVALID && current.workspaceId != placeholder.workspaceId) {
-            const long long idDelta = static_cast<long long>(current.workspaceId - placeholder.workspaceId);
-            laneSteps = static_cast<double>(idDelta < 0 ? -idDelta : idDelta);
-        }
-        if (laneSteps < 1.0 && std::abs(primaryDelta) > 0.5)
-            laneSteps = std::max(1.0, std::round(std::abs(primaryDelta) / selectedPreviewLaneLength));
-        if (sign == 0.0 || laneSteps <= 0.0)
-            return selectedExit;
-
-        const double exitPrimaryCenter = (laneIsVertical ? selectedExit.centerY() : selectedExit.centerX()) +
-            sign * laneSteps * (selectedExitLaneLength + laneGap);
-
-        if (laneIsVertical) {
-            return makeRect(selectedExit.centerX() - selectedExitCrossLength * 0.5,
-                            exitPrimaryCenter - selectedExitLaneLength * 0.5,
-                            selectedExitCrossLength,
-                            selectedExitLaneLength);
-        }
-
-        return makeRect(exitPrimaryCenter - selectedExitLaneLength * 0.5,
-                        selectedExit.centerY() - selectedExitCrossLength * 0.5,
-                        selectedExitLaneLength,
-                        selectedExitCrossLength);
     };
 
     for (auto& managed : m_state.windows) {
@@ -2531,21 +2490,15 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
             continue;
 
         const Rect preview = useStableExitPreview ? managed.targetGlobal : currentPreviewRect(managed);
-        managed.exitGlobal = scaledCameraRect(preview);
+        managed.exitGlobal = cameraExitRect(preview);
     }
 
     for (auto& current : m_state.emptyWorkspacePlaceholders) {
-        if (current.monitor != placeholder.monitor || current.backingOnly != placeholder.backingOnly)
+        if (!current.monitor || current.monitor != placeholder.monitor)
             continue;
 
         const Rect preview = currentPlaceholderRect(current);
-        // Empty wallpaper workspaces do not have a selected real window to define the
-        // exit camera.  Treat the chosen empty workspace as the full-size live
-        // workspace viewport, then place every adjacent empty viewport in the same
-        // persistent lane around it.  This matches the window-backed path where the
-        // selected workspace zooms in and neighboring workspace viewports move behind
-        // the monitor instead of converging into the same monitor-sized rectangle.
-        current.exitGlobal = laneCameraRect(current, preview);
+        current.exitGlobal = cameraExitRect(preview);
     }
 
     if (debugLogsEnabled()) {
@@ -2555,10 +2508,14 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
             out << debugWorkspaceLabel(placeholder.workspace);
         else
             out << "synthetic:" << placeholder.workspaceId;
-        out << " selectedPreview=" << rectToString(selectedPreview)
+        out << " proxyWorkspace=" << debugWorkspaceLabel(proxyWorkspace)
+            << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")"
-            << " laneAxis=" << (laneIsVertical ? "vertical" : "horizontal");
+            << " scale=(" << scaleX << "," << scaleY << ")";
+        for (const auto& current : m_state.emptyWorkspacePlaceholders) {
+            if (current.monitor == placeholder.monitor)
+                out << " ws" << current.workspaceId << " exit=" << rectToString(current.exitGlobal);
+        }
         debugLog(out.str());
     }
 
@@ -2660,7 +2617,9 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspa
 }
 void OverviewController::prepareGestureCloseExitGeometry() {
     const auto predictedPlaceholderWorkspace = resolveExitWorkspace(CloseMode::Normal);
-    const auto* predictedPlaceholder = centeredEmptyWorkspacePlaceholder(m_state);
+    EmptyWorkspacePlaceholder* predictedPlaceholder = pendingExitWorkspacePlaceholder();
+    if (!predictedPlaceholder)
+        predictedPlaceholder = const_cast<EmptyWorkspacePlaceholder*>(centeredEmptyWorkspacePlaceholder(m_state));
     const auto predictedExitFocus = resolveExitFocus(CloseMode::Normal);
     const auto predictedExitWorkspace = predictedPlaceholderWorkspace ? predictedPlaceholderWorkspace : (predictedExitFocus ? predictedExitFocus->m_workspace : PHLWORKSPACE{});
     const auto predictedExitMonitor =
@@ -2736,7 +2695,8 @@ void OverviewController::prepareGestureCloseExitGeometry() {
     }
 
     if (preferGoalGeometry) {
-        if (predictedPlaceholder && predictedPlaceholder->workspace == predictedPlaceholderWorkspace)
+        if (predictedPlaceholder && (!predictedPlaceholderWorkspace || predictedPlaceholder->workspace == predictedPlaceholderWorkspace ||
+                                    (predictedPlaceholderWorkspace && predictedPlaceholder->workspaceId == predictedPlaceholderWorkspace->m_id)))
             (void)applyNiriScrollingCameraExitGeometry(*predictedPlaceholder);
         else
             (void)applyNiriScrollingCameraExitGeometry(predictedExitFocus);

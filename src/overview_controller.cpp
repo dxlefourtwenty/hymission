@@ -9140,24 +9140,72 @@ PHLWORKSPACE OverviewController::resolveExitWorkspace(CloseMode mode) const {
 
 
 OverviewController::EmptyWorkspacePlaceholder* OverviewController::pendingExitWorkspacePlaceholder() {
+    const auto placeholderUsableForExit = [&](const EmptyWorkspacePlaceholder& placeholder) {
+        return !placeholder.backingOnly && placeholder.monitor && placeholder.workspaceId != WORKSPACE_INVALID;
+    };
+
     if (m_state.pendingExitWorkspace) {
-        const auto pendingId = m_state.pendingExitWorkspace->m_id;
+        const WORKSPACEID pendingWorkspaceId = m_state.pendingExitWorkspace->m_id;
         const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
                                      [&](const EmptyWorkspacePlaceholder& placeholder) {
-                                         return placeholder.workspace == m_state.pendingExitWorkspace ||
-                                             (placeholder.workspaceId != WORKSPACE_INVALID && placeholder.workspaceId == pendingId);
+                                         return placeholderUsableForExit(placeholder) &&
+                                             (placeholder.workspace == m_state.pendingExitWorkspace ||
+                                              (pendingWorkspaceId != WORKSPACE_INVALID && placeholder.workspaceId == pendingWorkspaceId));
                                      });
         if (it != m_state.emptyWorkspacePlaceholders.end())
             return &*it;
     }
 
-    const auto* centered = centeredEmptyWorkspacePlaceholder(m_state);
-    if (!centered)
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state) || !m_state.ownerMonitor)
         return nullptr;
 
-    const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
-                                 [&](const EmptyWorkspacePlaceholder& placeholder) { return &placeholder == centered; });
-    return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+    const auto workspaceIdMatches = [&](WORKSPACEID id) -> EmptyWorkspacePlaceholder* {
+        if (id == WORKSPACE_INVALID)
+            return nullptr;
+
+        const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
+                                     [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                         return placeholderUsableForExit(placeholder) && placeholder.monitor == m_state.ownerMonitor &&
+                                             placeholder.workspaceId == id;
+                                     });
+        return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+    };
+
+    if (m_state.ownerWorkspace) {
+        if (auto* placeholder = workspaceIdMatches(m_state.ownerWorkspace->m_id))
+            return placeholder;
+    }
+
+    if (m_state.ownerMonitor->m_activeWorkspace) {
+        if (auto* placeholder = workspaceIdMatches(m_state.ownerMonitor->m_activeWorkspace->m_id))
+            return placeholder;
+    }
+
+    const auto* centered = centeredEmptyWorkspacePlaceholder(m_state);
+    if (centered) {
+        if (auto* placeholder = workspaceIdMatches(centered->workspaceId))
+            return placeholder;
+    }
+
+    const Rect content = overviewContentRectForMonitor(m_state.ownerMonitor, m_state);
+    const double centerX = m_state.ownerMonitor->m_position.x + content.centerX();
+    const double centerY = m_state.ownerMonitor->m_position.y + content.centerY();
+    EmptyWorkspacePlaceholder* best = nullptr;
+    double bestDistance2 = std::numeric_limits<double>::max();
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (!placeholderUsableForExit(placeholder) || placeholder.monitor != m_state.ownerMonitor)
+            continue;
+
+        const double dx = placeholder.targetGlobal.centerX() - centerX;
+        const double dy = placeholder.targetGlobal.centerY() - centerY;
+        const double distance2 = dx * dx + dy * dy;
+        if (!best || distance2 < bestDistance2) {
+            best = &placeholder;
+            bestDistance2 = distance2;
+        }
+    }
+
+    return best;
 }
 
 bool OverviewController::exitFocusChangedWorkspace(const PHLWINDOW& window) const {
