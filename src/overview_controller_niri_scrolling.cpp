@@ -2440,16 +2440,20 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     return true;
 }
 bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspacePlaceholder& placeholder) {
-    const bool realScrollingWorkspace = placeholder.workspace && isScrollingWorkspace(placeholder.workspace);
-    const bool syntheticEmptyScrollingWorkspace = !placeholder.workspace && placeholder.monitor && placeholder.workspaceId != WORKSPACE_INVALID &&
-        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) &&
-        niriWallpaperZoomAppliesToMonitor(m_state, placeholder.monitor);
-
-    if ((!realScrollingWorkspace && !syntheticEmptyScrollingWorkspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
-        !usesDirectNiriScrollingOverview(m_state))
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
         return false;
 
+    if (placeholder.workspace) {
+        if (!isScrollingWorkspace(placeholder.workspace))
+            return false;
+    } else if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID) {
+        return false;
+    }
+
+    const bool useStableExitPreview = m_beginCloseInProgress && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
     const auto currentPlaceholderRect = [&](const EmptyWorkspacePlaceholder& current) {
+        if (useStableExitPreview)
+            return current.targetGlobal;
         if (m_state.phase == Phase::Active && m_state.relayoutActive)
             return lerpRect(current.relayoutFromGlobal, current.targetGlobal, relayoutVisualProgress());
         return current.targetGlobal;
@@ -2465,28 +2469,36 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
+    const auto cameraExitRect = [&](const Rect& preview) {
+        return makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                        selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                        preview.width * scaleX, preview.height * scaleY);
+    };
+
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
             continue;
 
-        const Rect preview = currentPreviewRect(managed);
-        managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
-                                      selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
-                                      preview.width * scaleX, preview.height * scaleY);
+        const Rect preview = useStableExitPreview ? managed.targetGlobal : currentPreviewRect(managed);
+        managed.exitGlobal = cameraExitRect(preview);
     }
 
     for (auto& current : m_state.emptyWorkspacePlaceholders) {
+        if (current.monitor != placeholder.monitor)
+            continue;
+
         const Rect preview = currentPlaceholderRect(current);
-        current.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
-                                      selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
-                                      preview.width * scaleX, preview.height * scaleY);
+        current.exitGlobal = cameraExitRect(preview);
     }
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] niri scrolling camera exit placeholder="
-            << (placeholder.workspace ? debugWorkspaceLabel(placeholder.workspace) : std::to_string(placeholder.workspaceId))
-            << " selectedPreview=" << rectToString(selectedPreview)
+        out << "[hymission] niri scrolling camera exit placeholder=";
+        if (placeholder.workspace)
+            out << debugWorkspaceLabel(placeholder.workspace);
+        else
+            out << "synthetic:" << placeholder.workspaceId;
+        out << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
             << " scale=(" << scaleX << "," << scaleY << ")";
         debugLog(out.str());
@@ -2544,12 +2556,7 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
     return true;
 }
 bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspacePlaceholder& placeholder) {
-    const bool realScrollingWorkspace = placeholder.workspace && isScrollingWorkspace(placeholder.workspace);
-    const bool syntheticEmptyScrollingWorkspace = !placeholder.workspace && placeholder.monitor && placeholder.workspaceId != WORKSPACE_INVALID &&
-        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) &&
-        niriWallpaperZoomAppliesToMonitor(m_state, placeholder.monitor);
-
-    if ((!realScrollingWorkspace && !syntheticEmptyScrollingWorkspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
+    if (!placeholder.workspace || !isScrollingWorkspace(placeholder.workspace) || !m_state.collectionPolicy.onlyActiveWorkspace ||
         !usesDirectNiriScrollingOverview(m_state))
         return false;
 
@@ -2584,8 +2591,7 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspa
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] niri scrolling camera open placeholder="
-            << (placeholder.workspace ? debugWorkspaceLabel(placeholder.workspace) : std::to_string(placeholder.workspaceId))
+        out << "[hymission] niri scrolling camera open placeholder=" << debugWorkspaceLabel(placeholder.workspace)
             << " selectedStart=" << rectToString(selectedStart)
             << " selectedTarget=" << rectToString(selectedTarget)
             << " scale=(" << scaleX << "," << scaleY << ")";
@@ -2672,11 +2678,7 @@ void OverviewController::prepareGestureCloseExitGeometry() {
     }
 
     if (preferGoalGeometry) {
-        const bool placeholderMatchesPredictedWorkspace = predictedPlaceholder &&
-            (predictedPlaceholder->workspace == predictedPlaceholderWorkspace ||
-             (predictedPlaceholderWorkspace && predictedPlaceholder->workspaceId == predictedPlaceholderWorkspace->m_id) ||
-             (!predictedPlaceholderWorkspace && predictedPlaceholder->workspaceId != WORKSPACE_INVALID));
-        if (placeholderMatchesPredictedWorkspace)
+        if (predictedPlaceholder && predictedPlaceholder->workspace == predictedPlaceholderWorkspace)
             (void)applyNiriScrollingCameraExitGeometry(*predictedPlaceholder);
         else
             (void)applyNiriScrollingCameraExitGeometry(predictedExitFocus);

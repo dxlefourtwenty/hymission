@@ -9140,39 +9140,24 @@ PHLWORKSPACE OverviewController::resolveExitWorkspace(CloseMode mode) const {
 
 
 OverviewController::EmptyWorkspacePlaceholder* OverviewController::pendingExitWorkspacePlaceholder() {
-    const auto findCenteredPlaceholder = [&]() -> EmptyWorkspacePlaceholder* {
-        const auto* centered = centeredEmptyWorkspacePlaceholder(m_state);
-        if (!centered)
-            return nullptr;
-
+    if (m_state.pendingExitWorkspace) {
+        const auto pendingId = m_state.pendingExitWorkspace->m_id;
         const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
-                                     [&](const EmptyWorkspacePlaceholder& placeholder) { return &placeholder == centered; });
-        return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
-    };
-
-    if (!m_state.pendingExitWorkspace) {
-        if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) && m_state.windows.empty())
-            return findCenteredPlaceholder();
-
-        return nullptr;
+                                     [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                         return placeholder.workspace == m_state.pendingExitWorkspace ||
+                                             (placeholder.workspaceId != WORKSPACE_INVALID && placeholder.workspaceId == pendingId);
+                                     });
+        if (it != m_state.emptyWorkspacePlaceholders.end())
+            return &*it;
     }
 
-    const auto pendingMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
+    const auto* centered = centeredEmptyWorkspacePlaceholder(m_state);
+    if (!centered)
+        return nullptr;
+
     const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
-                                 [&](const EmptyWorkspacePlaceholder& placeholder) {
-                                     if (placeholder.workspace == m_state.pendingExitWorkspace)
-                                         return true;
-
-                                     return placeholder.workspaceId == m_state.pendingExitWorkspace->m_id &&
-                                         (!pendingMonitor || placeholder.monitor == pendingMonitor);
-                                 });
-    if (it != m_state.emptyWorkspacePlaceholders.end())
-        return &*it;
-
-    if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) && m_state.windows.empty())
-        return findCenteredPlaceholder();
-
-    return nullptr;
+                                 [&](const EmptyWorkspacePlaceholder& placeholder) { return &placeholder == centered; });
+    return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
 }
 
 bool OverviewController::exitFocusChangedWorkspace(const PHLWINDOW& window) const {
