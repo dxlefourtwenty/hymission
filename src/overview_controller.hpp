@@ -432,6 +432,7 @@ class OverviewController {
         SP<Render::IFramebuffer> framebuffer;
         std::array<SP<Render::IFramebuffer>, 4> blurredFramebuffers;
         bool       niriWallpaperLayoutLayer = false;
+        WORKSPACEID niriWallpaperWorkspaceId = WORKSPACE_INVALID;
     };
 
     using SurfaceGetTexBoxFn = CBox (*)(void*);

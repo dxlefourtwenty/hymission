@@ -5737,6 +5737,15 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     // would be stale for the new workspace transition.
     m_pendingEditDispatchers.clear();
 
+    if (!sourceStateOverride && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && m_state.windows.empty() &&
+        niriWallpaperZoomAppliesToState(m_state)) {
+        // Preserve the source workspace's layer snapshot before the active
+        // workspace changes.  Empty workspaces have no window snapshots to carry
+        // their identity, so per-workspace layer snapshots are what keep the
+        // source and target wallpaper viewports from showing the same desktop.
+        syncNiriWallpaperLayoutLayerProxies();
+    }
+
     if (!sourceStateOverride && m_state.relayoutActive) {
         const bool freezeNiriPlaceholderRelayout = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
         const double relayoutProgress = relayoutVisualProgress();
@@ -8335,8 +8344,25 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         return false;
     }
 
-    auto*      existing = hiddenStripLayerProxyFor(layer, monitor);
-    const bool niriLayoutLayer = isNiriWallpaperLayoutLayer(layer, monitor) || (existing && existing->niriWallpaperLayoutLayer);
+    const bool rawNiriLayoutLayer = isNiriWallpaperLayoutLayer(layer, monitor);
+    WORKSPACEID niriWallpaperWorkspaceId = WORKSPACE_INVALID;
+    if (rawNiriLayoutLayer && monitor) {
+        if (monitor->m_activeWorkspace && !monitor->m_activeWorkspace->m_isSpecialWorkspace)
+            niriWallpaperWorkspaceId = monitor->m_activeWorkspace->m_id;
+        else if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == monitor && !m_state.ownerWorkspace->m_isSpecialWorkspace)
+            niriWallpaperWorkspaceId = m_state.ownerWorkspace->m_id;
+    }
+
+    auto existingIt = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(),
+                                   [&](const HiddenStripLayerProxy& proxy) {
+                                       if (proxy.layer != layer || proxy.monitor != monitor)
+                                           return false;
+                                       if (rawNiriLayoutLayer || proxy.niriWallpaperLayoutLayer)
+                                           return proxy.niriWallpaperLayoutLayer && proxy.niriWallpaperWorkspaceId == niriWallpaperWorkspaceId;
+                                       return !proxy.niriWallpaperLayoutLayer;
+                                   });
+    auto*      existing = existingIt == m_hiddenStripLayerProxies.end() ? nullptr : &*existingIt;
+    const bool niriLayoutLayer = rawNiriLayoutLayer || (existing && existing->niriWallpaperLayoutLayer);
     if (!existing) {
         HiddenStripLayerProxy proxy;
         proxy.layer = layer;
@@ -8346,6 +8372,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
         proxy.snapshotSize = Vector2D{static_cast<double>(fbWidth), static_cast<double>(fbHeight)};
         proxy.framebuffer = createFramebuffer("hymission hidden strip layer");
         proxy.niriWallpaperLayoutLayer = niriLayoutLayer;
+        proxy.niriWallpaperWorkspaceId = niriLayoutLayer ? niriWallpaperWorkspaceId : WORKSPACE_INVALID;
         if (!niriLayoutLayer) {
             for (auto& blurredFramebuffer : proxy.blurredFramebuffers)
                 blurredFramebuffer = createFramebuffer("hymission hidden strip layer blur");
@@ -8358,6 +8385,7 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
     existing->proxyRectGlobal = proxyRectGlobal;
     existing->snapshotSize = Vector2D{static_cast<double>(fbWidth), static_cast<double>(fbHeight)};
     existing->niriWallpaperLayoutLayer = niriLayoutLayer;
+    existing->niriWallpaperWorkspaceId = niriLayoutLayer ? niriWallpaperWorkspaceId : WORKSPACE_INVALID;
     if (!existing->framebuffer)
         existing->framebuffer = createFramebuffer("hymission hidden strip layer");
     if (niriLayoutLayer) {
@@ -8560,10 +8588,21 @@ void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
     }
 
     std::erase_if(m_hiddenStripLayerProxies, [&](const HiddenStripLayerProxy& proxy) {
-        return proxy.niriWallpaperLayoutLayer &&
-            std::none_of(desired.begin(), desired.end(), [&](const auto& entry) {
-                return entry.first == proxy.layer && entry.second == proxy.monitor;
-            });
+        if (!proxy.niriWallpaperLayoutLayer)
+            return false;
+
+        const bool layerStillDesired = std::any_of(desired.begin(), desired.end(), [&](const auto& entry) {
+            return entry.first == proxy.layer && entry.second == proxy.monitor;
+        });
+        if (!layerStillDesired)
+            return true;
+
+        // Keep per-workspace captures while the overview is open.  Empty Niri
+        // workspaces can be synthetic/no-window workspaces, so the only stable
+        // thing distinguishing their layer snapshots is the workspace id captured
+        // when that workspace was active.  Replacing the single monitor-wide proxy
+        // made every empty wallpaper viewport show the current desktop.
+        return false;
     });
 }
 
@@ -9140,66 +9179,33 @@ PHLWORKSPACE OverviewController::resolveExitWorkspace(CloseMode mode) const {
 
 
 OverviewController::EmptyWorkspacePlaceholder* OverviewController::pendingExitWorkspacePlaceholder() {
-    const auto placeholderUsableForExit = [&](const EmptyWorkspacePlaceholder& placeholder) {
-        return !placeholder.backingOnly && placeholder.monitor && placeholder.workspaceId != WORKSPACE_INVALID;
-    };
-
     if (m_state.pendingExitWorkspace) {
-        const WORKSPACEID pendingWorkspaceId = m_state.pendingExitWorkspace->m_id;
         const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
                                      [&](const EmptyWorkspacePlaceholder& placeholder) {
-                                         return placeholderUsableForExit(placeholder) &&
-                                             (placeholder.workspace == m_state.pendingExitWorkspace ||
-                                              (pendingWorkspaceId != WORKSPACE_INVALID && placeholder.workspaceId == pendingWorkspaceId));
+                                         return placeholder.workspace == m_state.pendingExitWorkspace ||
+                                             placeholder.workspaceId == m_state.pendingExitWorkspace->m_id;
                                      });
         if (it != m_state.emptyWorkspacePlaceholders.end())
             return &*it;
     }
 
-    if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state) || !m_state.ownerMonitor)
+    if (!m_state.collectionPolicy.onlyActiveWorkspace || !niriModeAppliesToState(m_state) || !m_state.ownerMonitor)
         return nullptr;
-
-    const auto workspaceIdMatches = [&](WORKSPACEID id) -> EmptyWorkspacePlaceholder* {
-        if (id == WORKSPACE_INVALID)
-            return nullptr;
-
-        const auto it = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
-                                     [&](const EmptyWorkspacePlaceholder& placeholder) {
-                                         return placeholderUsableForExit(placeholder) && placeholder.monitor == m_state.ownerMonitor &&
-                                             placeholder.workspaceId == id;
-                                     });
-        return it == m_state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
-    };
-
-    if (m_state.ownerWorkspace) {
-        if (auto* placeholder = workspaceIdMatches(m_state.ownerWorkspace->m_id))
-            return placeholder;
-    }
-
-    if (m_state.ownerMonitor->m_activeWorkspace) {
-        if (auto* placeholder = workspaceIdMatches(m_state.ownerMonitor->m_activeWorkspace->m_id))
-            return placeholder;
-    }
-
-    const auto* centered = centeredEmptyWorkspacePlaceholder(m_state);
-    if (centered) {
-        if (auto* placeholder = workspaceIdMatches(centered->workspaceId))
-            return placeholder;
-    }
 
     const Rect content = overviewContentRectForMonitor(m_state.ownerMonitor, m_state);
     const double centerX = m_state.ownerMonitor->m_position.x + content.centerX();
     const double centerY = m_state.ownerMonitor->m_position.y + content.centerY();
+
     EmptyWorkspacePlaceholder* best = nullptr;
     double bestDistance2 = std::numeric_limits<double>::max();
     for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-        if (!placeholderUsableForExit(placeholder) || placeholder.monitor != m_state.ownerMonitor)
+        if (placeholder.backingOnly || placeholder.monitor != m_state.ownerMonitor || placeholder.workspaceId == WORKSPACE_INVALID)
             continue;
 
         const double dx = placeholder.targetGlobal.centerX() - centerX;
         const double dy = placeholder.targetGlobal.centerY() - centerY;
         const double distance2 = dx * dx + dy * dy;
-        if (!best || distance2 < bestDistance2) {
+        if (distance2 < bestDistance2) {
             best = &placeholder;
             bestDistance2 = distance2;
         }
@@ -10704,17 +10710,17 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         if (auto* placeholder = pendingExitWorkspacePlaceholder())
             appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
 
-        m_state.phase = Phase::Closing;
-        m_state.animationProgress = 0.0;
-        m_state.animationFromVisual = fromVisual;
-        m_state.animationToVisual = 0.0;
-        m_state.animationStart = {};
         if (mode != CloseMode::Abort) {
             if (m_state.pendingExitWorkspace)
                 (void)activateWorkspaceForExit(m_state.pendingExitWorkspace);
             else
                 commitOverviewExitFocus(m_state.pendingExitFocus);
         }
+        m_state.phase = Phase::Closing;
+        m_state.animationProgress = 0.0;
+        m_state.animationFromVisual = fromVisual;
+        m_state.animationToVisual = 0.0;
+        m_state.animationStart = {};
         if (!appliedPlaceholderCameraExit) {
             for (auto& managed : m_state.windows)
                 managed.exitGlobal = liveGlobalRectForWindow(managed.window);
