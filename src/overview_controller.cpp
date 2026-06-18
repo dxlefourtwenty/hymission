@@ -11797,13 +11797,22 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         next.transientClosingWindows.push_back(previous);
     }
 
-    PHLWINDOW selected = preferredSelectedWindow;
-    if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
-        selected = Desktop::focusState()->window();
-    if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
-        selected = previousState.focusDuringOverview;
-    if (selected && selected->m_isMapped && selectWindowInState(next, selected))
-        next.focusDuringOverview = selected;
+    const bool preserveDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next) || directNiriOwnerEdgeCameraActive(previousState);
+    if (preserveDirectNiriEdgeCamera) {
+        // Native scrolling layout has deliberately released window focus while
+        // the camera is panning past the strip edge.  Do not resurrect the
+        // previous overview focus during metadata rebuilds.
+        next.selectedIndex.reset();
+        next.focusDuringOverview.reset();
+    } else {
+        PHLWINDOW selected = preferredSelectedWindow;
+        if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
+            selected = Desktop::focusState()->window();
+        if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
+            selected = previousState.focusDuringOverview;
+        if (selected && selected->m_isMapped && selectWindowInState(next, selected))
+            next.focusDuringOverview = selected;
+    }
 
     carryOverWorkspaceStripSnapshots(next, previousState);
     restoreOverviewRenderState();

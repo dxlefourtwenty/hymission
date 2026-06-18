@@ -1382,9 +1382,27 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             return;
         }
 
-        PHLWINDOW preferred = Desktop::focusState()->window();
-        if (!preferred || !preferred->m_isMapped)
-            preferred = selectedWindow();
+        PHLWINDOW preferred;
+        if (directNiriEdgeCameraActive()) {
+            // Native scrolling layout intentionally drops focused_window when movecol
+            // walks past the last column.  Preserve that no-focus edge-camera state
+            // instead of falling back to the previous selected window.
+            m_state.selectedIndex.reset();
+            m_state.focusDuringOverview.reset();
+            m_queuedOverviewSelectionTarget.reset();
+            m_queuedOverviewSelectionSyncScrollingSpot = false;
+            m_queuedOverviewSelectionCenterCursor = false;
+            m_queuedOverviewLiveFocusTarget.reset();
+            m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+            m_queuedOverviewLiveFocusCenterCursor = false;
+
+            if (debugLogsEnabled())
+                debugLog("[hymission] niri direct refresh preserved native edge-camera focus release");
+        } else {
+            preferred = Desktop::focusState()->window();
+            if (!preferred || !preferred->m_isMapped)
+                preferred = selectedWindow();
+        }
 
         const auto preferredWorkspace = preferred && !preferred->m_pinned ? preferred->m_workspace : PHLWORKSPACE{};
         if (m_state.collectionPolicy.onlyActiveWorkspace && preferredWorkspace && isScrollingWorkspace(preferredWorkspace) &&
@@ -3797,6 +3815,31 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
+        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !preferred && preferredWorkspace &&
+            isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive();
+        if (nativeEdgeCameraFocusReleased) {
+            // Match Hyprland's scrolling movecol edge behavior: once native
+            // layout scrolls past the last column it calls fullWindowFocus(nullptr).
+            // Re-selecting dispatchFocus here pins the overview to the last window
+            // and makes the edge-camera pan snap after an in-flight windowsMove.
+            m_state.selectedIndex.reset();
+            m_state.focusDuringOverview.reset();
+            m_queuedOverviewSelectionTarget.reset();
+            m_queuedOverviewSelectionSyncScrollingSpot = false;
+            m_queuedOverviewSelectionCenterCursor = false;
+            m_queuedOverviewLiveFocusTarget.reset();
+            m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+            m_queuedOverviewLiveFocusCenterCursor = false;
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] niri movecol preserved native edge-camera focus release"
+                    << " dispatcher=" << dispatcherName
+                    << " workspace=" << debugWorkspaceLabel(preferredWorkspace)
+                    << " previous=" << debugWindowLabel(dispatchFocus);
+                debugLog(out.str());
+            }
+        }
         const auto validPreferred = [&](const PHLWINDOW& window) {
             if (!window || !window->m_isMapped)
                 return false;
@@ -3804,10 +3847,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 return true;
             return !window->m_pinned && window->m_workspace == preferredWorkspace;
         };
-        if (!validPreferred(preferred))
-            preferred = validPreferred(dispatchFocus) ? dispatchFocus : PHLWINDOW{};
-        if (!validPreferred(preferred) && preferredWorkspace)
-            preferred = focusCandidateForWorkspace(preferredWorkspace);
+        if (!nativeEdgeCameraFocusReleased) {
+            if (!validPreferred(preferred))
+                preferred = validPreferred(dispatchFocus) ? dispatchFocus : PHLWINDOW{};
+            if (!validPreferred(preferred) && preferredWorkspace)
+                preferred = focusCandidateForWorkspace(preferredWorkspace);
+        }
 
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
