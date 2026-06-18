@@ -3477,10 +3477,19 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher;
 
+    const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    const auto transitionAction = resolveOverviewEditTransitionAction(
+        m_workspaceTransition.active,
+        isFocusOrMovementDispatcher,
+        m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit,
+        niriSingleWorkspaceTransition);
+    const bool retargetTimedNiriTransition = transitionAction == OverviewEditTransitionAction::Retarget;
+
     const auto blockNow = std::chrono::steady_clock::now();
     const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || m_workspaceTransition.active ||
-         m_workspaceTransitionCommitScheduled || m_applyingWorkspaceTransitionCommit ||
+        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
+         (m_workspaceTransitionCommitScheduled && !retargetTimedNiriTransition) || m_applyingWorkspaceTransitionCommit ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
           blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
@@ -3499,13 +3508,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
         return {};
     }
-    const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
-        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
-    const auto transitionAction = resolveOverviewEditTransitionAction(
-        m_workspaceTransition.active,
-        isFocusOrMovementDispatcher,
-        m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit,
-        niriSingleWorkspaceTransition);
 
     if (transitionAction == OverviewEditTransitionAction::Retarget) {
         if (debugLogsEnabled()) {
