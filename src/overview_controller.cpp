@@ -4043,6 +4043,60 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    const auto shouldSuppressStaleEmptyNiriDecoration = [&]() {
+        if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !usesDirectNiriScrollingOverview(m_state))
+            return false;
+
+        if (window->m_pinned || window->onSpecialWorkspace())
+            return false;
+
+        if (renderableManagedWindowFor(window, monitor))
+            return false;
+
+        const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
+            if (!usesDirectNiriScrollingOverview(state) || !state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
+                return false;
+
+            const auto* placeholder = centeredEmptyWorkspacePlaceholder(state);
+            return placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor;
+        };
+
+        const auto transitionTargetsEmptyWorkspaceOnMonitor = [&]() {
+            if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
+                return false;
+
+            if (!usesDirectNiriScrollingOverview(m_workspaceTransition.sourceState) &&
+                !usesDirectNiriScrollingOverview(m_workspaceTransition.targetState))
+                return false;
+
+            if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
+                return true;
+
+            if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
+                return true;
+
+            return std::ranges::any_of(m_workspaceTransition.targetState.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+                return !placeholder.backingOnly && placeholder.monitor && placeholder.monitor == monitor &&
+                    placeholder.workspaceId == m_workspaceTransition.targetWorkspaceId;
+            });
+        };
+
+        if (transitionTargetsEmptyWorkspaceOnMonitor())
+            return true;
+
+        return stateIsCenteredEmptyOnMonitor(m_state);
+    };
+
+    if (shouldSuppressStaleEmptyNiriDecoration()) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] suppress stale native border on empty niri workspace window=" << debugWindowLabel(window)
+                << " monitor=" << monitor->m_name;
+            debugLog(out.str());
+        }
+        return;
+    }
+
     const bool nativeBorderHandoff = m_deactivatePending && usesDirectNiriScrollingOverview(m_state);
     if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor) || nativeBorderHandoff) {
         m_borderDrawOriginal(borderDecorationThisptr, monitor, alpha);
@@ -4056,6 +4110,60 @@ void OverviewController::shadowDrawHook(void* shadowDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    const auto shouldSuppressStaleEmptyNiriDecoration = [&]() {
+        if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !usesDirectNiriScrollingOverview(m_state))
+            return false;
+
+        if (window->m_pinned || window->onSpecialWorkspace())
+            return false;
+
+        if (renderableManagedWindowFor(window, monitor))
+            return false;
+
+        const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
+            if (!usesDirectNiriScrollingOverview(state) || !state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
+                return false;
+
+            const auto* placeholder = centeredEmptyWorkspacePlaceholder(state);
+            return placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor;
+        };
+
+        const auto transitionTargetsEmptyWorkspaceOnMonitor = [&]() {
+            if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
+                return false;
+
+            if (!usesDirectNiriScrollingOverview(m_workspaceTransition.sourceState) &&
+                !usesDirectNiriScrollingOverview(m_workspaceTransition.targetState))
+                return false;
+
+            if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
+                return true;
+
+            if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
+                return true;
+
+            return std::ranges::any_of(m_workspaceTransition.targetState.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+                return !placeholder.backingOnly && placeholder.monitor && placeholder.monitor == monitor &&
+                    placeholder.workspaceId == m_workspaceTransition.targetWorkspaceId;
+            });
+        };
+
+        if (transitionTargetsEmptyWorkspaceOnMonitor())
+            return true;
+
+        return stateIsCenteredEmptyOnMonitor(m_state);
+    };
+
+    if (shouldSuppressStaleEmptyNiriDecoration()) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] suppress stale native shadow on empty niri workspace window=" << debugWindowLabel(window)
+                << " monitor=" << monitor->m_name;
+            debugLog(out.str());
+        }
+        return;
+    }
+
     if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor)) {
         m_shadowDrawOriginal(shadowDecorationThisptr, monitor, alpha);
         return;
