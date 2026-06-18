@@ -296,10 +296,7 @@ struct ScrollingOverviewGeometry {
 };
 
 template <typename TargetPtr>
-CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox, bool preferGoalGeometry = false) {
-    if (preferGoalGeometry)
-        return snapshotBox;
-
+CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox) {
     if (!target)
         return snapshotBox;
 
@@ -540,8 +537,7 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
 }
 
-std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {},
-                                                                                   bool preferGoalGeometry = false) {
+std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
         return std::nullopt;
 
@@ -592,7 +588,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox, preferGoalGeometry);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
             if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
                 continue;
 
@@ -753,7 +749,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (candidate != targetData)
             continue;
 
-        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox, preferGoalGeometry);
+        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
         Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
         const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
@@ -1671,7 +1667,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     // dispatchers that rebuild the layout state.
     if (usesDirectNiriScrollingOverview(m_state) && isScrollingWorkspace(activeLayoutWorkspace())) {
         const auto focusedWindow = m_state.focusDuringOverview;
-        const bool cameraOwnsGeometry = scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(workspace));
+        const bool cameraOwnsGeometry = scrollingLiveCameraOwnsOverviewGeometry(scrollingAlgorithmForWorkspace(workspace));
         if (!cameraOwnsGeometry && focusedWindow && focusedWindow->m_isMapped && hasManagedWindow(focusedWindow)) {
             (void)syncScrollingWorkspaceSpotOnWindow(focusedWindow);
         }
@@ -2171,7 +2167,7 @@ bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& win
         !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(window->m_workspace))
         return false;
 
-    return scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(window->m_workspace));
+    return scrollingLiveCameraOwnsOverviewGeometry(scrollingAlgorithmForWorkspace(window->m_workspace));
 }
 PHLWORKSPACE OverviewController::directNiriTwoColumnExitWorkspace() const {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
@@ -2788,6 +2784,16 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
+
+    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling)) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] sync scrolling workspace spot skipped (native camera in flight)"
+                << " target=" << debugWindowLabel(window);
+            debugLog(out.str());
+        }
+        return false;
+    }
 
     // Debounce rapid scroll sync calls (e.g., from spamming movecol).
     // If called too frequently, the Hyprland scrolling controller's animation
@@ -6934,14 +6940,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         else
             layoutAnchorWindow = focusCandidateForWorkspace(window->m_workspace);
 
-        auto* const scrolling = window && window->m_workspace ? scrollingAlgorithmForWorkspace(window->m_workspace) : nullptr;
-        const bool retargetingEdgeCamera = m_state.phase == Phase::Active && m_state.relayoutActive && m_state.collectionPolicy.onlyActiveWorkspace &&
-            usesDirectNiriScrollingOverview(m_state) && scrollingEdgeCameraActive(scrolling);
-
-        // The edge camera's live boxes can lag the overview's current interpolated
-        // frame. Use Hyprland's committed layout boxes when retargeting so the new
-        // animation continues from the captured frame instead of changing owners.
-        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow, retargetingEdgeCamera)) {
+        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             if (g_niriStripSnapshotSingleWorkspaceOnly)
