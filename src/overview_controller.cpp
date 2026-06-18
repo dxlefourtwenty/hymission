@@ -4043,6 +4043,57 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    const auto stateHasVisibleEmptyPlaceholderOnMonitor = [&](const State& state, WORKSPACEID workspaceId = WORKSPACE_INVALID) {
+        if (!state.collectionPolicy.onlyActiveWorkspace)
+            return false;
+
+        return std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+            if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor)
+                return false;
+
+            return workspaceId == WORKSPACE_INVALID || placeholder.workspaceId == workspaceId;
+        });
+    };
+    const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
+        if (!state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
+            return false;
+
+        if (const auto* placeholder = centeredEmptyWorkspacePlaceholder(state); placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor)
+            return true;
+
+        return stateHasVisibleEmptyPlaceholderOnMonitor(state);
+    };
+    const auto closingTargetsEmptyNiriWorkspaceOnMonitor = [&]() {
+        if (!monitor || !isVisible() || !ownsMonitor(monitor) || !niriModeEnabled() || !m_state.collectionPolicy.onlyActiveWorkspace)
+            return false;
+
+        if (m_state.pendingExitFocus)
+            return false;
+
+        const bool closingNow = m_beginCloseInProgress || m_deactivatePending || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle;
+        if (closingNow) {
+            if (m_state.pendingExitWorkspace) {
+                const auto workspaceMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
+                if (!workspaceMonitor || workspaceMonitor == monitor)
+                    return true;
+            }
+
+            if (stateIsCenteredEmptyOnMonitor(m_state))
+                return true;
+        }
+
+        if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
+            return false;
+
+        if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
+            return true;
+
+        if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
+            return true;
+
+        return stateHasVisibleEmptyPlaceholderOnMonitor(m_workspaceTransition.targetState, m_workspaceTransition.targetWorkspaceId);
+    };
+    const bool emptyNiriExitOnMonitor = closingTargetsEmptyNiriWorkspaceOnMonitor();
     const auto shouldSuppressStaleEmptyNiriDecoration = [&]() {
         if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !niriModeEnabled() || !m_state.collectionPolicy.onlyActiveWorkspace)
             return false;
@@ -4050,71 +4101,11 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
         if (window->m_pinned || window->onSpecialWorkspace())
             return false;
 
+        if (emptyNiriExitOnMonitor)
+            return true;
+
         if (renderableManagedWindowFor(window, monitor))
             return false;
-
-        const auto stateHasVisibleEmptyPlaceholderOnMonitor = [&](const State& state, WORKSPACEID workspaceId = WORKSPACE_INVALID) {
-            if (!state.collectionPolicy.onlyActiveWorkspace)
-                return false;
-
-            return std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
-                if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor)
-                    return false;
-
-                return workspaceId == WORKSPACE_INVALID || placeholder.workspaceId == workspaceId;
-            });
-        };
-
-        const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
-            if (!state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
-                return false;
-
-            const auto* placeholder = centeredEmptyWorkspacePlaceholder(state);
-            if (placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor)
-                return true;
-
-            return stateHasVisibleEmptyPlaceholderOnMonitor(state);
-        };
-
-        const auto currentCloseTargetsEmptyWorkspaceOnMonitor = [&]() {
-            if (m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle && !m_beginCloseInProgress)
-                return false;
-
-            if (m_state.pendingExitFocus)
-                return false;
-
-            if (m_state.pendingExitWorkspace) {
-                const auto workspaceMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
-                if (workspaceMonitor && workspaceMonitor != monitor)
-                    return false;
-
-                return true;
-            }
-
-            return stateIsCenteredEmptyOnMonitor(m_state);
-        };
-
-        const auto transitionTargetsEmptyWorkspaceOnMonitor = [&]() {
-            if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
-                return false;
-
-            const bool niriTransition = niriModeAppliesToState(m_workspaceTransition.sourceState) ||
-                niriModeAppliesToState(m_workspaceTransition.targetState) || usesDirectNiriScrollingOverview(m_workspaceTransition.sourceState) ||
-                usesDirectNiriScrollingOverview(m_workspaceTransition.targetState) || m_workspaceTransition.targetWorkspaceSyntheticEmpty;
-            if (!niriTransition)
-                return false;
-
-            if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
-                return true;
-
-            if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
-                return true;
-
-            return stateHasVisibleEmptyPlaceholderOnMonitor(m_workspaceTransition.targetState, m_workspaceTransition.targetWorkspaceId);
-        };
-
-        if (currentCloseTargetsEmptyWorkspaceOnMonitor() || transitionTargetsEmptyWorkspaceOnMonitor())
-            return true;
 
         return stateIsCenteredEmptyOnMonitor(m_state);
     };
@@ -4129,7 +4120,7 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
         return;
     }
 
-    const bool nativeBorderHandoff = m_deactivatePending && usesDirectNiriScrollingOverview(m_state);
+    const bool nativeBorderHandoff = m_deactivatePending && usesDirectNiriScrollingOverview(m_state) && !emptyNiriExitOnMonitor;
     if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor) || nativeBorderHandoff) {
         m_borderDrawOriginal(borderDecorationThisptr, monitor, alpha);
         return;
@@ -4142,6 +4133,57 @@ void OverviewController::shadowDrawHook(void* shadowDecorationThisptr, const PHL
     }
 
     const auto window = g_pHyprRenderer->m_renderData.currentWindow.lock();
+    const auto stateHasVisibleEmptyPlaceholderOnMonitor = [&](const State& state, WORKSPACEID workspaceId = WORKSPACE_INVALID) {
+        if (!state.collectionPolicy.onlyActiveWorkspace)
+            return false;
+
+        return std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
+            if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor)
+                return false;
+
+            return workspaceId == WORKSPACE_INVALID || placeholder.workspaceId == workspaceId;
+        });
+    };
+    const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
+        if (!state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
+            return false;
+
+        if (const auto* placeholder = centeredEmptyWorkspacePlaceholder(state); placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor)
+            return true;
+
+        return stateHasVisibleEmptyPlaceholderOnMonitor(state);
+    };
+    const auto closingTargetsEmptyNiriWorkspaceOnMonitor = [&]() {
+        if (!monitor || !isVisible() || !ownsMonitor(monitor) || !niriModeEnabled() || !m_state.collectionPolicy.onlyActiveWorkspace)
+            return false;
+
+        if (m_state.pendingExitFocus)
+            return false;
+
+        const bool closingNow = m_beginCloseInProgress || m_deactivatePending || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle;
+        if (closingNow) {
+            if (m_state.pendingExitWorkspace) {
+                const auto workspaceMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
+                if (!workspaceMonitor || workspaceMonitor == monitor)
+                    return true;
+            }
+
+            if (stateIsCenteredEmptyOnMonitor(m_state))
+                return true;
+        }
+
+        if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
+            return false;
+
+        if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
+            return true;
+
+        if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
+            return true;
+
+        return stateHasVisibleEmptyPlaceholderOnMonitor(m_workspaceTransition.targetState, m_workspaceTransition.targetWorkspaceId);
+    };
+    const bool emptyNiriExitOnMonitor = closingTargetsEmptyNiriWorkspaceOnMonitor();
     const auto shouldSuppressStaleEmptyNiriDecoration = [&]() {
         if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !niriModeEnabled() || !m_state.collectionPolicy.onlyActiveWorkspace)
             return false;
@@ -4149,71 +4191,11 @@ void OverviewController::shadowDrawHook(void* shadowDecorationThisptr, const PHL
         if (window->m_pinned || window->onSpecialWorkspace())
             return false;
 
+        if (emptyNiriExitOnMonitor)
+            return true;
+
         if (renderableManagedWindowFor(window, monitor))
             return false;
-
-        const auto stateHasVisibleEmptyPlaceholderOnMonitor = [&](const State& state, WORKSPACEID workspaceId = WORKSPACE_INVALID) {
-            if (!state.collectionPolicy.onlyActiveWorkspace)
-                return false;
-
-            return std::ranges::any_of(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
-                if (placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor)
-                    return false;
-
-                return workspaceId == WORKSPACE_INVALID || placeholder.workspaceId == workspaceId;
-            });
-        };
-
-        const auto stateIsCenteredEmptyOnMonitor = [&](const State& state) {
-            if (!state.collectionPolicy.onlyActiveWorkspace || !state.windows.empty())
-                return false;
-
-            const auto* placeholder = centeredEmptyWorkspacePlaceholder(state);
-            if (placeholder && !placeholder->backingOnly && placeholder->monitor && placeholder->monitor == monitor)
-                return true;
-
-            return stateHasVisibleEmptyPlaceholderOnMonitor(state);
-        };
-
-        const auto currentCloseTargetsEmptyWorkspaceOnMonitor = [&]() {
-            if (m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle && !m_beginCloseInProgress)
-                return false;
-
-            if (m_state.pendingExitFocus)
-                return false;
-
-            if (m_state.pendingExitWorkspace) {
-                const auto workspaceMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
-                if (workspaceMonitor && workspaceMonitor != monitor)
-                    return false;
-
-                return true;
-            }
-
-            return stateIsCenteredEmptyOnMonitor(m_state);
-        };
-
-        const auto transitionTargetsEmptyWorkspaceOnMonitor = [&]() {
-            if (!m_workspaceTransition.active || !m_workspaceTransition.monitor || m_workspaceTransition.monitor != monitor)
-                return false;
-
-            const bool niriTransition = niriModeAppliesToState(m_workspaceTransition.sourceState) ||
-                niriModeAppliesToState(m_workspaceTransition.targetState) || usesDirectNiriScrollingOverview(m_workspaceTransition.sourceState) ||
-                usesDirectNiriScrollingOverview(m_workspaceTransition.targetState) || m_workspaceTransition.targetWorkspaceSyntheticEmpty;
-            if (!niriTransition)
-                return false;
-
-            if (stateIsCenteredEmptyOnMonitor(m_workspaceTransition.targetState))
-                return true;
-
-            if (m_workspaceTransition.targetWorkspaceSyntheticEmpty)
-                return true;
-
-            return stateHasVisibleEmptyPlaceholderOnMonitor(m_workspaceTransition.targetState, m_workspaceTransition.targetWorkspaceId);
-        };
-
-        if (currentCloseTargetsEmptyWorkspaceOnMonitor() || transitionTargetsEmptyWorkspaceOnMonitor())
-            return true;
 
         return stateIsCenteredEmptyOnMonitor(m_state);
     };
@@ -6347,7 +6329,11 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (m_workspaceTransition.targetState.focusDuringOverview && m_workspaceTransition.targetState.focusDuringOverview->m_isMapped &&
         m_workspaceTransition.targetState.focusDuringOverview->m_workspace == targetWorkspace)
         targetFocus = m_workspaceTransition.targetState.focusDuringOverview;
-    if (!targetFocus)
+    const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (m_workspaceTransition.targetWorkspaceSyntheticEmpty || m_workspaceTransition.targetState.windows.empty());
+    if (targetIsEmptyNiriWorkspace)
+        targetFocus = PHLWINDOW{};
+    else if (!targetFocus)
         targetFocus = focusCandidateForWorkspace(targetWorkspace);
 
     ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
@@ -6355,9 +6341,13 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (!alreadyActive) {
         const auto oldWorkspace = transitionMonitor->m_activeWorkspace;
 
-        if (targetFocus)
+        if (targetIsEmptyNiriWorkspace) {
+            targetWorkspace->m_lastFocusedWindow = PHLWINDOW{};
+            clearWindowFocusCompat(transitionMonitor);
+        } else if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
-        transitionMonitor->changeWorkspace(targetWorkspace, true, true, true);
+        }
+        transitionMonitor->changeWorkspace(targetWorkspace, true, true, !targetIsEmptyNiriWorkspace && static_cast<bool>(targetFocus));
 
         if (oldWorkspace) {
             for (const auto& window : g_pCompositor->m_windows) {
@@ -6493,7 +6483,15 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         if (preserveDirectNiriFocus)
             targetWorkspace->m_lastFocusedWindow = intendedTargetFocus;
 
-        const bool targetHasFocusCandidateBeforeSwitch = preserveDirectNiriFocus || static_cast<bool>(targetWorkspace->getFocusCandidate());
+        const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && next.collectionPolicy.onlyActiveWorkspace &&
+            (targetWorkspaceSyntheticEmpty || next.windows.empty());
+        if (targetIsEmptyNiriWorkspace) {
+            targetWorkspace->m_lastFocusedWindow = PHLWINDOW{};
+            clearWindowFocusCompat(transitionMonitor);
+        }
+
+        const bool targetHasFocusCandidateBeforeSwitch = !targetIsEmptyNiriWorkspace &&
+            (preserveDirectNiriFocus || static_cast<bool>(targetWorkspace->getFocusCandidate()));
         transitionMonitor->changeWorkspace(targetWorkspace, true, true, targetHasFocusCandidateBeforeSwitch);
 
         if (oldWorkspace && oldWorkspace != targetWorkspace) {
@@ -6515,7 +6513,9 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
         g_layoutManager->recalculateMonitor(transitionMonitor);
         PHLWINDOW targetFocus;
-        if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
+        if (targetIsEmptyNiriWorkspace)
+            targetFocus = PHLWINDOW{};
+        else if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
         else
             targetFocus = focusCandidateForWorkspace(targetWorkspace);
@@ -9544,11 +9544,15 @@ bool OverviewController::activateWorkspaceForExit(const PHLWORKSPACE& workspace)
     if (!monitor)
         return false;
 
+    workspace->m_lastFocusedWindow = PHLWINDOW{};
+    clearWindowFocusCompat(monitor);
+
     const bool alreadyActive = monitor->m_activeWorkspace == workspace;
     if (!alreadyActive)
         monitor->changeWorkspace(workspace, true, true, false);
 
     clearWindowFocusCompat(monitor);
+    workspace->m_lastFocusedWindow = PHLWINDOW{};
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
 
@@ -11038,15 +11042,6 @@ void OverviewController::deactivate() {
     clearNiriWallpaperSnapshots();
     clearNiriWallpaperLayoutLayerRefresh();
     restoreOverviewRenderState();
-
-    // When closing onto an empty Niri workspace there is no exit window to focus.
-    // Clear Hyprland's stale focused window before unhooking overview decorations;
-    // activateWorkspaceForExit() ticks animations, and doing that after unhooking can
-    // let one native active-border frame from the old non-empty workspace leak through.
-    bool workspaceExitActivatedBeforeUnhook = false;
-    if (!desiredFocus && desiredWorkspace)
-        workspaceExitActivatedBeforeUnhook = activateWorkspaceForExit(desiredWorkspace);
-
     deactivateHooks();
     setFullscreenRenderOverride(false);
     restoreWorkspaceNameOverrides();
@@ -11075,7 +11070,7 @@ void OverviewController::deactivate() {
     }
     if (desiredFocus && Desktop::focusState()->window() != desiredFocus)
         focusWindowCompat(desiredFocus);
-    if (!desiredFocus && desiredWorkspace && !workspaceExitActivatedBeforeUnhook)
+    if (!desiredFocus && desiredWorkspace)
         (void)activateWorkspaceForExit(desiredWorkspace);
     if (!m_state.exitFullscreenReapplied && desiredFocus && desiredFocus == originalFullscreenWindow && originalFullscreenMode != FSMODE_NONE && desiredFocus->m_isMapped) {
         if (debugLogsEnabled()) {
@@ -12745,22 +12740,20 @@ void OverviewController::renderSelectionChrome() const {
     if (!renderMonitor)
         return;
 
-    const auto shouldSuppressWindowBordersForEmptyNiriExit = [&]() {
+    const auto closingTargetsEmptyNiriWorkspaceOnMonitor = [&]() {
         if (!niriModeEnabled() || !m_state.collectionPolicy.onlyActiveWorkspace)
-            return false;
-
-        if (m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle && !m_beginCloseInProgress)
             return false;
 
         if (m_state.pendingExitFocus)
             return false;
 
+        if (m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle && !m_beginCloseInProgress && !m_deactivatePending)
+            return false;
+
         if (m_state.pendingExitWorkspace) {
             const auto workspaceMonitor = m_state.pendingExitWorkspace->m_monitor.lock();
-            if (workspaceMonitor && workspaceMonitor != renderMonitor)
-                return false;
-
-            return true;
+            if (!workspaceMonitor || workspaceMonitor == renderMonitor)
+                return true;
         }
 
         return std::ranges::any_of(m_state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& placeholder) {
@@ -12768,16 +12761,8 @@ void OverviewController::renderSelectionChrome() const {
         });
     };
 
-    if (shouldSuppressWindowBordersForEmptyNiriExit()) {
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] suppress overview window borders while closing to empty niri workspace monitor=" << renderMonitor->m_name;
-            if (m_state.pendingExitWorkspace)
-                out << " workspace=" << debugWorkspaceLabel(m_state.pendingExitWorkspace);
-            debugLog(out.str());
-        }
+    if (closingTargetsEmptyNiriWorkspaceOnMonitor())
         return;
-    }
 
     const bool showFocusIndicator = showFocusIndicatorEnabled();
 
