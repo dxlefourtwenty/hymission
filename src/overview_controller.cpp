@@ -12923,16 +12923,26 @@ void OverviewController::renderSelectionChrome() const {
 }
 
 const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
-    if (directNiriOwnerEdgeCameraActive(state))
-        return nullptr;
+    const bool edgeCameraActive = directNiriOwnerEdgeCameraActive(state);
 
     auto focusedWindow = directNiriFocusedOverviewWindow(state);
-    if (!focusedWindow)
+    if (!focusedWindow && !edgeCameraActive)
         focusedWindow = state.focusDuringOverview;
+
     auto focusedManaged = managedWindowFor(state, focusedWindow, true);
     if (!focusedManaged) {
         focusedWindow = Desktop::focusState()->window();
-        focusedManaged = managedWindowFor(state, focusedWindow, true);
+
+        const bool liveFocusBelongsToOwnerWorkspace = focusedWindow && focusedWindow->m_isMapped && !focusedWindow->m_pinned && state.ownerWorkspace &&
+            focusedWindow->m_workspace == state.ownerWorkspace;
+
+        // In direct Niri scroll-past, Hyprland intentionally clears native focus.
+        // While that native focus is null, do not fall back to any stale previous
+        // window for the active border.  Once Hyprland restores a real leaf focus
+        // while the offset is still technically in the edge-camera range, allow
+        // that live focus to own the active border immediately.
+        if (!edgeCameraActive || liveFocusBelongsToOwnerWorkspace)
+            focusedManaged = managedWindowFor(state, focusedWindow, true);
     }
 
     if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)

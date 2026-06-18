@@ -2060,9 +2060,6 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
     if (!usesDirectNiriScrollingOverview(state))
         return {};
 
-    if (directNiriOwnerEdgeCameraActive(state))
-        return {};
-
     const auto validManagedFocus = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !window->m_isMapped)
             return {};
@@ -2082,6 +2079,19 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
 
         return managedWindowFor(state, window, true) ? window : PHLWINDOW{};
     };
+
+    if (directNiriOwnerEdgeCameraActive(state)) {
+        // Hyprland keeps the scroll offset past the normal clamp for a short time
+        // while returning from scroll-past to the last leaf.  In that interval the
+        // edge-camera predicate is still true, but native focus has already been
+        // restored.  Treat that restored leaf as the overview focus immediately so
+        // selection chrome and active borders return on the first reverse movecol.
+        if (const auto liveFocus = validManagedFocus(Desktop::focusState()->window()); liveFocus)
+            return liveFocus;
+
+        // With no native focus, this is the real focusless scroll-past state.
+        return {};
+    }
 
     if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
         return overviewFocus;
@@ -2182,8 +2192,12 @@ void OverviewController::stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& 
     }
 }
 PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
-    if (directNiriEdgeCameraActive())
+    if (directNiriEdgeCameraActive()) {
+        if (const auto directNiriFocus = directNiriFocusedOverviewWindow(m_state); directNiriFocus)
+            return directNiriFocus;
+
         return {};
+    }
 
     if (const auto directNiriFocus = directNiriFocusedOverviewWindow(m_state); directNiriFocus)
         return directNiriFocus;
@@ -3796,6 +3810,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
+    if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
+        // Key repeat can dispatch the last leaf -> scroll-past movecol between
+        // render ticks.  The visible windowsMove progress lives on the Hyprland
+        // animation variable, while m_state.relayoutProgress may still contain the
+        // previous frame.  Pull the current value before capturing relayout origins
+        // so the edge-camera animation starts from the actually visible strip.
+        if (m_relayoutProgressAnimation)
+            m_state.relayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
+        else
+            m_state.relayoutProgress = 1.0;
+    }
     const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
 
