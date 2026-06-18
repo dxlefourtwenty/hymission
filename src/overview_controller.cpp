@@ -11807,8 +11807,8 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     if (!validRestoredDirectNiriFocus(restoredDirectNiriFocus))
         restoredDirectNiriFocus = Desktop::focusState()->window();
 
-    const bool preserveDirectNiriEdgeCamera = nextDirectNiriEdgeCamera ||
-        (previousDirectNiriEdgeCamera && !validRestoredDirectNiriFocus(restoredDirectNiriFocus));
+    const bool preserveDirectNiriEdgeCamera = (nextDirectNiriEdgeCamera || previousDirectNiriEdgeCamera) &&
+        !validRestoredDirectNiriFocus(restoredDirectNiriFocus);
     if (preserveDirectNiriEdgeCamera) {
         // Native scrolling layout has deliberately released window focus while
         // the camera is panning past the strip edge. Do not resurrect the

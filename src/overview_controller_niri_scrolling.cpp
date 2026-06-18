@@ -2237,7 +2237,17 @@ bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& win
         !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(window->m_workspace))
         return false;
 
-    return scrollingLiveCameraOwnsOverviewGeometry(scrollingAlgorithmForWorkspace(window->m_workspace));
+    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
+    if (!scrollingEdgeCameraActive(scrolling))
+        return false;
+
+    // A centered first/last column can legally put Hyprland's scroll offset outside
+    // the normal clamped range. That is not the no-focus scroll-past state once
+    // Hyprland has restored a real focused window. Preserve the edge camera only
+    // while native focus is still released, otherwise the overview keeps erasing
+    // the restored leaf focus on the first frame it becomes visible again.
+    const auto focused = Desktop::focusState()->window();
+    return !focused || !focused->m_isMapped || focused->m_workspace != window->m_workspace;
 }
 PHLWORKSPACE OverviewController::directNiriTwoColumnExitWorkspace() const {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
@@ -5112,8 +5122,18 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             }
         }
 
-        if (usesDirectNiriScrollingOverview(m_state))
+        if (usesDirectNiriScrollingOverview(m_state)) {
+            // During focusless scroll-past, Hyprland's native target boxes can jump
+            // straight to the edge-camera destination when movecol is spammed before
+            // the previous windowsMove settles. In that specific no-focus edge state,
+            // use the overview relayout origin captured before the dispatcher and
+            // interpolate to the new edge target ourselves. Once focus is restored,
+            // go back to the live native geometry path.
+            if (m_state.relayoutActive && !m_state.focusDuringOverview && directNiriEdgeCameraActive())
+                return activeBaseRect();
+
             return dynamicRect;
+        }
 
         struct DynamicResizeAnimation {
             Rect                               from;
