@@ -11698,6 +11698,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
     next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
     const bool preserveDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && previousState.relayoutActive;
+    const auto directNiriRetargetOrigins = preserveDirectNiriRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     next.relayoutActive = preserveDirectNiriRelayout;
     next.relayoutProgress = preserveDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
     next.relayoutStart = preserveDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
@@ -11787,6 +11788,9 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
         (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
     }
+
+    if (preserveDirectNiriRelayout)
+        refreshNiriScrollingOverviewAfterLayoutScroll("metadata-retarget", &directNiriRetargetOrigins);
 
     syncHiddenStripLayerProxies();
     refreshWorkspaceStripSnapshots();
