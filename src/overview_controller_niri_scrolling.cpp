@@ -1712,9 +1712,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         auto* const controller =
             scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller.get() : nullptr;
         const double offsetBefore = controller ? controller->getOffset() : 0.0;
+        const bool preserveEdgeCamera = source && std::string_view{source} == "window-active-same" && shouldPreserveDirectNiriEdgeCamera(focusTarget);
         if (debugLogsEnabled())
             logSwapColumnFollowupState("focus-refresh-before-spot-sync", focusWorkspace, source, focusTarget);
-        if (syncScrollingSpot)
+        if (syncScrollingSpot && !preserveEdgeCamera)
             (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
         if (debugLogsEnabled()) {
             std::ostringstream out;
@@ -1723,6 +1724,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
                 << " target=" << debugWindowLabel(focusTarget)
                 << " workspace=" << debugWorkspaceLabel(focusWorkspace)
                 << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
+                << " preserveEdgeCamera=" << (preserveEdgeCamera ? 1 : 0)
                 << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
                 << " offsetBefore=" << offsetBefore
                 << " offsetAfter=" << (controller ? controller->getOffset() : offsetBefore);
@@ -2133,6 +2135,13 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
         return selected;
 
     return {};
+}
+bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& window) const {
+    if (!window || !window->m_workspace || !isVisible() || !m_state.collectionPolicy.onlyActiveWorkspace ||
+        !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(window->m_workspace))
+        return false;
+
+    return scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(window->m_workspace));
 }
 PHLWORKSPACE OverviewController::directNiriTwoColumnExitWorkspace() const {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
@@ -2727,6 +2736,17 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
 bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window, ScrollingSpotTargeting targeting) const {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return false;
+
+    const bool closingDirectNiriOverview = m_beginCloseInProgress || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle;
+    if (closingDirectNiriOverview && shouldPreserveDirectNiriEdgeCamera(window)) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] sync scrolling workspace spot skipped (edge camera exit)"
+                << " target=" << debugWindowLabel(window);
+            debugLog(out.str());
+        }
+        return false;
+    }
 
     const auto target = window->layoutTarget();
     if (!target || target->floating())

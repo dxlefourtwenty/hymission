@@ -2182,7 +2182,7 @@ bool OverviewController::initialize() {
             }
             commitActiveNiriWorkspaceTransitionForRetarget();
         }
-        if (window && hasManagedWindow(window) && windowMatchesOverviewScope(window, m_state, false)) {
+        if (!m_beginCloseInProgress && window && hasManagedWindow(window) && windowMatchesOverviewScope(window, m_state, false)) {
             const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
             const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(window, previousActiveMonitor);
             refreshNiriScrollingOverviewAfterFocusDispatcher(sameOverviewFocus ? "window-active-same" : "window-active", {}, syncScrollingSpot);
@@ -11786,7 +11786,11 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     // lastFocusedTarget) become desynchronized.
     if (m_state.focusDuringOverview && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(m_state.focusDuringOverview->m_workspace)) {
-        (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        if (!shouldPreserveDirectNiriEdgeCamera(m_state.focusDuringOverview)) {
+            (void)syncScrollingWorkspaceSpotOnWindow(m_state.focusDuringOverview);
+        } else if (debugLogsEnabled()) {
+            debugLog("[hymission] metadata refresh preserved edge camera");
+        }
     }
 
     if (preserveDirectNiriRelayout)
