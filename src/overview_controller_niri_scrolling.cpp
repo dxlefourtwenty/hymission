@@ -5096,7 +5096,10 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                    !isFloatingOverviewWindow(selected)) {
             anchorWindow = selected;
         } else {
-            anchorWindow = window.window;
+            anchorWindow = focusCandidateForWorkspace(workspace);
+            const auto anchorTarget = anchorWindow ? anchorWindow->layoutTarget() : nullptr;
+            if (!anchorWindow || !anchorWindow->m_isMapped || anchorWindow->m_pinned || isFloatingOverviewWindow(anchorWindow) || !anchorTarget || anchorTarget->floating())
+                anchorWindow = window.window;
         }
 
         const auto* anchorManaged = managedWindowFor(m_state, anchorWindow, true);
@@ -5209,15 +5212,6 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         }
 
         if (usesDirectNiriScrollingOverview(m_state)) {
-            // During focusless scroll-past, Hyprland's native target boxes can jump
-            // straight to the edge-camera destination when movecol is spammed before
-            // the previous windowsMove settles. In that specific no-focus edge state,
-            // use the overview relayout origin captured before the dispatcher and
-            // interpolate to the new edge target ourselves. Once focus is restored,
-            // go back to the live native geometry path.
-            if (m_state.relayoutActive && !m_state.focusDuringOverview && directNiriEdgeCameraActive())
-                return activeBaseRect();
-
             return dynamicRect;
         }
 
