@@ -11697,9 +11697,10 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.fullscreenOverrideActive = previousState.fullscreenOverrideActive;
     next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
     next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
-    next.relayoutActive = false;
-    next.relayoutProgress = 1.0;
-    next.relayoutStart = {};
+    const bool preserveDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && previousState.relayoutActive;
+    next.relayoutActive = preserveDirectNiriRelayout;
+    next.relayoutProgress = preserveDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
+    next.relayoutStart = preserveDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
     for (auto& backup : next.fullscreenBackups) {
         const auto previous = std::find_if(previousState.fullscreenBackups.begin(), previousState.fullscreenBackups.end(),
                                            [&](const FullscreenWorkspaceBackup& candidate) { return candidate.workspace == backup.workspace; });
@@ -11739,7 +11740,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         placeholder.naturalGlobal = previous->naturalGlobal;
         placeholder.exitGlobal = previous->exitGlobal;
         placeholder.targetGlobal = previous->targetGlobal;
-        placeholder.relayoutFromGlobal = previous->targetGlobal;
+        placeholder.relayoutFromGlobal = preserveDirectNiriRelayout ? previous->relayoutFromGlobal : previous->targetGlobal;
     }
 
     for (const auto& previous : previousState.windows) {
@@ -11772,7 +11773,8 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     carryOverWorkspaceStripSnapshots(next, previousState);
     restoreOverviewRenderState();
     m_state = std::move(next);
-    m_relayoutProgressAnimation.reset();
+    if (!preserveDirectNiriRelayout)
+        m_relayoutProgressAnimation.reset();
     armOverviewRenderState(m_state);
     applyWorkspaceNameOverrides(m_state);
 
