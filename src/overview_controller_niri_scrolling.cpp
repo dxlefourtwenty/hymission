@@ -296,7 +296,10 @@ struct ScrollingOverviewGeometry {
 };
 
 template <typename TargetPtr>
-CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox) {
+CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox, bool preferGoalGeometry = false) {
+    if (preferGoalGeometry)
+        return snapshotBox;
+
     if (!target)
         return snapshotBox;
 
@@ -537,7 +540,8 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
 }
 
-std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
+std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {},
+                                                                                   bool preferGoalGeometry = false) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
         return std::nullopt;
 
@@ -588,7 +592,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
             if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+            const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox, preferGoalGeometry);
             if (candidateLayoutBox.width <= 1.0 || candidateLayoutBox.height <= 1.0)
                 continue;
 
@@ -749,7 +753,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         if (candidate != targetData)
             continue;
 
-        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
+        const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox, preferGoalGeometry);
         Rect virtualCandidateLayoutBox = makeRect(candidateLayoutBox.x, candidateLayoutBox.y, candidateLayoutBox.width, candidateLayoutBox.height);
         const double candidateOffset = primaryStart(virtualCandidateLayoutBox) - primaryStart(targetColumn.bounds);
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
@@ -6930,7 +6934,14 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         else
             layoutAnchorWindow = focusCandidateForWorkspace(window->m_workspace);
 
-        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
+        auto* const scrolling = window && window->m_workspace ? scrollingAlgorithmForWorkspace(window->m_workspace) : nullptr;
+        const bool retargetingEdgeCamera = m_state.phase == Phase::Active && m_state.relayoutActive && m_state.collectionPolicy.onlyActiveWorkspace &&
+            usesDirectNiriScrollingOverview(m_state) && scrollingEdgeCameraActive(scrolling);
+
+        // The edge camera's live boxes can lag the overview's current interpolated
+        // frame. Use Hyprland's committed layout boxes when retargeting so the new
+        // animation continues from the captured frame instead of changing owners.
+        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow, retargetingEdgeCamera)) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             if (g_niriStripSnapshotSingleWorkspaceOnly)
