@@ -36,6 +36,7 @@ namespace {
 
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
+bool             g_forceScrollingFinalLayoutBoxForOverview = false;
 
 class ScopedFlag {
   public:
@@ -298,6 +299,9 @@ struct ScrollingOverviewGeometry {
 template <typename TargetPtr>
 CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapshotBox) {
     if (!target)
+        return snapshotBox;
+
+    if (g_forceScrollingFinalLayoutBoxForOverview)
         return snapshotBox;
 
     const CBox liveBox = target->position();
@@ -1565,7 +1569,17 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
-    State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
+    const bool forceFinalScrollingLayoutBox = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) &&
+        (sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos);
+
+    State next;
+    {
+        std::optional<ScopedFlag> forceFinalLayoutBoxScope;
+        if (forceFinalScrollingLayoutBox)
+            forceFinalLayoutBoxScope.emplace(g_forceScrollingFinalLayoutBoxForOverview);
+
+        next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, m_state.focusDuringOverview);
+    }
     if (next.windows.empty())
         return;
     const bool carriedFrozenSwapColumnLayout = carryFrozenSwapColumnBackendPreviewLayout(next, workspace, source);
@@ -1717,6 +1731,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
             << " animate=" << (m_state.relayoutActive ? 1 : 0)
             << " targetChanged=" << (targetChanged ? 1 : 0)
+            << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
             << " pendingSwapcol=" << (hasPendingSwapColumnRelayoutCommit(workspace) ? 1 : 0)
             << " freezeActive=" << (swapColumnBackendPreviewFreezeActiveFor(workspace) ? 1 : 0)
@@ -1747,6 +1762,25 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const char* source, PHLWINDOW preferredWindow, bool syncScrollingSpot) {
     if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !usesDirectNiriScrollingOverview(m_state))
         return;
+
+    const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
+    const auto liveFocus = Desktop::focusState()->window();
+    const bool liveFocusValid = liveFocus && liveFocus->m_isMapped && hasManagedWindow(liveFocus);
+    if (sourceView.starts_with("window-active") && directNiriEdgeCameraActive() && !liveFocusValid) {
+        // A delayed window.active event from the leaf window can arrive after the
+        // native scrolling layout has already released focus for leaf -> scroll-past.
+        // Do not let that stale event re-center the leaf and truncate the edge pan.
+        m_state.selectedIndex.reset();
+        m_state.focusDuringOverview.reset();
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+        damageOwnedMonitors();
+        return;
+    }
 
     const auto previousPreviewRects = syncScrollingSpot ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     PHLWINDOW focusTarget;

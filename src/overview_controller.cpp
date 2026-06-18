@@ -10232,9 +10232,19 @@ void OverviewController::processScheduledVisibleStateRebuild(bool transitionActi
         return;
     }
 
-    if (activeDirectNiriSingleWorkspaceOverview())
+    if (activeDirectNiriSingleWorkspaceOverview()) {
+        const auto liveFocus = Desktop::focusState()->window();
+        if (m_state.phase == Phase::Active && m_state.relayoutActive && directNiriEdgeCameraActive() &&
+            (!liveFocus || !liveFocus->m_isMapped || !hasManagedWindow(liveFocus))) {
+            // A delayed generic rebuild during native leaf -> scroll-past can
+            // replace the edge animation target with the barely advanced live box.
+            // Let the dedicated direct-Niri edge relayout finish instead.
+            damageOwnedMonitors();
+            return;
+        }
+
         refreshVisibleStateMetadata();
-    else
+    } else
         rebuildVisibleState();
 }
 
