@@ -308,9 +308,15 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
 }
 
 
-bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+enum class ScrollingEdgeCameraSide {
+    None,
+    BeforeFirst,
+    AfterLast,
+};
+
+ScrollingEdgeCameraSide scrollingEdgeCameraSide(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return false;
+        return ScrollingEdgeCameraSide::None;
 
     auto* const controller = scrolling->m_scrollingData->controller.get();
     const CBox usable = scrolling->usableArea();
@@ -320,7 +326,50 @@ bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
     const double offset = controller->getOffset();
 
-    return offset < -0.5 || offset > maxNormalOffset + 0.5;
+    if (offset < -0.5)
+        return ScrollingEdgeCameraSide::BeforeFirst;
+    if (offset > maxNormalOffset + 0.5)
+        return ScrollingEdgeCameraSide::AfterLast;
+
+    return ScrollingEdgeCameraSide::None;
+}
+
+bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    return scrollingEdgeCameraSide(scrolling) != ScrollingEdgeCameraSide::None;
+}
+
+bool moveColumnCommandPrefersPrevious(std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
+    if (dispatcherArgsLower.find("-col") != std::string_view::npos || dispatcherArgsLower.find("prev") != std::string_view::npos ||
+        dispatcherArgsLower.find("left") != std::string_view::npos || dispatcherArgsLower == "l" || dispatcherArgsLower == "-1")
+        return true;
+
+    return dispatcherNameLower.find("left") != std::string_view::npos || dispatcherNameLower.find("prev") != std::string_view::npos;
+}
+
+bool moveColumnCommandPrefersNext(std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
+    if (dispatcherArgsLower.empty())
+        return true;
+
+    if (dispatcherArgsLower.find("+col") != std::string_view::npos || dispatcherArgsLower == "col" || dispatcherArgsLower.find(" col") != std::string_view::npos ||
+        dispatcherArgsLower.find("next") != std::string_view::npos || dispatcherArgsLower.find("right") != std::string_view::npos ||
+        dispatcherArgsLower == "r" || dispatcherArgsLower == "+1" || dispatcherArgsLower == "1")
+        return true;
+
+    return dispatcherNameLower.find("right") != std::string_view::npos || dispatcherNameLower.find("next") != std::string_view::npos;
+}
+
+bool moveColumnCommandTargetsEdge(Layout::Tiled::CScrollingAlgorithm* scrolling, std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
+    const auto side = scrollingEdgeCameraSide(scrolling);
+    if (side == ScrollingEdgeCameraSide::None)
+        return false;
+
+    const bool prefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
+    const bool prefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
+
+    if (side == ScrollingEdgeCameraSide::BeforeFirst)
+        return prefersPrevious && !prefersNext;
+
+    return prefersNext && !prefersPrevious;
 }
 
 bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolling) {
@@ -2010,6 +2059,9 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
     if (!usesDirectNiriScrollingOverview(state))
         return {};
 
+    if (directNiriOwnerEdgeCameraActive(state))
+        return {};
+
     const auto validManagedFocus = [&](const PHLWINDOW& window) -> PHLWINDOW {
         if (!window || !window->m_isMapped)
             return {};
@@ -3620,7 +3672,48 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     PHLWINDOW selectedBefore = overviewActive ? selectedWindow() : PHLWINDOW{};
 
-    if (overviewActive && isFocusOrMovementDispatcher && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+    const auto clearDirectNiriEdgeCameraFocusState = [&](const char* source) {
+        m_state.selectedIndex.reset();
+        m_state.focusDuringOverview.reset();
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+        m_hoverSelectionRetargetCandidateIndex.reset();
+        m_hoverSelectionRetargetCandidateSince = {};
+        m_hoverSelectionRetargetCandidatePrimed = false;
+        Desktop::focusState()->fullWindowFocus(nullptr, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] niri edge camera released overview focus"
+                << " source=" << (source ? source : "?")
+                << " selectedBefore=" << debugWindowLabel(selectedBefore)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeLayoutWorkspace());
+            debugLog(out.str());
+        }
+    };
+
+    const auto edgeCameraWorkspaceBefore = activeLayoutWorkspace();
+    auto* const edgeCameraScrollingBefore = edgeCameraWorkspaceBefore && isScrollingWorkspace(edgeCameraWorkspaceBefore) ?
+        scrollingAlgorithmForWorkspace(edgeCameraWorkspaceBefore) : nullptr;
+    const bool directEdgeCameraBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() && scrollingEdgeCameraActive(edgeCameraScrollingBefore);
+    const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+        moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
+
+    if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
+        clearDirectNiriEdgeCameraFocusState(edgeMoveColumnTowardEdge ? "movecol-edge-noop" : "movefocus-edge-noop");
+        damageOwnedMonitors();
+        return {};
+    }
+
+    if (preserveNativeEdgeCameraFocusRelease)
+        clearDirectNiriEdgeCameraFocusState("movecol-edge-preserve-before-dispatch");
+
+    if (overviewActive && isFocusOrMovementDispatcher && !preserveNativeEdgeCameraFocusRelease && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
         const auto dispatchWorkspace = activeLayoutWorkspace();
         const auto validTiledDispatchWindow = [&](const PHLWINDOW& window) {
             return window && window->m_isMapped && !window->m_pinned && !isFloatingOverviewWindow(window) && window->m_workspace == dispatchWorkspace;
@@ -3769,13 +3862,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return window->m_workspace == dispatchWorkspace;
         };
 
-        PHLWINDOW dispatchFocus = validDispatchFocus(selectedBefore) ? selectedBefore : PHLWINDOW{};
-        if (!validDispatchFocus(dispatchFocus))
-            dispatchFocus = validDispatchFocus(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
-        if (!validDispatchFocus(dispatchFocus))
-            dispatchFocus = validDispatchFocus(Desktop::focusState()->window()) ? Desktop::focusState()->window() : PHLWINDOW{};
-        if (!validDispatchFocus(dispatchFocus) && dispatchWorkspace)
-            dispatchFocus = focusCandidateForWorkspace(dispatchWorkspace);
+        PHLWINDOW dispatchFocus;
+        if (!preserveNativeEdgeCameraFocusRelease) {
+            dispatchFocus = validDispatchFocus(selectedBefore) ? selectedBefore : PHLWINDOW{};
+            if (!validDispatchFocus(dispatchFocus))
+                dispatchFocus = validDispatchFocus(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
+            if (!validDispatchFocus(dispatchFocus))
+                dispatchFocus = validDispatchFocus(Desktop::focusState()->window()) ? Desktop::focusState()->window() : PHLWINDOW{};
+            if (!validDispatchFocus(dispatchFocus) && dispatchWorkspace)
+                dispatchFocus = focusCandidateForWorkspace(dispatchWorkspace);
+        }
 
         const auto activeDispatchWorkspace = activeLayoutWorkspace();
         const auto dispatchTarget = dispatchFocus ? dispatchFocus->layoutTarget() : nullptr;
@@ -3783,7 +3879,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             dispatchFocus->m_workspace && dispatchFocus->m_workspace == activeDispatchWorkspace && isScrollingWorkspace(dispatchFocus->m_workspace) &&
             dispatchTarget && !dispatchTarget->floating() && !isFloatingOverviewWindow(dispatchFocus);
 
-        if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage) && !dispatchFocusIsTiledScrolling) {
+        if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage) && !dispatchFocusIsTiledScrolling &&
+            !preserveNativeEdgeCameraFocusRelease) {
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] consume niri edit dispatcher without tiled focus"
@@ -4410,6 +4507,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
         clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
+        return result;
+    }
+
+    if (overviewActive && result.success && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && directNiriEdgeCameraActive()) {
+        clearDirectNiriEdgeCameraFocusState("movecol-edge-after-dispatch");
+        refreshVisibleStateMetadata({}, animateDirectStripRelayout ? &directStripPreviewRects : nullptr, "movecol-edge");
+        damageOwnedMonitors();
         return result;
     }
 

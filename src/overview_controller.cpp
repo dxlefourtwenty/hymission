@@ -12913,6 +12913,9 @@ void OverviewController::renderSelectionChrome() const {
 }
 
 const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
+    if (directNiriOwnerEdgeCameraActive(state))
+        return nullptr;
+
     auto focusedWindow = directNiriFocusedOverviewWindow(state);
     if (!focusedWindow)
         focusedWindow = state.focusDuringOverview;
