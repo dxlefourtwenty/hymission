@@ -627,6 +627,7 @@ class OverviewController {
     [[nodiscard]] PHLWINDOW    directNiriOneToTwoColumnOpenAnchor(const PHLWINDOW& openedWindow) const;
     void                       stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& anchor);
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
+    [[nodiscard]] bool         directNiriEdgeCameraActive() const;
     [[nodiscard]] bool         shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWORKSPACE directNiriTwoColumnExitWorkspace() const;
     void                       freezeDirectNiriTwoColumnExitPreviewTargets();
@@ -791,7 +792,8 @@ class OverviewController {
     void updateAnimation();
     void updateHoveredFromPointer(bool syncSelection = true, bool syncRealFocus = true, bool syncScrollingSpot = true, bool allowSelectionRetarget = false,
                                   const char* source = "?");
-    void refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow = {});
+    void refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow = {}, const PreviewRectSnapshot* relayoutOrigins = nullptr,
+                                     const char* relayoutSource = "metadata-retarget");
     void rebuildVisibleState(PHLWINDOW preferredSelectedWindow = {}, bool forceRelayout = false);
     void moveSelection(Direction direction);
     [[nodiscard]] bool moveSelectionCircular(int step = 1, const char* source = "?");

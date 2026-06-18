@@ -2111,6 +2111,9 @@ void OverviewController::stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& 
     }
 }
 PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
+    if (directNiriEdgeCameraActive())
+        return {};
+
     if (const auto directNiriFocus = directNiriFocusedOverviewWindow(m_state); directNiriFocus)
         return directNiriFocus;
 
@@ -2135,6 +2138,13 @@ PHLWINDOW OverviewController::preferredOverviewExitFocus() const {
         return selected;
 
     return {};
+}
+bool OverviewController::directNiriEdgeCameraActive() const {
+    if (!isVisible() || !m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
+        return false;
+
+    const auto workspace = activeLayoutWorkspace();
+    return workspace && isScrollingWorkspace(workspace) && scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(workspace));
 }
 bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& window) const {
     if (!window || !window->m_workspace || !isVisible() || !m_state.collectionPolicy.onlyActiveWorkspace ||
@@ -2282,6 +2292,9 @@ void OverviewController::stabilizeDirectNiriExitSnapshot(const PHLWINDOW& target
 }
 void OverviewController::enforceDirectNiriExitFocusGuard() {
     if (!usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
+        return;
+
+    if (directNiriEdgeCameraActive())
         return;
 
     if (m_workspaceTransition.active) {
@@ -3780,7 +3793,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             // causing movecol/swapcol to rebuild state on stale layout data.
             if (isMoveFocusDispatcher || isSwapColumnLayoutMessage)
                 (void)syncScrollingWorkspaceSpotOnWindow(preferred);
-            refreshVisibleStateMetadata(preferred);
+            const char* relayoutSource = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus";
+            refreshVisibleStateMetadata(preferred, animateDirectStripRelayout ? &directStripPreviewRects : nullptr, relayoutSource);
 
             // Ensure overview focus state matches the new focused window before
             // refreshing the layout scroll.
@@ -3789,8 +3803,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 m_state.focusDuringOverview = preferred;
             }
 
-            if (animateDirectStripRelayout)
-                refreshNiriScrollingOverviewAfterLayoutScroll((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus", &directStripPreviewRects);
         }
 
         damageOwnedMonitors();

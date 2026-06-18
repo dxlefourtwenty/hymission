@@ -11672,7 +11672,7 @@ void OverviewController::updateHoveredFromPointer(bool syncSelection, bool syncR
     }
 }
 
-void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow) {
+void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelectedWindow, const PreviewRectSnapshot* relayoutOrigins, const char* relayoutSource) {
     if (!isVisible() || !m_state.ownerMonitor || !m_state.ownerWorkspace || m_workspaceTransition.active)
         return;
 
@@ -11697,11 +11697,12 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.fullscreenOverrideActive = previousState.fullscreenOverrideActive;
     next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
     next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
-    const bool preserveDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && previousState.relayoutActive;
-    const auto directNiriRetargetOrigins = preserveDirectNiriRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
-    next.relayoutActive = preserveDirectNiriRelayout;
-    next.relayoutProgress = preserveDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
-    next.relayoutStart = preserveDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
+    const bool retargetDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && (previousState.relayoutActive || relayoutOrigins);
+    const auto capturedRelayoutOrigins = retargetDirectNiriRelayout && !relayoutOrigins ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
+    const auto* directNiriRetargetOrigins = relayoutOrigins ? relayoutOrigins : &capturedRelayoutOrigins;
+    next.relayoutActive = retargetDirectNiriRelayout;
+    next.relayoutProgress = retargetDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
+    next.relayoutStart = retargetDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
     for (auto& backup : next.fullscreenBackups) {
         const auto previous = std::find_if(previousState.fullscreenBackups.begin(), previousState.fullscreenBackups.end(),
                                            [&](const FullscreenWorkspaceBackup& candidate) { return candidate.workspace == backup.workspace; });
@@ -11741,7 +11742,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         placeholder.naturalGlobal = previous->naturalGlobal;
         placeholder.exitGlobal = previous->exitGlobal;
         placeholder.targetGlobal = previous->targetGlobal;
-        placeholder.relayoutFromGlobal = preserveDirectNiriRelayout ? previous->relayoutFromGlobal : previous->targetGlobal;
+        placeholder.relayoutFromGlobal = retargetDirectNiriRelayout ? previous->relayoutFromGlobal : previous->targetGlobal;
     }
 
     for (const auto& previous : previousState.windows) {
@@ -11774,7 +11775,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     carryOverWorkspaceStripSnapshots(next, previousState);
     restoreOverviewRenderState();
     m_state = std::move(next);
-    if (!preserveDirectNiriRelayout)
+    if (!retargetDirectNiriRelayout)
         m_relayoutProgressAnimation.reset();
     armOverviewRenderState(m_state);
     applyWorkspaceNameOverrides(m_state);
@@ -11793,8 +11794,8 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         }
     }
 
-    if (preserveDirectNiriRelayout)
-        refreshNiriScrollingOverviewAfterLayoutScroll("metadata-retarget", &directNiriRetargetOrigins);
+    if (retargetDirectNiriRelayout)
+        refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directNiriRetargetOrigins);
 
     syncHiddenStripLayerProxies();
     refreshWorkspaceStripSnapshots();
