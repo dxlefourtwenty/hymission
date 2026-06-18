@@ -1970,6 +1970,11 @@ bool OverviewController::activeDirectNiriSingleWorkspaceOverview() const {
     // monitor/layout and can leave the renderer with mismatched workspace state.
     return niriModeEnabled() && centeredEmptyWorkspacePlaceholder(m_state) != nullptr;
 }
+bool OverviewController::timedNiriSingleWorkspaceTransitionActive() const {
+    return m_workspaceTransition.active && m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit &&
+        m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+}
 bool OverviewController::shouldSuppressNiriFocusScrollForMonitorReturn(const PHLWINDOW& window, const PHLMONITOR& previousFocusMonitor) const {
     if (!window || !previousFocusMonitor || !m_state.ownerMonitor)
         return false;
@@ -3353,7 +3358,7 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};
 
-    if (activeDirectNiriSingleWorkspaceOverview())
+    if (activeDirectNiriSingleWorkspaceOverview() || timedNiriSingleWorkspaceTransitionActive())
         return runOverviewEditingDispatcher("movefocus", &m_moveFocusOriginal, std::move(args));
 
     auto previousFocusMonitor = focusMonitorForWindow(Desktop::focusState()->window());
@@ -3477,8 +3482,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher;
 
-    const bool niriSingleWorkspaceTransition = m_state.collectionPolicy.onlyActiveWorkspace &&
-        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+    const bool niriSingleWorkspaceTransition = timedNiriSingleWorkspaceTransitionActive();
     const auto transitionAction = resolveOverviewEditTransitionAction(
         m_workspaceTransition.active,
         isFocusOrMovementDispatcher,

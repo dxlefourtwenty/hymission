@@ -597,6 +597,7 @@ class OverviewController {
     [[nodiscard]] bool         hasManagedWindow(const PHLWINDOW& window) const;
     [[nodiscard]] bool         usesDirectNiriScrollingOverview(const State& state) const;
     [[nodiscard]] bool         activeDirectNiriSingleWorkspaceOverview() const;
+    [[nodiscard]] bool         timedNiriSingleWorkspaceTransitionActive() const;
     [[nodiscard]] bool         windowHasUsableStateGeometry(const PHLWINDOW& window) const;
     [[nodiscard]] bool         windowMatchesOverviewScope(const PHLWINDOW& window, const State& state, bool requireUsableGeometry) const;
     [[nodiscard]] bool         shouldAutoCloseFor(const PHLWINDOW& window) const;

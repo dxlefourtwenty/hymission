@@ -2170,6 +2170,18 @@ bool OverviewController::initialize() {
         recordWindowActivation(window);
         if (m_applyingWorkspaceTransitionCommit)
             return;
+        if (timedNiriSingleWorkspaceTransitionActive() && window && window != m_workspaceTransition.targetState.focusDuringOverview && window->m_workspace &&
+            window->m_workspace->m_id == m_workspaceTransition.targetWorkspaceId) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] retarget workspace transition for changed active window"
+                    << " expected=" << debugWindowLabel(m_workspaceTransition.targetState.focusDuringOverview)
+                    << " active=" << debugWindowLabel(window)
+                    << " workspace=" << debugWorkspaceLabel(window->m_workspace);
+                debugLog(out.str());
+            }
+            commitActiveNiriWorkspaceTransitionForRetarget();
+        }
         if (window && hasManagedWindow(window) && windowMatchesOverviewScope(window, m_state, false)) {
             const bool sameOverviewFocus = isVisible() && m_state.phase == Phase::Active && m_state.focusDuringOverview == window;
             const bool syncScrollingSpot = !shouldSuppressNiriFocusScrollForMonitorReturn(window, previousActiveMonitor);
