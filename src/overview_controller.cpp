@@ -10581,7 +10581,9 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
-    if (const auto selected = selectedWindow(); selected) {
+    if (const auto* placeholder = directNiriEdgeCameraOpenPlaceholder(m_state)) {
+        (void)applyNiriScrollingCameraOpenGeometry(*placeholder);
+    } else if (const auto selected = selectedWindow(); selected) {
         (void)applyNiriScrollingCameraOpenGeometry(selected);
     } else if (const auto* placeholder = centeredEmptyWorkspacePlaceholder(m_state)) {
         (void)applyNiriScrollingCameraOpenGeometry(*placeholder);

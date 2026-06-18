@@ -2146,6 +2146,22 @@ bool OverviewController::directNiriEdgeCameraActive() const {
     const auto workspace = activeLayoutWorkspace();
     return workspace && isScrollingWorkspace(workspace) && scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(workspace));
 }
+bool OverviewController::directNiriOwnerEdgeCameraActive(const State& state) const {
+    if (!state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(state))
+        return false;
+
+    const auto workspace = state.ownerWorkspace;
+    return workspace && isScrollingWorkspace(workspace) && scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(workspace));
+}
+const OverviewController::EmptyWorkspacePlaceholder* OverviewController::directNiriEdgeCameraOpenPlaceholder(const State& state) const {
+    if (!directNiriOwnerEdgeCameraActive(state) || !state.ownerWorkspace || !state.ownerMonitor)
+        return nullptr;
+
+    const auto placeholder = std::ranges::find_if(state.emptyWorkspacePlaceholders, [&](const EmptyWorkspacePlaceholder& candidate) {
+        return candidate.backingOnly && candidate.workspace == state.ownerWorkspace && candidate.monitor == state.ownerMonitor;
+    });
+    return placeholder == state.emptyWorkspacePlaceholders.end() ? nullptr : &*placeholder;
+}
 bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& window) const {
     if (!window || !window->m_workspace || !isVisible() || !m_state.collectionPolicy.onlyActiveWorkspace ||
         !usesDirectNiriScrollingOverview(m_state) || !isScrollingWorkspace(window->m_workspace))
@@ -7503,11 +7519,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
     const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
     const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
-    if (!selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() && !centeredEmptyPlaceholder) {
+    const bool preserveEdgeCamera = directNiriOwnerEdgeCameraActive(state);
+    if (!preserveEdgeCamera && !selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() &&
+        !centeredEmptyPlaceholder) {
         state.selectedIndex = 0;
         state.focusDuringOverview = state.windows[*state.selectedIndex].window;
     }
-    if (centeredEmptyPlaceholder && (!state.focusDuringOverview || state.focusDuringOverview->m_workspace != centeredEmptyWorkspace)) {
+    if (preserveEdgeCamera || (centeredEmptyPlaceholder && (!state.focusDuringOverview || state.focusDuringOverview->m_workspace != centeredEmptyWorkspace))) {
         state.selectedIndex.reset();
         state.focusDuringOverview.reset();
     }

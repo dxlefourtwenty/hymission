@@ -628,6 +628,8 @@ class OverviewController {
     void                       stabilizeDirectNiriOneToTwoColumnOpen(const PHLWINDOW& anchor);
     [[nodiscard]] PHLWINDOW    preferredOverviewExitFocus() const;
     [[nodiscard]] bool         directNiriEdgeCameraActive() const;
+    [[nodiscard]] bool         directNiriOwnerEdgeCameraActive(const State& state) const;
+    [[nodiscard]] const EmptyWorkspacePlaceholder* directNiriEdgeCameraOpenPlaceholder(const State& state) const;
     [[nodiscard]] bool         shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWORKSPACE directNiriTwoColumnExitWorkspace() const;
     void                       freezeDirectNiriTwoColumnExitPreviewTargets();
