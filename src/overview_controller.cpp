@@ -11797,18 +11797,28 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         next.transientClosingWindows.push_back(previous);
     }
 
-    const bool preserveDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next) || directNiriOwnerEdgeCameraActive(previousState);
+    const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
+    const bool previousDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(previousState);
+    const auto validRestoredDirectNiriFocus = [&](const PHLWINDOW& window) {
+        return window && window->m_isMapped && managedWindowFor(next, window, true);
+    };
+
+    PHLWINDOW restoredDirectNiriFocus = preferredSelectedWindow;
+    if (!validRestoredDirectNiriFocus(restoredDirectNiriFocus))
+        restoredDirectNiriFocus = Desktop::focusState()->window();
+
+    const bool preserveDirectNiriEdgeCamera = nextDirectNiriEdgeCamera ||
+        (previousDirectNiriEdgeCamera && !validRestoredDirectNiriFocus(restoredDirectNiriFocus));
     if (preserveDirectNiriEdgeCamera) {
         // Native scrolling layout has deliberately released window focus while
-        // the camera is panning past the strip edge.  Do not resurrect the
-        // previous overview focus during metadata rebuilds.
+        // the camera is panning past the strip edge. Do not resurrect the
+        // previous overview focus during metadata rebuilds. Once native focus
+        // comes back while leaving the edge camera, accept that live focus again.
         next.selectedIndex.reset();
         next.focusDuringOverview.reset();
     } else {
-        PHLWINDOW selected = preferredSelectedWindow;
-        if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
-            selected = Desktop::focusState()->window();
-        if (!selected || !selected->m_isMapped || !managedWindowFor(next, selected, true))
+        PHLWINDOW selected = restoredDirectNiriFocus;
+        if (!validRestoredDirectNiriFocus(selected) && !previousDirectNiriEdgeCamera)
             selected = previousState.focusDuringOverview;
         if (selected && selected->m_isMapped && selectWindowInState(next, selected))
             next.focusDuringOverview = selected;
