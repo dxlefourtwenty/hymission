@@ -376,6 +376,7 @@ class OverviewController {
         std::string                            targetWorkspaceName;
         bool                                   targetWorkspaceSyntheticEmpty = false;
         bool                                   targetActivatedEarly = false;
+        bool                                   targetEdgeCameraPreserved = false;
         State                                  sourceState;
         State                                  targetState;
         double                                 animationFromDelta = 0.0;

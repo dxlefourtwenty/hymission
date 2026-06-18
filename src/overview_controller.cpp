@@ -6034,6 +6034,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .targetWorkspaceId = workspaceId,
         .targetWorkspaceName = overrides.front().workspaceName,
         .targetWorkspaceSyntheticEmpty = syntheticEmpty,
+        .targetEdgeCameraPreserved = directNiriOwnerEdgeCameraActive(target),
         .sourceState = std::move(source),
         .targetState = std::move(target),
         .animationFromDelta = 0.0,
@@ -6378,15 +6379,17 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (!targetWorkspace)
         return false;
 
+    const bool preserveTargetEdgeCamera = m_workspaceTransition.targetEdgeCameraPreserved;
     PHLWINDOW targetFocus;
-    if (m_workspaceTransition.targetState.focusDuringOverview && m_workspaceTransition.targetState.focusDuringOverview->m_isMapped &&
+    if (!preserveTargetEdgeCamera && m_workspaceTransition.targetState.focusDuringOverview &&
+        m_workspaceTransition.targetState.focusDuringOverview->m_isMapped &&
         m_workspaceTransition.targetState.focusDuringOverview->m_workspace == targetWorkspace)
         targetFocus = m_workspaceTransition.targetState.focusDuringOverview;
     const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
         (m_workspaceTransition.targetWorkspaceSyntheticEmpty || m_workspaceTransition.targetState.windows.empty());
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
-    else if (!targetFocus)
+    else if (!preserveTargetEdgeCamera && !targetFocus)
         targetFocus = focusCandidateForWorkspace(targetWorkspace);
 
     ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
@@ -6444,6 +6447,7 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         std::ostringstream out;
         out << "[hymission] activate timed niri workspace transition target=" << debugWorkspaceLabel(targetWorkspace)
             << " focus=" << debugWindowLabel(targetFocus)
+            << " preserveEdgeCamera=" << (preserveTargetEdgeCamera ? 1 : 0)
             << " alreadyActive=" << (alreadyActive ? 1 : 0);
         debugLog(out.str());
     }
@@ -6466,7 +6470,16 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     const bool targetWorkspaceSyntheticEmpty = m_workspaceTransition.targetWorkspaceSyntheticEmpty;
     const auto targetWorkspaceName = m_workspaceTransition.targetWorkspaceName;
     const bool targetActivatedEarly = m_workspaceTransition.targetActivatedEarly;
+    const bool preserveTargetEdgeCamera = m_workspaceTransition.targetEdgeCameraPreserved;
     State      next = m_workspaceTransition.targetState;
+    PreviewRectSnapshot edgeCameraPreviewRects;
+    if (preserveTargetEdgeCamera) {
+        edgeCameraPreviewRects.reserve(next.windows.size());
+        for (const auto& managed : next.windows) {
+            if (managed.window)
+                edgeCameraPreviewRects.emplace_back(managed.window, managed.targetGlobal);
+        }
+    }
     std::vector<std::tuple<MONITORID, WORKSPACEID, bool, Rect>> transitionPlaceholderRects;
     {
         const auto clampedDelta = std::clamp(m_workspaceTransition.delta, -m_workspaceTransition.distance, m_workspaceTransition.distance);
@@ -6528,7 +6541,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
 
         PHLWINDOW intendedTargetFocus;
-        if (next.focusDuringOverview && next.focusDuringOverview->m_isMapped && next.focusDuringOverview->m_workspace == targetWorkspace)
+        if (!preserveTargetEdgeCamera && next.focusDuringOverview && next.focusDuringOverview->m_isMapped &&
+            next.focusDuringOverview->m_workspace == targetWorkspace)
             intendedTargetFocus = next.focusDuringOverview;
 
         const bool preserveDirectNiriFocus =
@@ -6570,7 +6584,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             targetFocus = PHLWINDOW{};
         else if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
-        else
+        else if (!preserveTargetEdgeCamera)
             targetFocus = focusCandidateForWorkspace(targetWorkspace);
         if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
@@ -6588,10 +6602,11 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
+        const bool edgeCameraRepositioned = preserveTargetEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
         const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
             isScrollingWorkspace(targetWorkspace);
-        if (rebuildDirectNiriTargetAfterFocusSync || targetWorkspaceSyntheticEmpty || !containsHandle(next.managedWorkspaces, targetWorkspace) ||
-            next.ownerWorkspace != targetWorkspace) {
+        if (rebuildDirectNiriTargetAfterFocusSync || edgeCameraRepositioned || targetWorkspaceSyntheticEmpty ||
+            !containsHandle(next.managedWorkspaces, targetWorkspace) || next.ownerWorkspace != targetWorkspace) {
             const auto rebuildMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : transitionMonitor;
             const std::vector<WorkspaceOverride> overrides = {{
                 .monitorId = transitionMonitor->m_id,
@@ -6605,6 +6620,10 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
                 !rebuilt.participatingMonitors.empty())
                 next = std::move(rebuilt);
         }
+        if (preserveTargetEdgeCamera) {
+            next.selectedIndex.reset();
+            next.focusDuringOverview.reset();
+        }
 
         next.phase = Phase::Active;
         next.ownerWorkspace = targetWorkspace;
@@ -6616,6 +6635,18 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         next.relayoutActive = false;
         next.relayoutProgress = 1.0;
         next.relayoutStart = {};
+
+        bool windowRelayoutChanged = false;
+        if (edgeCameraRepositioned) {
+            for (auto& managed : next.windows) {
+                const auto previous = std::ranges::find_if(edgeCameraPreviewRects, [&](const auto& candidate) { return candidate.first == managed.window; });
+                if (previous == edgeCameraPreviewRects.end())
+                    continue;
+
+                managed.relayoutFromGlobal = previous->second;
+                windowRelayoutChanged = windowRelayoutChanged || !rectApproxEqual(managed.relayoutFromGlobal, managed.targetGlobal, 0.5);
+            }
+        }
 
         bool placeholderRelayoutChanged = false;
         for (auto& placeholder : next.emptyWorkspacePlaceholders) {
@@ -6638,7 +6669,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         clearOverviewWorkspaceTransition(targetWorkspace, false);
         const bool stripRelayoutChanged = carryOverWorkspaceStripRelayout(next, m_state);
         carryOverWorkspaceStripSnapshots(next, m_state);
-        if (stripRelayoutChanged || placeholderRelayoutChanged) {
+        if (windowRelayoutChanged || stripRelayoutChanged || placeholderRelayoutChanged) {
             next.relayoutActive = true;
             next.relayoutProgress = 0.0;
             next.relayoutStart = {};
