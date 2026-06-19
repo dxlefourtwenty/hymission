@@ -1809,6 +1809,42 @@ std::optional<Vector2D> visiblePointForRectOnMonitor(const Rect& windowRect, con
     return Vector2D((left + right) * 0.5, (top + bottom) * 0.5);
 }
 
+bool rectHasVisibleOverlap(const Rect& lhs, const Rect& rhs, double minimumOverlap = 1.0) {
+    const double overlapWidth = std::min(lhs.x + lhs.width, rhs.x + rhs.width) - std::max(lhs.x, rhs.x);
+    const double overlapHeight = std::min(lhs.y + lhs.height, rhs.y + rhs.height) - std::max(lhs.y, rhs.y);
+    return overlapWidth > minimumOverlap && overlapHeight > minimumOverlap;
+}
+
+bool scrollingWindowIntersectsNativeViewport(const PHLWINDOW& window) {
+    if (!window || !window->m_workspace || !window->m_workspace->m_space)
+        return false;
+
+    const auto target = window->layoutTarget();
+    if (!target || target->floating())
+        return false;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    CBox targetBox = target->position();
+    if (targetBox.width <= 1.0 || targetBox.height <= 1.0) {
+        if (const auto targetData = scrolling->dataFor(target); targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
+            targetBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+    }
+    if (targetBox.width <= 1.0 || targetBox.height <= 1.0)
+        return false;
+
+    CBox viewportBox = window->m_workspace->m_space->workArea();
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        viewportBox = scrolling->usableArea();
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        return false;
+
+    return rectHasVisibleOverlap(makeRect(targetBox.x, targetBox.y, targetBox.width, targetBox.height),
+                                 makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height));
+}
+
 std::optional<Vector2D> expectedSurfaceSizeForUV(const PHLWINDOW& window, const SP<CWLSurfaceResource>& surface, const PHLMONITOR& monitor, bool main) {
     if (!surface || !monitor)
         return std::nullopt;
@@ -6033,18 +6069,17 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             std::max(managed->targetGlobal.y, contentGlobal.y);
         return overlapWidth > 1.0 && overlapHeight > 1.0;
     };
-    const auto targetNativeFocus = Desktop::focusState()->window();
-    const bool targetWorkspaceOwnsLiveNativeFocus = targetNativeFocus && targetNativeFocus->m_isMapped && !targetNativeFocus->m_pinned &&
-        workspace && targetNativeFocus->m_workspace == workspace;
+    const bool targetFocusNativeVisible = targetFocus && scrollingWindowIntersectsNativeViewport(targetFocus);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
     const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive &&
-        (!targetWorkspaceOwnsLiveNativeFocus || !targetFocusVisibleInOverview());
+        (!targetFocus || (!targetFocusNativeVisible && !targetFocusVisibleInOverview()));
     if (preserveTargetEdgeCamera) {
-        // Preserve Hyprland's native scroll-past state when revisiting a workspace
-        // whose camera is already parked past the first/last column. Re-selecting
-        // a remembered leaf here recenters the workspace immediately and bypasses
-        // the native relayout animation path entirely.
+        // Preserve Hyprland's native scroll-past state only when the remembered
+        // leaf is genuinely outside both the native viewport and overview target.
+        // A centered partial first/last column can still report an edge-camera
+        // offset, but Hyprland treats that as a normal focused leaf, not a
+        // focus-released scroll-past state.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
     }
