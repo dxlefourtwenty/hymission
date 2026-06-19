@@ -1787,6 +1787,35 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
     const auto liveFocus = Desktop::focusState()->window();
     const bool liveFocusValid = liveFocus && liveFocus->m_isMapped && hasManagedWindow(liveFocus);
+    const auto edgeCameraWorkspace = activeLayoutWorkspace();
+    const bool preserveMultiColumnEdgeCamera = directNiriEdgeCameraActive() && directNiriScrollingColumnCount(edgeCameraWorkspace) != 1;
+    if (preserveMultiColumnEdgeCamera) {
+        // In scroll-past mode Hyprland's scrolling controller has released the
+        // active leaf. Window-active events can still arrive from the remembered
+        // last leaf when the workspace is activated. Treat those as stale while
+        // the camera is past the edge and keep the overview focusless.
+        m_state.selectedIndex.reset();
+        m_state.focusDuringOverview.reset();
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] niri focus refresh ignored for scroll-past edge-camera"
+                << " source=" << (source ? source : "?")
+                << " workspace=" << debugWorkspaceLabel(edgeCameraWorkspace)
+                << " liveFocus=" << debugWindowLabel(liveFocus)
+                << " liveFocusValid=" << (liveFocusValid ? 1 : 0)
+                << " columns=" << directNiriScrollingColumnCount(edgeCameraWorkspace);
+            debugLog(out.str());
+        }
+        damageOwnedMonitors();
+        return;
+    }
+
     if (sourceView.starts_with("window-active") && directNiriEdgeCameraActive() && !liveFocusValid) {
         // A delayed window.active event from the leaf window can arrive after the
         // native scrolling layout has already released focus for leaf -> scroll-past.
@@ -2165,15 +2194,10 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
             return {};
         }
 
-        // Hyprland keeps the scroll offset past the normal clamp for a short time
-        // while returning from scroll-past to the last leaf.  In that interval the
-        // edge-camera predicate is still true, but native focus has already been
-        // restored.  Treat that restored leaf as the overview focus immediately so
-        // selection chrome and active borders return on the first reverse movecol.
-        if (const auto liveFocus = validManagedFocus(Desktop::focusState()->window()); liveFocus)
-            return liveFocus;
-
-        // With no native focus, this is the real focusless scroll-past state.
+        // Multi-column edge-camera is the actual focusless scroll-past state.
+        // Never borrow Hyprland's remembered/restored live focus here: that leaf
+        // focus is exactly what re-centers the workspace strip with no scrolling
+        // animation when the overview switches back to the scroll-past lane.
         return {};
     }
 
@@ -2343,13 +2367,11 @@ bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& win
     if (directNiriScrollingColumnCount(window->m_workspace) == 1)
         return false;
 
-    // A centered first/last column can legally put Hyprland's scroll offset outside
-    // the normal clamped range. That is not the no-focus scroll-past state once
-    // Hyprland has restored a real focused window. Preserve the edge camera only
-    // while native focus is still released, otherwise the overview keeps erasing
-    // the restored leaf focus on the first frame it becomes visible again.
-    const auto focused = Desktop::focusState()->window();
-    return !focused || !focused->m_isMapped || focused->m_workspace != window->m_workspace;
+    // Multi-column edge-camera is always the focusless scroll-past state for the
+    // direct-Niri overview. Even if Hyprland exposes a live focused leaf while the
+    // offset is still past the normal clamp, keeping that focus would immediately
+    // re-center the strip.
+    return true;
 }
 PHLWORKSPACE OverviewController::directNiriTwoColumnExitWorkspace() const {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
@@ -2966,6 +2988,19 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     auto* scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
+
+    const bool multiColumnEdgeCamera = scrollingEdgeCameraActive(scrolling) && directNiriScrollingColumnCount(window->m_workspace) != 1;
+    if (activeDirectNiriSingleWorkspaceOverview() && multiColumnEdgeCamera) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] sync scrolling workspace spot skipped (preserve scroll-past edge-camera)"
+                << " target=" << debugWindowLabel(window)
+                << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                << " columns=" << directNiriScrollingColumnCount(window->m_workspace);
+            debugLog(out.str());
+        }
+        return false;
+    }
 
     const bool allowAnimatedDirectNiriScrollSync = m_applyingWorkspaceTransitionCommit ||
         (m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview() && niriOverviewAnimationsEnabled());

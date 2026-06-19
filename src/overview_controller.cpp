@@ -6082,17 +6082,18 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         return overlapWidth > 1.0 && overlapHeight > 1.0;
     };
     const bool targetFocusNativeVisible = targetFocus && scrollingWindowIntersectsNativeViewport(targetFocus);
+    const bool targetFocusOverviewVisible = targetFocusVisibleInOverview();
     const bool targetWorkspaceHasSingleScrollingColumn = scrollingWorkspaceHasSingleColumn(workspace);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
-    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn &&
-        (!targetFocus || (!targetFocusNativeVisible && !targetFocusVisibleInOverview()));
+    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn;
     if (preserveTargetEdgeCamera) {
-        // Preserve Hyprland's native scroll-past state only when the remembered
-        // leaf is genuinely outside both the native viewport and overview target.
-        // A centered partial first/last column can still report an edge-camera
-        // offset, but Hyprland treats that as a normal focused leaf, not a
-        // focus-released scroll-past state.
+        // Real multi-column edge-camera means Hyprland has deliberately parked
+        // the scrolling camera past the strip edge. Do not use the remembered
+        // lastFocusedWindow / focus candidate here: selecting it forces the
+        // scrolling controller to re-center the strip and causes the snap the
+        // user sees when switching back to a scroll-past workspace. A single
+        // column is handled separately as a normal focused leaf case.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
     }
@@ -6179,7 +6180,12 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         out << "[hymission] overview workspace transition begin monitor=" << monitor->m_name << " targetId=" << workspaceId
             << " synthetic=" << (syntheticEmpty ? 1 : 0) << " mode="
             << (mode == WorkspaceTransitionMode::Gesture ? "gesture" : mode == WorkspaceTransitionMode::TimedCommit ? "commit" : "revert")
-            << " axis=" << (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? "vertical" : "horizontal");
+            << " axis=" << (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? "vertical" : "horizontal")
+            << " targetEdge=" << (targetOwnerEdgeCameraActive ? 1 : 0)
+            << " targetSingleColumn=" << (targetWorkspaceHasSingleScrollingColumn ? 1 : 0)
+            << " preserveEdgeCamera=" << (preserveTargetEdgeCamera ? 1 : 0)
+            << " targetFocusNativeVisible=" << (targetFocusNativeVisible ? 1 : 0)
+            << " targetFocusOverviewVisible=" << (targetFocusOverviewVisible ? 1 : 0);
         debugLog(out.str());
     }
 
@@ -11924,8 +11930,10 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     if (!validRestoredDirectNiriFocus(restoredDirectNiriFocus))
         restoredDirectNiriFocus = Desktop::focusState()->window();
 
-    const bool preserveDirectNiriEdgeCamera = (nextDirectNiriEdgeCamera || previousDirectNiriEdgeCamera) &&
-        !validRestoredDirectNiriFocus(restoredDirectNiriFocus);
+    const bool nextMultiColumnEdgeCamera = nextDirectNiriEdgeCamera && scrollingWorkspaceColumnCount(next.ownerWorkspace) != 1;
+    const bool previousMultiColumnEdgeCamera = previousDirectNiriEdgeCamera && scrollingWorkspaceColumnCount(previousState.ownerWorkspace) != 1;
+    const bool preserveDirectNiriEdgeCamera = nextMultiColumnEdgeCamera || previousMultiColumnEdgeCamera ||
+        ((nextDirectNiriEdgeCamera || previousDirectNiriEdgeCamera) && !validRestoredDirectNiriFocus(restoredDirectNiriFocus));
     if (preserveDirectNiriEdgeCamera) {
         // Native scrolling layout has deliberately released window focus while
         // the camera is panning past the strip edge. Do not resurrect the
@@ -13051,9 +13059,10 @@ void OverviewController::renderSelectionChrome() const {
 
 const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
     const bool edgeCameraActive = directNiriOwnerEdgeCameraActive(state);
+    const bool singleColumnEdgeCamera = edgeCameraActive && scrollingWorkspaceHasSingleColumn(state.ownerWorkspace);
 
     auto focusedWindow = directNiriFocusedOverviewWindow(state);
-    if (!focusedWindow && !edgeCameraActive)
+    if (!focusedWindow && (!edgeCameraActive || singleColumnEdgeCamera))
         focusedWindow = state.focusDuringOverview;
 
     auto focusedManaged = managedWindowFor(state, focusedWindow, true);
@@ -13063,12 +13072,12 @@ const OverviewController::ManagedWindow* OverviewController::focusedManagedForBo
         const bool liveFocusBelongsToOwnerWorkspace = focusedWindow && focusedWindow->m_isMapped && !focusedWindow->m_pinned && state.ownerWorkspace &&
             focusedWindow->m_workspace == state.ownerWorkspace;
 
-        // In direct Niri scroll-past, Hyprland intentionally clears native focus.
-        // While that native focus is null, do not fall back to any stale previous
-        // window for the active border.  Once Hyprland restores a real leaf focus
-        // while the offset is still technically in the edge-camera range, allow
-        // that live focus to own the active border immediately.
-        if (!edgeCameraActive || liveFocusBelongsToOwnerWorkspace)
+        // Multi-column direct-Niri edge camera is the focusless scroll-past state.
+        // Do not draw the active border from Hyprland's remembered/restored leaf
+        // focus while the strip is still parked past the edge. Single-column
+        // workspaces remain focusable because there is no scroll-past strip to
+        // preserve.
+        if (!edgeCameraActive || (singleColumnEdgeCamera && liveFocusBelongsToOwnerWorkspace))
             focusedManaged = managedWindowFor(state, focusedWindow, true);
     }
 
