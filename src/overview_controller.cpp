@@ -78,6 +78,7 @@ using niri_scrolling_detail::workspaceAnimationConfig;
 
 namespace niri_scrolling_detail {
 extern std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
+extern std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 extern bool workspaceSwitchDispatcherBlockRelayout;
 }
 
@@ -200,6 +201,8 @@ namespace {
 constexpr double OPEN_DURATION_MS = 180.0;
 constexpr double CLOSE_DURATION_MS = 140.0;
 constexpr auto   DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION = std::chrono::milliseconds(750);
+constexpr auto   DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK = std::chrono::milliseconds(1200);
+constexpr auto   DIRECT_NIRI_OPEN_INPUT_POST_SETTLE = std::chrono::milliseconds(80);
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 constexpr double WORKSPACE_TRANSITION_DURATION_MS = 180.0;
 constexpr double CLOSE_SETTLE_TIMEOUT_MS = 80.0;
@@ -250,6 +253,36 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
         lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
         lowered.find("window.float") != std::string::npos || lowered.find("window.pin") != std::string::npos;
+}
+
+
+bool isOverviewToggleControlDispatcher(std::string_view dispatcherName) {
+    std::string lowered{dispatcherName};
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return lowered == "hymission:toggle" || lowered == "hymission.open" || lowered == "hymission:open" ||
+        lowered == "hymission.close" || lowered == "hymission:close" || lowered == "hymission.toggle";
+}
+
+bool overviewOpenInputBarrierActive() {
+    return niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < niri_scrolling_detail::overviewOpenInputBlockUntil;
+}
+
+void armOverviewOpenInputBarrier(std::chrono::milliseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    if (niri_scrolling_detail::overviewOpenInputBlockUntil == std::chrono::steady_clock::time_point{} ||
+        until > niri_scrolling_detail::overviewOpenInputBlockUntil)
+        niri_scrolling_detail::overviewOpenInputBlockUntil = until;
+}
+
+void settleOverviewOpenInputBarrier() {
+    niri_scrolling_detail::overviewOpenInputBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_INPUT_POST_SETTLE;
+}
+
+void clearExpiredOverviewOpenInputBarrier() {
+    if (niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewOpenInputBlockUntil)
+        niri_scrolling_detail::overviewOpenInputBlockUntil = {};
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -3769,6 +3802,24 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     const bool         hasActionModifier = (modifiers & (HL_MODIFIER_META | HL_MODIFIER_SHIFT | HL_MODIFIER_CTRL | HL_MODIFIER_ALT)) != 0;
     const bool         disablePlainOverviewArrowAndEnter =
         niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && isScrollingWorkspace(activeLayoutWorkspace());
+    const bool         directionalEditKey = keysym == XKB_KEY_Left || keysym == XKB_KEY_Right || keysym == XKB_KEY_Up || keysym == XKB_KEY_Down;
+    const bool         openingInputBarrier = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace && niriModeEnabled() &&
+        (m_state.phase == Phase::Opening || (m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated()) ||
+         m_postOpenRefreshFrames > 0 || overviewOpenInputBarrierActive());
+    if (openingInputBarrier && hasActionModifier && directionalEditKey) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] consume modified directional key during overview open"
+                << " key=" << keysym
+                << " modifiers=" << modifiers
+                << " phase=" << static_cast<int>(m_state.phase)
+                << " openBarrier=" << (overviewOpenInputBarrierActive() ? 1 : 0)
+                << " postOpenFrames=" << m_postOpenRefreshFrames;
+            debugLog(out.str());
+        }
+        info.cancelled = true;
+        return;
+    }
 
     if (handleNiriOverviewArrowKeybind(keysym, modifiers)) {
         info.cancelled = true;
@@ -7705,17 +7756,12 @@ bool OverviewController::installHooks() {
             g_openingDispatcherGateOriginals[name] = original;
             it->second = [this, name](std::string args) -> SDispatchResult {
                 const std::string dispatcherLower = asciiLowerCopy(name);
-                const bool hymissionControlDispatcher = dispatcherLower == "hymission:toggle" || dispatcherLower == "hymission:open" ||
-                    dispatcherLower == "hymission:close" || dispatcherLower == "hymission:debug_current_layout" ||
-                    dispatcherLower.starts_with("hymission.");
-                const auto now = std::chrono::steady_clock::now();
-                const bool openDispatcherCooldownActive =
-                    niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-                    now < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+                const bool hymissionControlDispatcher = isOverviewToggleControlDispatcher(dispatcherLower);
+                const bool openDispatcherCooldownActive = overviewOpenInputBarrierActive();
                 const bool openVisibilityAnimationActive =
                     m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
                 const bool openingNiriSingleWorkspaceDispatcherGate = !hymissionControlDispatcher && isVisible() &&
-                    m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+                    m_state.collectionPolicy.onlyActiveWorkspace && niriModeEnabled() &&
                     (m_state.phase == Phase::Opening || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || openDispatcherCooldownActive);
 
                 if (openingNiriSingleWorkspaceDispatcherGate) {
@@ -7724,7 +7770,8 @@ bool OverviewController::installHooks() {
                         out << "[hymission] block dispatcher during overview open"
                             << " dispatcher=" << name
                             << " args=" << args
-                            << " phase=" << static_cast<int>(m_state.phase);
+                            << " phase=" << static_cast<int>(m_state.phase)
+                            << " openBarrier=" << (openDispatcherCooldownActive ? 1 : 0);
                         debugLog(out.str());
                     }
                     return {};
@@ -10797,6 +10844,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
     if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        armOverviewOpenInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK);
         const auto openDispatcherBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION;
         if (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil == std::chrono::steady_clock::time_point{} ||
             openDispatcherBlockUntil > niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil)
@@ -11388,6 +11436,7 @@ void OverviewController::deactivate() {
     m_visibleStateRebuildScheduled = false;
     ++m_visibleStateRebuildGeneration;
     m_postOpenRefreshFrames = 0;
+    niri_scrolling_detail::overviewOpenInputBlockUntil = {};
     clearPendingWindowGeometryRetry();
     clearOverviewWorkspaceTransition();
     if (desiredFocus && desiredFocus->m_workspace)
@@ -11648,6 +11697,7 @@ void OverviewController::updateAnimation() {
             m_state.animationFromVisual = 1.0;
             m_state.animationToVisual = 1.0;
             m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
+            settleOverviewOpenInputBarrier();
             refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");
             updateSelectedWindowLayout({});
             updateHoveredFromPointer(false, false, false, false, "begin-open");
@@ -11693,6 +11743,7 @@ void OverviewController::updateAnimation() {
         m_state.animationFromVisual = 1.0;
         m_state.animationToVisual = 1.0;
         m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
+        settleOverviewOpenInputBarrier();
         if (debugLogsEnabled())
             debugLog("[hymission] anim opening complete");
         refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");

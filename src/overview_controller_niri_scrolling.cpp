@@ -900,6 +900,7 @@ namespace niri_scrolling_detail {
 
 bool stripSnapshotSingleWorkspaceOnly = false;
 std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
+std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 bool workspaceSwitchDispatcherBlockRelayout = false;
 
 namespace {
@@ -979,6 +980,18 @@ void clearRetainedDirectNiriWorkspaceLanes() {
 
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
+}
+
+
+bool overviewOpenInputBarrierActive() {
+    return niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < niri_scrolling_detail::overviewOpenInputBlockUntil;
+}
+
+void clearExpiredOverviewOpenInputBarrier() {
+    if (niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewOpenInputBlockUntil)
+        niri_scrolling_detail::overviewOpenInputBlockUntil = {};
 }
 
 } // namespace
@@ -1946,10 +1959,7 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         return false;
 
     const bool editAction = hasShift || hasCtrl || hasAlt;
-    const auto openBlockNow = std::chrono::steady_clock::now();
-    const bool openDispatcherCooldownActive =
-        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-        openBlockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+    const bool openDispatcherCooldownActive = overviewOpenInputBarrierActive();
     const bool openVisibilityAnimationActive =
         m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
     const bool openingEditKeybindGate = editAction && m_state.collectionPolicy.onlyActiveWorkspace &&
@@ -3884,18 +3894,19 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool retargetTimedNiriTransition = transitionAction == OverviewEditTransitionAction::Retarget ||
         (niriSingleWorkspaceTransition && isMoveToWorkspaceDispatcher);
 
-    const auto blockNow = std::chrono::steady_clock::now();
+    clearExpiredOverviewOpenInputBarrier();
     const bool openVisibilityAnimationActive =
         m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
-    const bool openDispatcherCooldownActive =
+    const bool openDispatcherCooldownActive = overviewOpenInputBarrierActive();
+    const bool workspaceSwitchDispatcherCooldownActive =
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-        blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+        std::chrono::steady_clock::now() < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
     const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
         (m_state.phase != Phase::Active || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || m_workspaceSwipeGesture.active ||
          (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
          (m_workspaceTransitionCommitScheduled && !retargetTimedNiriTransition) || m_applyingWorkspaceTransitionCommit ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         openDispatcherCooldownActive);
+         openDispatcherCooldownActive || workspaceSwitchDispatcherCooldownActive);
     if (!workspaceSwitchSettling && niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = {};
         niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
@@ -3909,7 +3920,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 << " args=" << dispatcherArgsLower
                 << " phase=" << static_cast<int>(m_state.phase)
                 << " openAnim=" << (openVisibilityAnimationActive ? 1 : 0)
-                << " openCooldown=" << (openDispatcherCooldownActive ? 1 : 0)
+                << " openBarrier=" << (openDispatcherCooldownActive ? 1 : 0)
+                << " workspaceCooldown=" << (workspaceSwitchDispatcherCooldownActive ? 1 : 0)
                 << " postOpenFrames=" << m_postOpenRefreshFrames;
             debugLog(out.str());
         }
