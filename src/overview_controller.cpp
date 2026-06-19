@@ -6550,8 +6550,15 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
     const bool targetActivatedEarly = m_workspaceTransition.targetActivatedEarly;
     const bool preserveTargetEdgeCamera = m_workspaceTransition.targetEdgeCameraPreserved;
     State      next = m_workspaceTransition.targetState;
+    const bool targetStartedEdgeCamera = directNiriOwnerEdgeCameraActive(next);
     PreviewRectSnapshot edgeCameraPreviewRects;
-    if (preserveTargetEdgeCamera) {
+    if (targetStartedEdgeCamera) {
+        // When switching back to a workspace that is currently in Hyprland's
+        // scroll-past edge-camera state, remember the overview preview rects from
+        // that state even if we are going to reclaim a focused leaf during the
+        // switch. If the focus sync recenters/fit-aligns the strip, the rebuilt
+        // target state can then relayout from those scroll-past rects instead of
+        // snapping straight to the focused layout on the first frame.
         edgeCameraPreviewRects.reserve(next.windows.size());
         for (const auto& managed : next.windows) {
             if (managed.window)
@@ -6680,7 +6687,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
-        const bool edgeCameraRepositioned = preserveTargetEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
+        const bool edgeCameraRepositioned = targetStartedEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
         const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
             isScrollingWorkspace(targetWorkspace);
         if (rebuildDirectNiriTargetAfterFocusSync || edgeCameraRepositioned || targetWorkspaceSyntheticEmpty ||
