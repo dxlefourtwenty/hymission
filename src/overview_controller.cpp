@@ -6045,7 +6045,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .targetWorkspaceId = workspaceId,
         .targetWorkspaceName = overrides.front().workspaceName,
         .targetWorkspaceSyntheticEmpty = syntheticEmpty,
-        .targetEdgeCameraPreserved = !preferredTargetFocus && directNiriOwnerEdgeCameraActive(target),
+        .targetEdgeCameraPreserved = !targetFocus && directNiriOwnerEdgeCameraActive(target),
         .sourceState = std::move(source),
         .targetState = std::move(target),
         .animationFromDelta = 0.0,
@@ -12933,8 +12933,18 @@ void OverviewController::renderSelectionChrome() const {
     const bool closingDirectNiriOverview =
         usesDirectNiriScrollingOverview(m_state) && (m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing);
     const double borderProgress = closingDirectNiriOverview ? 1.0 : progress;
-    renderInactiveWindowBorders(m_state, borderProgress, false);
-    renderFocusedWindowBorder(m_state, borderProgress, false);
+    const bool niriWorkspaceTransitionBorders = m_workspaceTransition.active && m_workspaceTransition.monitor &&
+        m_workspaceTransition.monitor == renderMonitor && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+
+    if (niriWorkspaceTransitionBorders) {
+        renderInactiveWindowBorders(m_workspaceTransition.sourceState, borderProgress, false);
+        renderInactiveWindowBorders(m_workspaceTransition.targetState, borderProgress, false);
+        renderFocusedWindowBorder(m_workspaceTransition.targetState, borderProgress, false);
+    } else {
+        renderInactiveWindowBorders(m_state, borderProgress, false);
+        renderFocusedWindowBorder(m_state, borderProgress, false);
+    }
 
     if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
         const auto& window = m_state.windows[*m_draggedWindowIndex];
