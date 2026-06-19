@@ -1845,6 +1845,18 @@ bool scrollingWindowIntersectsNativeViewport(const PHLWINDOW& window) {
                                  makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height));
 }
 
+std::size_t scrollingWorkspaceColumnCount(const PHLWORKSPACE& workspace) {
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return 0;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    return scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
+}
+
+bool scrollingWorkspaceHasSingleColumn(const PHLWORKSPACE& workspace) {
+    return scrollingWorkspaceColumnCount(workspace) == 1;
+}
+
 std::optional<Vector2D> expectedSurfaceSizeForUV(const PHLWINDOW& window, const SP<CWLSurfaceResource>& surface, const PHLMONITOR& monitor, bool main) {
     if (!surface || !monitor)
         return std::nullopt;
@@ -6070,9 +6082,10 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         return overlapWidth > 1.0 && overlapHeight > 1.0;
     };
     const bool targetFocusNativeVisible = targetFocus && scrollingWindowIntersectsNativeViewport(targetFocus);
+    const bool targetWorkspaceHasSingleScrollingColumn = scrollingWorkspaceHasSingleColumn(workspace);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
-    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive &&
+    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn &&
         (!targetFocus || (!targetFocusNativeVisible && !targetFocusVisibleInOverview()));
     if (preserveTargetEdgeCamera) {
         // Preserve Hyprland's native scroll-past state only when the remembered
