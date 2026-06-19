@@ -4314,6 +4314,15 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
     if (!m_shouldRenderWindowOriginal)
         return false;
 
+    if (isVisible() && window && monitor && ownsMonitor(monitor) &&
+        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
+        // During the final direct-Niri handoff, Hyprland owns native desktop
+        // composition again. Do not keep the overview's forced render override
+        // alive here, or windows from non-active workspaces can be drawn into
+        // the current monitor for one frame behind transparent windows.
+        return m_shouldRenderWindowOriginal(g_pHyprRenderer.get(), window, monitor);
+    }
+
     if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
