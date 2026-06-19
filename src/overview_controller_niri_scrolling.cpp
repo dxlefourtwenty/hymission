@@ -3644,6 +3644,54 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
 
     (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.sourceState, movedWindow);
     (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.targetState, movedWindow);
+
+    const auto placeholderForWorkspace = [&](State& state, WORKSPACEID workspaceId) -> EmptyWorkspacePlaceholder* {
+        EmptyWorkspacePlaceholder* fallback = nullptr;
+        for (auto& placeholder : state.emptyWorkspacePlaceholders) {
+            if (placeholder.monitor != sourceMonitor || placeholder.workspaceId != workspaceId)
+                continue;
+
+            if (!fallback)
+                fallback = &placeholder;
+            if (placeholder.backingOnly)
+                return &placeholder;
+        }
+
+        return fallback;
+    };
+    const auto appendSyntheticTransitionPlaceholder = [&](State& state, const EmptyWorkspacePlaceholder& model, const PHLWORKSPACE& workspace,
+                                                          double dx, double dy) {
+        EmptyWorkspacePlaceholder placeholder = model;
+        placeholder.workspace = workspace;
+        placeholder.workspaceId = workspace ? workspace->m_id : model.workspaceId;
+        placeholder.targetGlobal = translateRect(model.targetGlobal, dx, dy);
+        placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+        state.emptyWorkspacePlaceholders.push_back(std::move(placeholder));
+    };
+
+    auto* sourceSourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, sourceWorkspace->m_id);
+    auto* targetSourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, sourceWorkspace->m_id);
+    auto* sourceTargetPlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, targetWorkspace->m_id);
+    auto* targetTargetPlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, targetWorkspace->m_id);
+
+    if (!sourceTargetPlaceholder && targetTargetPlaceholder && sourceSourcePlaceholder && targetSourcePlaceholder) {
+        const double dx = sourceSourcePlaceholder->targetGlobal.x - targetSourcePlaceholder->targetGlobal.x;
+        const double dy = sourceSourcePlaceholder->targetGlobal.y - targetSourcePlaceholder->targetGlobal.y;
+        appendSyntheticTransitionPlaceholder(m_workspaceTransition.sourceState, *targetTargetPlaceholder, targetWorkspace, dx, dy);
+
+        // Re-read pointers after appending, because the placeholder vectors may
+        // have reallocated.
+        sourceSourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, sourceWorkspace->m_id);
+        targetSourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, sourceWorkspace->m_id);
+        sourceTargetPlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, targetWorkspace->m_id);
+        targetTargetPlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, targetWorkspace->m_id);
+    }
+    if (!targetSourcePlaceholder && sourceSourcePlaceholder && sourceTargetPlaceholder && targetTargetPlaceholder) {
+        const double dx = targetTargetPlaceholder->targetGlobal.x - sourceTargetPlaceholder->targetGlobal.x;
+        const double dy = targetTargetPlaceholder->targetGlobal.y - sourceTargetPlaceholder->targetGlobal.y;
+        appendSyntheticTransitionPlaceholder(m_workspaceTransition.targetState, *sourceSourcePlaceholder, sourceWorkspace, dx, dy);
+    }
+
     const auto targetManaged = std::find_if(m_workspaceTransition.targetState.windows.begin(), m_workspaceTransition.targetState.windows.end(),
                                             [&](const ManagedWindow& managed) { return managed.window == movedWindow; });
     if (targetManaged != m_workspaceTransition.targetState.windows.end()) {
@@ -5817,37 +5865,44 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         return m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? translateRect(rect, 0.0, offset) :
                                                                                 translateRect(rect, offset, 0.0);
     };
-    using BackgroundKey = std::pair<WORKSPACEID, bool>;
-    const auto backgroundForWorkspace = [&](const State& state, const BackgroundKey& key) -> const EmptyWorkspacePlaceholder* {
-        const auto it = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
-                                     [&](const EmptyWorkspacePlaceholder& background) {
-                                         return background.monitor == renderMonitor && background.workspaceId == key.first &&
-                                             background.backingOnly == key.second;
-                                     });
-        return it == state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
+    const auto backgroundForWorkspace = [&](const State& state, WORKSPACEID workspaceId) -> const EmptyWorkspacePlaceholder* {
+        const EmptyWorkspacePlaceholder* fallback = nullptr;
+        for (const auto& background : state.emptyWorkspacePlaceholders) {
+            if (background.monitor != renderMonitor || background.workspaceId != workspaceId)
+                continue;
+
+            if (!fallback)
+                fallback = &background;
+
+            // A window-backed scrolling workspace stores its wallpaper viewport as
+            // backingOnly.  When movetoworkspace empties the source workspace, the
+            // same workspace becomes a non-backing empty placeholder in the target
+            // state.  Treat both as the same viewport identity so the wallpaper lane
+            // scrolls from the old row to the new row instead of fading/snapping.
+            if (background.backingOnly)
+                return &background;
+        }
+
+        return fallback;
     };
 
-    std::vector<BackgroundKey> backgroundKeys;
-    const auto addBackgroundKey = [&](const EmptyWorkspacePlaceholder& background) {
-        if (background.monitor != renderMonitor)
+    std::vector<WORKSPACEID> backgroundWorkspaceIds;
+    const auto addBackgroundWorkspaceId = [&](const EmptyWorkspacePlaceholder& background) {
+        if (background.monitor != renderMonitor || background.workspaceId == WORKSPACE_INVALID)
             return;
 
-        const BackgroundKey key{background.workspaceId, background.backingOnly};
-        const bool exists = std::ranges::any_of(backgroundKeys, [&](const BackgroundKey& existing) {
-            return existing.first == key.first && existing.second == key.second;
-        });
-        if (!exists)
-            backgroundKeys.push_back(key);
+        if (!containsHandle(backgroundWorkspaceIds, background.workspaceId))
+            backgroundWorkspaceIds.push_back(background.workspaceId);
     };
 
     for (const auto& background : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders)
-        addBackgroundKey(background);
+        addBackgroundWorkspaceId(background);
     for (const auto& background : m_workspaceTransition.targetState.emptyWorkspacePlaceholders)
-        addBackgroundKey(background);
+        addBackgroundWorkspaceId(background);
 
-    for (const auto& backgroundKey : backgroundKeys) {
-        const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, backgroundKey);
-        const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, backgroundKey);
+    for (const auto workspaceId : backgroundWorkspaceIds) {
+        const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, workspaceId);
+        const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, workspaceId);
         if (!source && !target)
             continue;
 
