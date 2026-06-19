@@ -4524,15 +4524,17 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
         return;
     }
 
-    const bool directNiriBorderHandoff =
-        !emptyNiriExitOnMonitor && window && monitor && isVisible() && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor) &&
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive();
-    if (directNiriBorderHandoff) {
-        // The final direct-Niri handoff frame renders native window contents so
-        // transparent clients see the real desktop again, but the overview is
-        // still alive for the frame.  Keep native decorations suppressed here;
-        // otherwise Hyprland's active border can flash for one frame before the
-        // controller fully deactivates and normal desktop ownership resumes.
+    const bool directNiriClosingBorderSuppression =
+        !emptyNiriExitOnMonitor && window && monitor && isVisible() && ownsMonitor(monitor) &&
+        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_beginCloseInProgress || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing ||
+         m_deactivatePending || directNiriNativeHandoffActive());
+    if (directNiriClosingBorderSuppression) {
+        // Native desktop contents can render during the direct-Niri close handoff
+        // so transparent clients see the real desktop again. Keep Hyprland's
+        // native decorations suppressed until the overview has fully deactivated;
+        // otherwise the active border can blink through while the close frame is
+        // still overview-owned.
         return;
     }
 
@@ -13420,7 +13422,10 @@ void OverviewController::renderSelectionChrome() const {
         });
     };
 
-    if (closingTargetsEmptyNiriWorkspaceOnMonitor())
+    const bool closingDirectNiriOverview =
+        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_beginCloseInProgress || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing || m_deactivatePending);
+    if (closingTargetsEmptyNiriWorkspaceOnMonitor() || closingDirectNiriOverview)
         return;
 
     const bool showFocusIndicator = showFocusIndicatorEnabled();
@@ -13447,12 +13452,6 @@ void OverviewController::renderSelectionChrome() const {
             g_pHyprOpenGL->renderTexture(texture, toBox(titleRect), {});
         }
     }
-
-    const bool closingDirectNiriOverview =
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
-        (m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing || m_deactivatePending);
-    if (closingDirectNiriOverview && directNiriNativeHandoffActive())
-        return;
 
     const double borderProgress = progress;
     const bool niriWorkspaceTransitionBorders = m_workspaceTransition.active && m_workspaceTransition.monitor &&
