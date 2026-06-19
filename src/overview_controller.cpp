@@ -141,6 +141,61 @@ class OverviewOverlayPassElement final : public IPassElement {
     PHLMONITORREF       m_monitor;
 };
 
+class OverviewChromePassElement final : public IPassElement {
+  public:
+    OverviewChromePassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
+    }
+
+    std::vector<UP<IPassElement>> draw() override {
+        const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
+        if (!m_controller || !renderMonitor)
+            return {};
+
+        const auto expectedMonitor = m_monitor.lock();
+        if (!expectedMonitor || renderMonitor != expectedMonitor)
+            return {};
+
+        m_controller->renderSelectionChrome();
+        return {};
+    }
+
+    bool needsLiveBlur() override {
+        return false;
+    }
+
+    bool needsPrecomputeBlur() override {
+        return false;
+    }
+
+    bool undiscardable() override {
+        return true;
+    }
+
+    std::optional<CBox> boundingBox() override {
+        const auto monitor = m_monitor.lock();
+        if (!monitor)
+            return std::nullopt;
+
+        return CBox{{}, monitor->m_size};
+    }
+
+    CRegion opaqueRegion() override {
+        return {};
+    }
+
+    const char* passName() override {
+        return "OverviewChromePassElement";
+    }
+
+    ePassElementType type() override {
+        return EK_CUSTOM;
+    }
+
+  private:
+    OverviewController* m_controller = nullptr;
+    PHLMONITORREF       m_monitor;
+};
+
 class OverviewWallpaperPassElement final : public IPassElement {
   public:
     OverviewWallpaperPassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
@@ -3520,6 +3575,11 @@ void OverviewController::renderStage(eRenderStage stage) {
     } else if (stage == RENDER_POST_WINDOWS) {
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
         if (directNiriHandoff && directNiriNativeHandoffActive()) {
+            // Match the clean entry handoff: native windows/wallpaper can own the
+            // desktop sample, but the overview still owns selection chrome until
+            // deactivation. This prevents a one-frame native active-border blink
+            // or border dropout at the end of the close animation.
+            g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewChromePassElement>(this, monitor));
             if (m_deactivatePending) {
                 if (debugLogsEnabled())
                     debugLog("[hymission] post-windows queue deferred deactivate");
@@ -3532,12 +3592,14 @@ void OverviewController::renderStage(eRenderStage stage) {
 
         if (m_deactivatePending) {
             if (directNiriHandoff) {
-                // Closing finished after the layer phase in this frame. Keep one
-                // final overview-owned frame alive, damage again, then let the
-                // next frame render native layers first before deactivation. If
-                // no hidden layer is rendered on that monitor, this guard is the
-                // fallback that still lets the native handoff complete.
+                // Closing finished after the layer phase in this frame. Keep the
+                // selection chrome alive for the handoff frame, damage again,
+                // then let the next frame render native layers first before
+                // deactivation. If no hidden layer is rendered on that monitor,
+                // this guard is the fallback that still lets the native handoff
+                // complete.
                 armDirectNiriNativeHandoffGuard();
+                g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewChromePassElement>(this, monitor));
                 damageOwnedMonitors();
                 return;
             }
@@ -4521,20 +4583,6 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
                 << " monitor=" << monitor->m_name;
             debugLog(out.str());
         }
-        return;
-    }
-
-    const bool directNiriClosingBorderSuppression =
-        !emptyNiriExitOnMonitor && window && monitor && isVisible() && ownsMonitor(monitor) &&
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
-        (m_beginCloseInProgress || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing ||
-         m_deactivatePending || directNiriNativeHandoffActive());
-    if (directNiriClosingBorderSuppression) {
-        // Native desktop contents can render during the direct-Niri close handoff
-        // so transparent clients see the real desktop again. Keep Hyprland's
-        // native decorations suppressed until the overview has fully deactivated;
-        // otherwise the active border can blink through while the close frame is
-        // still overview-owned.
         return;
     }
 
@@ -13394,11 +13442,15 @@ void OverviewController::renderBackdrop() const {
 
 void OverviewController::renderSelectionChrome() const {
     const double progress = visualProgress();
-    if (progress <= 0.0)
-        return;
 
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
+        return;
+
+    const bool directNiriCloseChrome = (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_beginCloseInProgress || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing ||
+         m_deactivatePending || directNiriNativeHandoffActive());
+    if (progress <= 0.0 && !directNiriCloseChrome)
         return;
 
     const auto closingTargetsEmptyNiriWorkspaceOnMonitor = [&]() {
@@ -13422,13 +13474,10 @@ void OverviewController::renderSelectionChrome() const {
         });
     };
 
-    const bool closingDirectNiriOverview =
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
-        (m_beginCloseInProgress || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing || m_deactivatePending);
-    if (closingTargetsEmptyNiriWorkspaceOnMonitor() || closingDirectNiriOverview)
+    if (closingTargetsEmptyNiriWorkspaceOnMonitor())
         return;
 
-    const bool showFocusIndicator = showFocusIndicatorEnabled();
+    const bool showFocusIndicator = !directNiriCloseChrome && showFocusIndicatorEnabled();
 
     if (showFocusIndicator && m_state.hoveredIndex && *m_state.hoveredIndex < m_state.windows.size() &&
         m_state.windows[*m_state.hoveredIndex].targetMonitor == renderMonitor) {
@@ -13453,7 +13502,7 @@ void OverviewController::renderSelectionChrome() const {
         }
     }
 
-    const double borderProgress = progress;
+    const double borderProgress = directNiriCloseChrome ? 1.0 : progress;
     const bool niriWorkspaceTransitionBorders = m_workspaceTransition.active && m_workspaceTransition.monitor &&
         m_workspaceTransition.monitor == renderMonitor && m_state.collectionPolicy.onlyActiveWorkspace &&
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
