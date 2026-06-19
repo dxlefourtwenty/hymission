@@ -3483,6 +3483,13 @@ void OverviewController::renderStage(eRenderStage stage) {
         updateAnimation();
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
+        if (m_deactivatePending && (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state))) {
+            // Closing just reached the native desktop.  Do not draw the overview
+            // wallpaper/background pass behind real Hyprland windows anymore; the
+            // layer hook above has handed the background pass back to Hyprland.
+            scheduleDeactivate();
+            return;
+        }
         g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewWallpaperPassElement>(this, monitor));
         if ((isAnimating() || m_state.phase == Phase::ClosingSettle || m_state.relayoutActive || m_postOpenRefreshFrames > 0 ||
              m_stripSnapshotSurfaceFeedbackFrames > 0 || m_overviewSurfaceFeedbackFrames > 0) &&
@@ -4354,6 +4361,18 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
     }
 
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
+        const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
+        const bool closingAnimationReachedDesktop = m_state.phase == Phase::Closing && m_state.animationStart != std::chrono::steady_clock::time_point{} &&
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_state.animationStart).count() >= CLOSE_DURATION_MS - 8.0;
+        if (directNiriHandoff && (m_deactivatePending || closingAnimationReachedDesktop)) {
+            // Final direct-Niri close frame: give the background/layer pass back to
+            // Hyprland before transparent native windows are drawn.  Otherwise the
+            // window pass can sample the overview wallpaper viewport frame during
+            // the one-frame handoff between the plugin background pass and the
+            // normal compositor desktop.
+            m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
+            return;
+        }
         if (m_deactivatePending && !isNiriWallpaperLayer(layer, monitor) && !isRetainedNiriWallpaperLayoutLayer(layer, monitor)) {
             m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
             return;
@@ -4865,6 +4884,9 @@ bool OverviewController::surfaceNeedsLiveBlurHook(void* surfacePassThisptr) {
         !renderableManagedWindowFor(renderData->pWindow, monitor))
         return m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
 
+    if (m_deactivatePending && (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)))
+        return m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
+
     const float savedAlpha = renderData->alpha;
     renderData->alpha = managedPreviewAlphaFor(renderData->pWindow, savedAlpha);
     const bool needsBlur = m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
@@ -4883,6 +4905,9 @@ bool OverviewController::surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr
     auto  monitor = renderData ? renderData->pMonitor.lock() : PHLMONITOR{};
     if (!renderData || !renderData->pWindow || !monitor || !isVisible() || !ownsMonitor(monitor) ||
         !renderableManagedWindowFor(renderData->pWindow, monitor))
+        return m_surfaceNeedsPrecomputeBlurOriginal(surfacePassThisptr);
+
+    if (m_deactivatePending && (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)))
         return m_surfaceNeedsPrecomputeBlurOriginal(surfacePassThisptr);
 
     const float savedAlpha = renderData->alpha;
@@ -9479,6 +9504,9 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
 
     monitor = renderData->pMonitor.lock();
     if (!monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(renderData->pWindow, monitor))
+        return false;
+
+    if (m_deactivatePending && (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)))
         return false;
 
     snapshot = {
