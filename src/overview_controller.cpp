@@ -6033,9 +6033,18 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             std::max(managed->targetGlobal.y, contentGlobal.y);
         return overlapWidth > 1.0 && overlapHeight > 1.0;
     };
-    const bool preserveTargetEdgeCamera = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
-        directNiriOwnerEdgeCameraActive(target) && !targetFocusVisibleInOverview();
+    const auto targetNativeFocus = Desktop::focusState()->window();
+    const bool targetWorkspaceOwnsLiveNativeFocus = targetNativeFocus && targetNativeFocus->m_isMapped && !targetNativeFocus->m_pinned &&
+        workspace && targetNativeFocus->m_workspace == workspace;
+    const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
+        directNiriOwnerEdgeCameraActive(target);
+    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive &&
+        (!targetWorkspaceOwnsLiveNativeFocus || !targetFocusVisibleInOverview());
     if (preserveTargetEdgeCamera) {
+        // Preserve Hyprland's native scroll-past state when revisiting a workspace
+        // whose camera is already parked past the first/last column. Re-selecting
+        // a remembered leaf here recenters the workspace immediately and bypasses
+        // the native relayout animation path entirely.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
     }
