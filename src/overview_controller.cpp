@@ -19,7 +19,6 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -228,7 +227,6 @@ constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 OverviewController* g_controller = nullptr;
 std::unordered_map<std::string, std::function<SDispatchResult(std::string)>> g_openingDispatcherGateOriginals;
-std::unordered_set<uint32_t> g_overviewOpeningBlockedKeycodes;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
@@ -3747,41 +3745,19 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
         m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
 
     if (openingNiriSingleWorkspaceInputGate) {
-        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED)
-            g_overviewOpeningBlockedKeycodes.insert(event.keycode);
-        else if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED)
-            g_overviewOpeningBlockedKeycodes.erase(event.keycode);
-
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] block keyboard press during overview open"
+            out << "[hymission] block keyboard keybind during overview open"
                 << " keycode=" << event.keycode
                 << " state=" << event.state
-                << " modifiers=" << keyboard->getModifiers()
-                << " latched=" << g_overviewOpeningBlockedKeycodes.size();
+                << " modifiers=" << keyboard->getModifiers();
             debugLog(out.str());
         }
 
-        // Block press/repeat while the zoom-out is still opening. Do not consume
-        // releases, otherwise toggle-switch/release tracking can stay armed and
-        // make the next toggle look like a cycle instead of a close.
+        // Keybinds fire on press/repeat. Consume those while the zoom-out is
+        // still opening, but let releases through so the normal toggle/release
+        // session does not get stuck and overview toggle spam stays responsive.
         if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            info.cancelled = true;
-            return;
-        }
-    } else if (g_overviewOpeningBlockedKeycodes.contains(event.keycode)) {
-        if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-            g_overviewOpeningBlockedKeycodes.erase(event.keycode);
-        } else {
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] block latched opening key repeat"
-                    << " keycode=" << event.keycode
-                    << " state=" << event.state
-                    << " modifiers=" << keyboard->getModifiers()
-                    << " latched=" << g_overviewOpeningBlockedKeycodes.size();
-                debugLog(out.str());
-            }
             info.cancelled = true;
             return;
         }
@@ -7750,7 +7726,7 @@ bool OverviewController::installHooks() {
                     dispatcherLower.starts_with("hymission.");
                 const bool openingNiriSingleWorkspaceDispatcherGate = !hymissionControlDispatcher && isVisible() &&
                     m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
-                    (m_state.phase == Phase::Opening || m_postOpenRefreshFrames > 0 || !g_overviewOpeningBlockedKeycodes.empty());
+                    (m_state.phase == Phase::Opening || m_postOpenRefreshFrames > 0);
 
                 if (openingNiriSingleWorkspaceDispatcherGate) {
                     if (debugLogsEnabled()) {
@@ -7758,8 +7734,7 @@ bool OverviewController::installHooks() {
                         out << "[hymission] block dispatcher during overview open"
                             << " dispatcher=" << name
                             << " args=" << args
-                            << " phase=" << static_cast<int>(m_state.phase)
-                            << " latchedKeys=" << g_overviewOpeningBlockedKeycodes.size();
+                            << " phase=" << static_cast<int>(m_state.phase);
                         debugLog(out.str());
                     }
                     return {};
@@ -10767,7 +10742,6 @@ CRegion OverviewController::transformRegionForWindow(const PHLWINDOW& window, co
 }
 
 void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requestedScope) {
-    g_overviewOpeningBlockedKeycodes.clear();
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
     const bool freshOpen = !isVisible();
@@ -10923,7 +10897,6 @@ bool OverviewController::retargetGestureScope(ScopeOverride requestedScope) {
 }
 
 void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVisualOverride, bool deferFullscreenMutations) {
-    g_overviewOpeningBlockedKeycodes.clear();
     if (!isVisible())
         return;
 
@@ -11247,7 +11220,6 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 }
 
 void OverviewController::deactivate() {
-    g_overviewOpeningBlockedKeycodes.clear();
     setDamageTrackingOverride(false);
     const auto monitor = m_state.ownerMonitor;
     const auto ownedMonitors = m_state.participatingMonitors;

@@ -3858,7 +3858,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const auto blockNow = std::chrono::steady_clock::now();
     const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_workspaceSwipeGesture.active || (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
+        (m_state.phase != Phase::Active || m_postOpenRefreshFrames > 0 || m_workspaceSwipeGesture.active ||
+         (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
          (m_workspaceTransitionCommitScheduled && !retargetTimedNiriTransition) || m_applyingWorkspaceTransitionCommit ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
