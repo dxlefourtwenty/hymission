@@ -37,6 +37,18 @@ namespace {
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 bool             g_forceScrollingFinalLayoutBoxForOverview = false;
+std::chrono::steady_clock::time_point g_multiColumnEdgeFocusOverrideUntil;
+
+bool multiColumnEdgeFocusOverrideActive() {
+    if (g_multiColumnEdgeFocusOverrideUntil == std::chrono::steady_clock::time_point{})
+        return false;
+
+    if (std::chrono::steady_clock::now() <= g_multiColumnEdgeFocusOverrideUntil)
+        return true;
+
+    g_multiColumnEdgeFocusOverrideUntil = {};
+    return false;
+}
 
 class ScopedFlag {
   public:
@@ -2165,17 +2177,13 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
             return {};
         }
 
-        // A multi-column edge-camera state is the real scroll-past lane.  Do not
-        // borrow Hyprland's stale live/last focused leaf here: native scrolling can
-        // leave that pointer populated for a frame even though the visible camera is
-        // already parked in the focusless empty lane.  Only an explicit overview
-        // refocus (the reverse edge -> leaf path below) may own the active border.
-        if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
-            return overviewFocus;
-
-        if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
-            if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected && selected == state.focusDuringOverview)
-                return selected;
+        // Multi-column edge-camera is the real scroll-past state.  Do not borrow
+        // Hyprland's stale live/last leaf focus here.  A focused edge-camera leaf
+        // is only valid during the short reverse-scroll handoff window that
+        // Hymission arms after moving back from scroll-past toward the strip.
+        if (multiColumnEdgeFocusOverrideActive()) {
+            if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
+                return overviewFocus;
         }
 
         return {};
@@ -3909,6 +3917,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         m_hoverSelectionRetargetCandidateIndex.reset();
         m_hoverSelectionRetargetCandidateSince = {};
         m_hoverSelectionRetargetCandidatePrimed = false;
+        g_multiColumnEdgeFocusOverrideUntil = {};
         Desktop::focusState()->fullWindowFocus(nullptr, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
 
         if (debugLogsEnabled()) {
@@ -3928,8 +3937,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
         moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnTowardEdge;
+    const bool leafMoveColumnTowardEdge = !directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
-        edgeMoveColumnTowardEdge;
+        !edgeMoveColumnAwayFromEdge;
     const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() && !directEdgeCameraBefore &&
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
@@ -4167,17 +4178,18 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
-        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnAwayFromEdge &&
-            preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive() &&
+        const bool multiColumnEdgeCameraAfter = preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive() &&
             directNiriScrollingColumnCount(preferredWorkspace) != 1;
+        const bool movingIntoOrStayingAtEdge = leafMoveColumnTowardEdge || edgeMoveColumnTowardEdge || preserveNativeEdgeCameraFocusRelease;
+        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && multiColumnEdgeCameraAfter &&
+            (movingIntoOrStayingAtEdge || (!preferred && !edgeMoveColumnAwayFromEdge));
         if (nativeEdgeCameraFocusReleased) {
+            clearDirectNiriEdgeCameraFocusState("movecol-edge-release-after-dispatch");
+            preferred = PHLWINDOW{};
             // Match Hyprland's scrolling movecol edge behavior: once native
-            // layout scrolls past the last column, the overview must become
-            // focusless even if Hyprland still reports the old leaf as live focus.
+            // layout scrolls past the last column it calls fullWindowFocus(nullptr).
             // Re-selecting dispatchFocus here pins the overview to the last window
             // and makes the edge-camera pan snap after an in-flight windowsMove.
-            Desktop::focusState()->fullWindowFocus(nullptr, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-            preferred = PHLWINDOW{};
             m_state.selectedIndex.reset();
             m_state.focusDuringOverview.reset();
             m_queuedOverviewSelectionTarget.reset();
@@ -4192,7 +4204,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 out << "[hymission] niri movecol preserved native edge-camera focus release"
                     << " dispatcher=" << dispatcherName
                     << " workspace=" << debugWorkspaceLabel(preferredWorkspace)
-                    << " previous=" << debugWindowLabel(dispatchFocus);
+                    << " previous=" << debugWindowLabel(dispatchFocus)
+                    << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+                    << " edgeTowardEdge=" << (edgeMoveColumnTowardEdge ? 1 : 0)
+                    << " edgeAway=" << (edgeMoveColumnAwayFromEdge ? 1 : 0)
+                    << " multiColumnEdgeAfter=" << (multiColumnEdgeCameraAfter ? 1 : 0);
                 debugLog(out.str());
             }
         }
@@ -4214,6 +4230,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                     focusWindowCompat(preferred, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
+                g_multiColumnEdgeFocusOverrideUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(320);
                 (void)syncScrollingWorkspaceSpotOnWindow(preferred);
 
                 if (debugLogsEnabled()) {
@@ -4248,7 +4265,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
             // Ensure overview focus state matches the new focused window before
             // refreshing the layout scroll.
-            if (!nativeEdgeCameraFocusReleased && preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
+            if (preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
             }
