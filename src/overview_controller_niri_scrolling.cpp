@@ -2933,7 +2933,8 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
 
-    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling)) {
+    const bool allowWorkspaceTransitionCommitScrollSync = m_applyingWorkspaceTransitionCommit;
+    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling) && !allowWorkspaceTransitionCommitScrollSync) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (native camera in flight)"
@@ -2948,7 +2949,7 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     // state becomes stale, causing jitter.
     constexpr std::chrono::milliseconds scrollSyncDebounce{50};
     const auto now = std::chrono::steady_clock::now();
-    if (now - m_lastScrollSyncTime < scrollSyncDebounce) {
+    if (!allowWorkspaceTransitionCommitScrollSync && now - m_lastScrollSyncTime < scrollSyncDebounce) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (debounce)"
