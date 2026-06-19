@@ -6017,6 +6017,29 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         target.ownerWorkspace = workspace;
     refreshWorkspaceStripActivity(target, monitor, workspaceId);
 
+    const auto targetFocusVisibleInOverview = [&]() {
+        const auto* managed = targetFocus ? managedWindowFor(target, targetFocus, true) : nullptr;
+        if (!managed || !managed->targetMonitor)
+            return false;
+
+        const Rect contentLocal = overviewContentRectForMonitor(managed->targetMonitor, target);
+        const Rect contentGlobal = makeRect(managed->targetMonitor->m_position.x + contentLocal.x,
+                                            managed->targetMonitor->m_position.y + contentLocal.y,
+                                            contentLocal.width,
+                                            contentLocal.height);
+        const double overlapWidth = std::min(managed->targetGlobal.x + managed->targetGlobal.width, contentGlobal.x + contentGlobal.width) -
+            std::max(managed->targetGlobal.x, contentGlobal.x);
+        const double overlapHeight = std::min(managed->targetGlobal.y + managed->targetGlobal.height, contentGlobal.y + contentGlobal.height) -
+            std::max(managed->targetGlobal.y, contentGlobal.y);
+        return overlapWidth > 1.0 && overlapHeight > 1.0;
+    };
+    const bool preserveTargetEdgeCamera = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
+        directNiriOwnerEdgeCameraActive(target) && !targetFocusVisibleInOverview();
+    if (preserveTargetEdgeCamera) {
+        target.selectedIndex.reset();
+        target.focusDuringOverview.reset();
+    }
+
     target.phase = Phase::Active;
     target.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, target, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
     target.closeMode = m_state.closeMode;
@@ -6045,7 +6068,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .targetWorkspaceId = workspaceId,
         .targetWorkspaceName = overrides.front().workspaceName,
         .targetWorkspaceSyntheticEmpty = syntheticEmpty,
-        .targetEdgeCameraPreserved = !targetFocus && directNiriOwnerEdgeCameraActive(target),
+        .targetEdgeCameraPreserved = preserveTargetEdgeCamera,
         .sourceState = std::move(source),
         .targetState = std::move(target),
         .animationFromDelta = 0.0,
@@ -6058,7 +6081,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
     refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
-    if (targetFocus)
+    if (targetFocus && !preserveTargetEdgeCamera)
         m_state.focusDuringOverview = targetFocus;
     if (usesDirectNiriScrollingOverview(m_state) && workspaceStripEnabled(m_state)) {
         const bool animateStripRelayout = niriOverviewAnimationsEnabled();
@@ -6568,7 +6591,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             clearWindowFocusCompat(transitionMonitor);
         }
 
-        const bool targetHasFocusCandidateBeforeSwitch = !targetIsEmptyNiriWorkspace &&
+        const bool targetHasFocusCandidateBeforeSwitch = !targetIsEmptyNiriWorkspace && !preserveTargetEdgeCamera &&
             (preserveDirectNiriFocus || static_cast<bool>(targetWorkspace->getFocusCandidate()));
         transitionMonitor->changeWorkspace(targetWorkspace, true, true, targetHasFocusCandidateBeforeSwitch);
 
