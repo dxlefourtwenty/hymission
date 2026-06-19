@@ -3944,6 +3944,18 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool nativeEdgeCameraTransition = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge);
 
+    if (debugLogsEnabled() && overviewActive && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher)) {
+        std::ostringstream out;
+        out << "[hymission] niri movecol edge classification"
+            << " directEdgeBefore=" << (directEdgeCameraBefore ? 1 : 0)
+            << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+            << " edgeTowardEdge=" << (edgeMoveColumnTowardEdge ? 1 : 0)
+            << " edgeAway=" << (edgeMoveColumnAwayFromEdge ? 1 : 0)
+            << " nativeTransition=" << (nativeEdgeCameraTransition ? 1 : 0)
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+        debugLog(out.str());
+    }
+
     if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
         clearDirectNiriEdgeCameraFocusState(edgeMoveColumnTowardEdge ? "movecol-edge-noop" : "movefocus-edge-noop");
         damageOwnedMonitors();
@@ -4233,7 +4245,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
                 g_multiColumnEdgeFocusOverrideUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(320);
-                (void)syncScrollingWorkspaceSpotOnWindow(preferred);
 
                 if (debugLogsEnabled()) {
                     std::ostringstream out;
@@ -4260,7 +4271,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
-                if (isMoveFocusDispatcher || isSwapColumnLayoutMessage || edgeMoveColumnAwayFromEdge)
+                if (isMoveFocusDispatcher || isSwapColumnLayoutMessage)
                     (void)syncScrollingWorkspaceSpotOnWindow(preferred);
                 refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             }
