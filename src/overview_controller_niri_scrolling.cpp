@@ -2196,10 +2196,19 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
             return {};
         }
 
-        // Multi-column edge-camera is the actual focusless scroll-past state.
-        // Never borrow Hyprland's remembered/restored live focus here: that leaf
-        // focus is exactly what re-centers the workspace strip with no scrolling
-        // animation when the overview switches back to the scroll-past lane.
+        // Multi-column edge-camera is normally the focusless scroll-past state.
+        // However, a reverse movecol away from scroll-past explicitly restores
+        // m_state.focusDuringOverview to the leaf below. In that case, honor the
+        // overview-owned focus without borrowing Hyprland's stale remembered live
+        // focus from a workspace switch.
+        if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
+            return overviewFocus;
+
+        if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
+            if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected)
+                return selected;
+        }
+
         return {};
     }
 
@@ -4199,8 +4208,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
-        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !preferred && preferredWorkspace &&
-            isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive();
+        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnAwayFromEdge && !preferred &&
+            preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive();
         if (nativeEdgeCameraFocusReleased) {
             // Match Hyprland's scrolling movecol edge behavior: once native
             // layout scrolls past the last column it calls fullWindowFocus(nullptr).
@@ -4242,14 +4251,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                     focusWindowCompat(preferred, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
-                (void)syncScrollingWorkspaceSpotOnWindow(preferred);
+                const bool spotSynced = syncScrollingWorkspaceSpotOnWindow(preferred);
 
                 if (debugLogsEnabled()) {
                     std::ostringstream out;
                     out << "[hymission] niri edge camera restored leaf focus"
                         << " dispatcher=" << dispatcherName
                         << " workspace=" << debugWorkspaceLabel(preferredWorkspace)
-                        << " focus=" << debugWindowLabel(preferred);
+                        << " focus=" << debugWindowLabel(preferred)
+                        << " stillEdge=" << (directNiriEdgeCameraActive() ? 1 : 0)
+                        << " spotSynced=" << (spotSynced ? 1 : 0);
                     debugLog(out.str());
                 }
             }
