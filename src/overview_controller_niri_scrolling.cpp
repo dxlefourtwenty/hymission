@@ -419,12 +419,16 @@ bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolli
             if (!targetData || !targetData->target || targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
                 continue;
 
-            const CBox liveBox = targetData->target->position();
-            if (liveBox.width <= 1.0 || liveBox.height <= 1.0)
+            const auto window = targetData->target->window();
+            if (!window || !window->m_realPosition || !window->m_realSize)
                 continue;
 
-            if (std::abs(liveBox.x - targetData->layoutBox.x) > 0.5 || std::abs(liveBox.y - targetData->layoutBox.y) > 0.5 ||
-                std::abs(liveBox.width - targetData->layoutBox.width) > 0.5 || std::abs(liveBox.height - targetData->layoutBox.height) > 0.5)
+            const Vector2D livePosition = window->m_realPosition->value();
+            const Vector2D goalPosition = window->m_realPosition->goal();
+            const Vector2D liveSize = window->m_realSize->value();
+            const Vector2D goalSize = window->m_realSize->goal();
+            if (std::abs(livePosition.x - goalPosition.x) > 0.5 || std::abs(livePosition.y - goalPosition.y) > 0.5 ||
+                std::abs(liveSize.x - goalSize.x) > 0.5 || std::abs(liveSize.y - goalSize.y) > 0.5)
                 return true;
         }
     }
