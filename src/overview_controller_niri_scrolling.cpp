@@ -1740,7 +1740,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         return;
 
     m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
-    m_state.relayoutActive = targetChanged && (animateRefresh || captureTwoColumnRefresh);
+    const bool forcePreviousRectRelayout = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && animateRefresh;
+    m_state.relayoutActive = (targetChanged || forcePreviousRectRelayout) && (animateRefresh || captureTwoColumnRefresh);
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
     if (m_state.relayoutActive)
@@ -1750,6 +1751,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
             << " animate=" << (m_state.relayoutActive ? 1 : 0)
             << " targetChanged=" << (targetChanged ? 1 : 0)
+            << " forcePreviousRectRelayout=" << (forcePreviousRectRelayout ? 1 : 0)
             << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
             << " pendingSwapcol=" << (hasPendingSwapColumnRelayoutCommit(workspace) ? 1 : 0)
@@ -1801,7 +1803,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         return;
     }
 
-    const auto previousPreviewRects = syncScrollingSpot ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
+    const bool forceEdgeCameraFocusRelayout = sourceView.starts_with("window-active") && directNiriEdgeCameraActive() && liveFocusValid;
+    const auto previousPreviewRects = (syncScrollingSpot || forceEdgeCameraFocusRelayout) ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     PHLWINDOW focusTarget;
     if (preferredWindow && hasManagedWindow(preferredWindow))
         focusTarget = preferredWindow;
@@ -1855,7 +1858,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         latchHoverSelectionAnchor(g_pInputManager->getMouseCoordsInternal());
     }
 
-    refreshNiriScrollingOverviewAfterLayoutScroll(source, syncScrollingSpot ? &previousPreviewRects : nullptr);
+    refreshNiriScrollingOverviewAfterLayoutScroll(source, (syncScrollingSpot || forceEdgeCameraFocusRelayout) ? &previousPreviewRects : nullptr);
 }
 void OverviewController::refreshAfterOfficialScrollMove(const char* source) {
     refreshNiriScrollingOverviewAfterLayoutScroll(source);
@@ -2964,8 +2967,9 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
 
-    const bool allowWorkspaceTransitionCommitScrollSync = m_applyingWorkspaceTransitionCommit;
-    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling) && !allowWorkspaceTransitionCommitScrollSync) {
+    const bool allowAnimatedDirectNiriScrollSync = m_applyingWorkspaceTransitionCommit ||
+        (m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview() && niriOverviewAnimationsEnabled());
+    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling) && !allowAnimatedDirectNiriScrollSync) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (native camera in flight)"
@@ -2980,7 +2984,7 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     // state becomes stale, causing jitter.
     constexpr std::chrono::milliseconds scrollSyncDebounce{50};
     const auto now = std::chrono::steady_clock::now();
-    if (!allowWorkspaceTransitionCommitScrollSync && now - m_lastScrollSyncTime < scrollSyncDebounce) {
+    if (!allowAnimatedDirectNiriScrollSync && now - m_lastScrollSyncTime < scrollSyncDebounce) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (debounce)"
@@ -5380,6 +5384,14 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         }
 
         if (usesDirectNiriScrollingOverview(m_state)) {
+            // Direct-Niri live geometry can jump to Hyprland's final target as soon
+            // as the scrolling controller reflows from edge-camera/scroll-past back
+            // to a leaf. While the overview has a relayout animation armed, draw
+            // from the captured relayout origin instead of the live dynamic rect so
+            // every reflow visibly follows the windowsMove-style animation path.
+            if (m_state.relayoutActive)
+                return activeBaseRect();
+
             return dynamicRect;
         }
 
