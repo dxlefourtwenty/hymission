@@ -3510,7 +3510,12 @@ void OverviewController::renderStage(eRenderStage stage) {
         updateAnimation();
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
-        if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
+        const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
+        const bool closingAtNativeGeometry =
+            m_state.phase == Phase::Closing && visualProgress() <= DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
+        if (directNiriHandoff && (m_deactivatePending || closingAtNativeGeometry))
+            armDirectNiriNativeHandoffGuard();
+        if (directNiriHandoff && directNiriNativeHandoffActive()) {
             // The native wallpaper/layer pass is already back in Hyprland's hands
             // for this frame. Do not draw the overview wallpaper viewport pass
             // behind transparent native windows during the handoff.
@@ -11568,6 +11573,8 @@ void OverviewController::deactivate() {
     setDamageTrackingOverride(false);
     const auto monitor = m_state.ownerMonitor;
     const auto ownedMonitors = m_state.participatingMonitors;
+    const bool refreshDirectNiriCompositing =
+        m_state.collectionPolicy.onlyActiveWorkspace && (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state));
     const auto fullscreenActiveOriginal = m_fullscreenActiveOriginal;
     const auto fullscreenStateActiveOriginal = m_fullscreenStateActiveOriginal;
     const auto* desiredFullscreenBackup = fullscreenBackupForWindow(m_state.pendingExitFocus);
@@ -11758,10 +11765,20 @@ void OverviewController::deactivate() {
     resetDirectNiriWorkspaceLanes();
     m_state = {};
     for (const auto& ownedMonitor : ownedMonitors) {
+        if (!ownedMonitor)
+            continue;
+        if (refreshDirectNiriCompositing) {
+            ownedMonitor->m_blurFBDirty = true;
+            ownedMonitor->m_forceFullFrames = std::max(ownedMonitor->m_forceFullFrames, 3);
+        }
         g_pHyprRenderer->damageMonitor(ownedMonitor);
         g_pCompositor->scheduleFrameForMonitor(ownedMonitor);
     }
-    if (monitor) {
+    if (monitor && std::ranges::find(ownedMonitors, monitor) == ownedMonitors.end()) {
+        if (refreshDirectNiriCompositing) {
+            monitor->m_blurFBDirty = true;
+            monitor->m_forceFullFrames = std::max(monitor->m_forceFullFrames, 3);
+        }
         g_pHyprRenderer->damageMonitor(monitor);
         g_pCompositor->scheduleFrameForMonitor(monitor);
     }
