@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <hyprland/src/SharedDefs.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/devices/IKeyboard.hpp>
 #include <hyprland/src/devices/IPointer.hpp>
@@ -105,6 +106,7 @@ class OverviewController {
     [[nodiscard]] SDispatchResult focusWorkspaceOnCurrentMonitorDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult moveFocusDispatcherHook(std::string args);
+    [[nodiscard]] Config::Actions::ActionResult moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window);
     bool                surfaceNeedsLiveBlurHook(void* surfacePassThisptr);
     bool                surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr);
     std::vector<UP<IPassElement>> surfaceDrawHook(void* surfacePassThisptr);
@@ -884,6 +886,7 @@ class OverviewController {
     CFunctionHook*            m_scrollMoveGestureBeginFunctionHook = nullptr;
     CFunctionHook*            m_scrollMoveGestureUpdateFunctionHook = nullptr;
     CFunctionHook*            m_scrollMoveGestureEndFunctionHook = nullptr;
+    CFunctionHook*            m_moveToWorkspaceActionFunctionHook = nullptr;
     CFunctionHook*            m_handleGestureHook = nullptr;
     SurfaceGetTexBoxFn        m_surfaceTexBoxOriginal = nullptr;
     SurfaceBoundingBoxFn      m_surfaceBoundingBoxOriginal = nullptr;
@@ -923,6 +926,8 @@ class OverviewController {
     ScrollMoveGestureBeginFn  m_scrollMoveGestureBeginOriginal = nullptr;
     ScrollMoveGestureUpdateFn m_scrollMoveGestureUpdateOriginal = nullptr;
     ScrollMoveGestureEndFn    m_scrollMoveGestureEndOriginal = nullptr;
+    using MoveToWorkspaceActionFn = Config::Actions::ActionResult (*)(PHLWORKSPACE, bool, std::optional<PHLWINDOW>);
+    MoveToWorkspaceActionFn   m_moveToWorkspaceActionOriginal = nullptr;
     HandleGestureFn           m_handleGestureOriginal = nullptr;
     bool                      m_hooksActive = false;
     bool                      m_inputFollowMouseOverridden = false;

@@ -1972,6 +1972,13 @@ void hkWorkspaceSwipeEnd(void* gestureThisptr, const ITrackpadGesture::STrackpad
     g_controller->workspaceSwipeEndHook(gestureThisptr, e);
 }
 
+Config::Actions::ActionResult hkMoveToWorkspaceAction(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window) {
+    if (!g_controller)
+        return {};
+
+    return g_controller->moveToWorkspaceActionHook(std::move(workspace), silent, std::move(window));
+}
+
 void hkUnifiedWorkspaceSwipeBegin(void* gestureThisptr) {
     if (!g_controller)
         return;
@@ -2072,6 +2079,8 @@ OverviewController::~OverviewController() {
         m_scrollMoveGestureUpdateFunctionHook->unhook();
     if (m_scrollMoveGestureEndFunctionHook)
         m_scrollMoveGestureEndFunctionHook->unhook();
+    if (m_moveToWorkspaceActionFunctionHook)
+        m_moveToWorkspaceActionFunctionHook->unhook();
 
     if (m_surfaceTexBoxHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_surfaceTexBoxHook);
@@ -2113,6 +2122,8 @@ OverviewController::~OverviewController() {
         HyprlandAPI::removeFunctionHook(m_handle, m_scrollMoveGestureUpdateFunctionHook);
     if (m_scrollMoveGestureEndFunctionHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_scrollMoveGestureEndFunctionHook);
+    if (m_moveToWorkspaceActionFunctionHook)
+        HyprlandAPI::removeFunctionHook(m_handle, m_moveToWorkspaceActionFunctionHook);
     if (m_handleGestureHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_handleGestureHook);
 
@@ -7587,6 +7598,8 @@ bool OverviewController::installHooks() {
     (void)hookFunction("begin", "CScrollMoveTrackpadGesture::begin(", m_scrollMoveGestureBeginFunctionHook, reinterpret_cast<void*>(&hkScrollMoveGestureBegin));
     (void)hookFunction("update", "CScrollMoveTrackpadGesture::update(", m_scrollMoveGestureUpdateFunctionHook, reinterpret_cast<void*>(&hkScrollMoveGestureUpdate));
     (void)hookFunction("end", "CScrollMoveTrackpadGesture::end(", m_scrollMoveGestureEndFunctionHook, reinterpret_cast<void*>(&hkScrollMoveGestureEnd));
+    (void)hookFunction("moveToWorkspace", "Config::Actions::moveToWorkspace(", m_moveToWorkspaceActionFunctionHook,
+                       reinterpret_cast<void*>(&hkMoveToWorkspaceAction));
 
     m_shouldRenderWindowOriginal = nullptr;
     m_surfaceTexBoxOriginal = nullptr;
@@ -7617,6 +7630,7 @@ bool OverviewController::installHooks() {
     m_scrollMoveGestureBeginOriginal = nullptr;
     m_scrollMoveGestureUpdateOriginal = nullptr;
     m_scrollMoveGestureEndOriginal = nullptr;
+    m_moveToWorkspaceActionOriginal = nullptr;
 
     activateOptionalHook(m_workspaceSwipeBeginFunctionHook, m_workspaceSwipeBeginOriginal, "workspace swipe begin");
     activateOptionalHook(m_workspaceSwipeUpdateFunctionHook, m_workspaceSwipeUpdateOriginal, "workspace swipe update");
@@ -7627,6 +7641,7 @@ bool OverviewController::installHooks() {
     activateOptionalHook(m_scrollMoveGestureBeginFunctionHook, m_scrollMoveGestureBeginOriginal, "scroll move gesture begin");
     activateOptionalHook(m_scrollMoveGestureUpdateFunctionHook, m_scrollMoveGestureUpdateOriginal, "scroll move gesture update");
     activateOptionalHook(m_scrollMoveGestureEndFunctionHook, m_scrollMoveGestureEndOriginal, "scroll move gesture end");
+    activateOptionalHook(m_moveToWorkspaceActionFunctionHook, m_moveToWorkspaceActionOriginal, "move to workspace action");
     return true;
 }
 

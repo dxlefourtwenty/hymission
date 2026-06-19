@@ -3588,6 +3588,44 @@ SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     return result;
 }
 
+Config::Actions::ActionResult OverviewController::moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window) {
+    if (!m_moveToWorkspaceActionOriginal)
+        return {};
+
+    const auto movedWindow = window.value_or(Desktop::focusState()->window());
+    const bool canRouteThroughOverviewTransition = !silent && !m_overviewEditingDispatcherInProgress && workspace && !workspace->m_isSpecialWorkspace &&
+        isVisible() && m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview() && movedWindow && movedWindow == selectedWindow() &&
+        movedWindow->m_isMapped && hasManagedWindow(movedWindow);
+    if (!canRouteThroughOverviewTransition)
+        return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
+
+    const auto legacyDispatcher = m_overviewEditingDispatchersOriginal.find("movetoworkspace");
+    if (legacyDispatcher == m_overviewEditingDispatchersOriginal.end())
+        return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] intercept direct niri move-to-workspace action"
+            << " target=" << debugWorkspaceLabel(workspace)
+            << " window=" << debugWindowLabel(movedWindow);
+        debugLog(out.str());
+    }
+
+    const auto result = runOverviewEditingDispatcher("movetoworkspace", &legacyDispatcher->second, std::to_string(workspace->m_id));
+    if (result.success)
+        return {};
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri move-to-workspace action fallback"
+            << " target=" << debugWorkspaceLabel(workspace)
+            << " error=" << result.error;
+        debugLog(out.str());
+    }
+
+    return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
+}
+
 std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore) {
     std::string workspaceArgs = args;
     PHLWINDOW   movedWindow = selectedBefore;
