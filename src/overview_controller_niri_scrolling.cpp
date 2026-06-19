@@ -376,6 +376,25 @@ bool moveColumnCommandTargetsEdge(Layout::Tiled::CScrollingAlgorithm* scrolling,
     return prefersNext && !prefersPrevious;
 }
 
+bool moveColumnCommandLeavesFocusedColumn(Layout::Tiled::CScrollingAlgorithm* scrolling, const PHLWINDOW& window,
+                                          std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.empty() || !window)
+        return false;
+
+    const auto target = window->layoutTarget();
+    const auto targetData = target ? scrolling->dataFor(target) : nullptr;
+    const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+    if (!column)
+        return false;
+
+    const bool prefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
+    const bool prefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
+    if (prefersPrevious && !prefersNext)
+        return column == scrolling->m_scrollingData->columns.front();
+
+    return prefersNext && !prefersPrevious && column == scrolling->m_scrollingData->columns.back();
+}
+
 bool scrollingNativeGeometryInFlight(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     if (!scrolling || !scrolling->m_scrollingData)
         return false;
@@ -3763,6 +3782,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnTowardEdge;
     const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
+    const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() && !directEdgeCameraBefore &&
+        (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
+        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
 
     if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
         clearDirectNiriEdgeCameraFocusState(edgeMoveColumnTowardEdge ? "movecol-edge-noop" : "movefocus-edge-noop");
@@ -3842,7 +3864,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
     const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
-    const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
+    const bool animateDirectStripRelayout = !handOffInterruptedLeafToNativeEdge && niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
     if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
         // Key repeat can dispatch the last leaf -> scroll-past movecol between
@@ -3987,6 +4009,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
         if (!result.success)
             return result;
+
+        if (handOffInterruptedLeafToNativeEdge && directNiriEdgeCameraActive()) {
+            finishOverviewRelayoutAnimation();
+            if (debugLogsEnabled())
+                debugLog("[hymission] niri movecol handed interrupted leaf animation to native edge camera");
+        }
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
