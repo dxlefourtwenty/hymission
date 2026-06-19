@@ -1096,6 +1096,8 @@ using niri_scrolling_detail::twoColumnSwapTraceActive;
 
 // Exact-mode OverviewController member implementations are kept below.
 
+std::size_t directNiriScrollingColumnCount(const PHLWORKSPACE& workspace);
+
 bool OverviewController::niriModeEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode", 0) != 0;
 }
