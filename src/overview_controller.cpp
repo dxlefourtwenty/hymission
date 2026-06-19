@@ -6065,34 +6065,16 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         target.ownerWorkspace = workspace;
     refreshWorkspaceStripActivity(target, monitor, workspaceId);
 
-    const auto targetFocusVisibleInOverview = [&]() {
-        const auto* managed = targetFocus ? managedWindowFor(target, targetFocus, true) : nullptr;
-        if (!managed || !managed->targetMonitor)
-            return false;
-
-        const Rect contentLocal = overviewContentRectForMonitor(managed->targetMonitor, target);
-        const Rect contentGlobal = makeRect(managed->targetMonitor->m_position.x + contentLocal.x,
-                                            managed->targetMonitor->m_position.y + contentLocal.y,
-                                            contentLocal.width,
-                                            contentLocal.height);
-        const double overlapWidth = std::min(managed->targetGlobal.x + managed->targetGlobal.width, contentGlobal.x + contentGlobal.width) -
-            std::max(managed->targetGlobal.x, contentGlobal.x);
-        const double overlapHeight = std::min(managed->targetGlobal.y + managed->targetGlobal.height, contentGlobal.y + contentGlobal.height) -
-            std::max(managed->targetGlobal.y, contentGlobal.y);
-        return overlapWidth > 1.0 && overlapHeight > 1.0;
-    };
-    const bool targetFocusNativeVisible = targetFocus && scrollingWindowIntersectsNativeViewport(targetFocus);
     const bool targetWorkspaceHasSingleScrollingColumn = scrollingWorkspaceHasSingleColumn(workspace);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
-    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn &&
-        (!targetFocus || (!targetFocusNativeVisible && !targetFocusVisibleInOverview()));
+    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn;
     if (preserveTargetEdgeCamera) {
-        // Preserve Hyprland's native scroll-past state only when the remembered
-        // leaf is genuinely outside both the native viewport and overview target.
-        // A centered partial first/last column can still report an edge-camera
-        // offset, but Hyprland treats that as a normal focused leaf, not a
-        // focus-released scroll-past state.
+        // A multi-column scrolling workspace in Hyprland's edge-camera range is
+        // the scroll-past empty viewport. Switching away and back must preserve
+        // that focusless camera state even if the remembered/last-focused leaf can
+        // be rebuilt into an overview-visible rect. Only single-column workspaces
+        // are exempt so centered partial single columns still get their focus handoff.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
     }
@@ -6488,7 +6470,7 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (!alreadyActive) {
         const auto oldWorkspace = transitionMonitor->m_activeWorkspace;
 
-        if (targetIsEmptyNiriWorkspace) {
+        if (targetIsEmptyNiriWorkspace || preserveTargetEdgeCamera) {
             targetWorkspace->m_lastFocusedWindow = PHLWINDOW{};
             clearWindowFocusCompat(transitionMonitor);
         } else if (targetFocus) {
@@ -6650,7 +6632,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
 
         const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && next.collectionPolicy.onlyActiveWorkspace &&
             (targetWorkspaceSyntheticEmpty || next.windows.empty());
-        if (targetIsEmptyNiriWorkspace) {
+        if (targetIsEmptyNiriWorkspace || preserveTargetEdgeCamera) {
             targetWorkspace->m_lastFocusedWindow = PHLWINDOW{};
             clearWindowFocusCompat(transitionMonitor);
         }
@@ -13057,9 +13039,19 @@ const OverviewController::ManagedWindow* OverviewController::focusedManagedForBo
         focusedWindow = state.focusDuringOverview;
 
     auto focusedManaged = managedWindowFor(state, focusedWindow, true);
-    if (!focusedManaged && !edgeCameraActive) {
+    if (!focusedManaged) {
         focusedWindow = Desktop::focusState()->window();
-        focusedManaged = managedWindowFor(state, focusedWindow, true);
+
+        const bool liveFocusBelongsToOwnerWorkspace = focusedWindow && focusedWindow->m_isMapped && !focusedWindow->m_pinned && state.ownerWorkspace &&
+            focusedWindow->m_workspace == state.ownerWorkspace;
+
+        // In direct Niri scroll-past, Hyprland intentionally clears native focus.
+        // While that native focus is null, do not fall back to any stale previous
+        // window for the active border.  Once Hyprland restores a real leaf focus
+        // while the offset is still technically in the edge-camera range, allow
+        // that live focus to own the active border immediately.
+        if (!edgeCameraActive || liveFocusBelongsToOwnerWorkspace)
+            focusedManaged = managedWindowFor(state, focusedWindow, true);
     }
 
     if (!focusedManaged || !focusedManaged->window || focusedManaged->targetMonitor != renderMonitor)
