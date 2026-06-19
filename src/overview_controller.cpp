@@ -2229,6 +2229,15 @@ bool OverviewController::initialize() {
         recordWindowActivation(window);
         if (m_applyingWorkspaceTransitionCommit)
             return;
+        if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview()) {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] defer window.active refresh to overview dispatcher"
+                    << " active=" << debugWindowLabel(window);
+                debugLog(out.str());
+            }
+            return;
+        }
         if (timedNiriSingleWorkspaceTransitionActive() && window && window != m_workspaceTransition.targetState.focusDuringOverview && window->m_workspace &&
             window->m_workspace->m_id == m_workspaceTransition.targetWorkspaceId) {
             if (debugLogsEnabled()) {
