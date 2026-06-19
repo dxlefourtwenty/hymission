@@ -3941,10 +3941,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
         !edgeMoveColumnAwayFromEdge;
-    const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() && !directEdgeCameraBefore &&
-        (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !multiColumnEdgeFocusOverrideActive() &&
-        scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
-        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool nativeEdgeCameraTransition = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+        (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge);
 
     if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
         clearDirectNiriEdgeCameraFocusState(edgeMoveColumnTowardEdge ? "movecol-edge-noop" : "movefocus-edge-noop");
@@ -4023,8 +4021,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
     const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
-    const bool animateDirectStripRelayout = !handOffInterruptedLeafToNativeEdge && niriOverviewAnimationsEnabled() &&
+    const bool animateDirectStripRelayout = !nativeEdgeCameraTransition && niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
+    if (nativeEdgeCameraTransition && m_state.relayoutActive) {
+        m_relayoutProgressAnimation.reset();
+        m_state.relayoutProgress = 1.0;
+        m_state.relayoutActive = false;
+        m_state.relayoutStart = {};
+
+        if (debugLogsEnabled())
+            debugLog("[hymission] niri edge transition handed relayout to native window geometry");
+    }
     if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
         // Key repeat can dispatch the last leaf -> scroll-past movecol between
         // render ticks.  The visible windowsMove progress lives on the Hyprland
@@ -4170,12 +4177,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
         if (!result.success)
             return result;
-
-        if (handOffInterruptedLeafToNativeEdge && directNiriEdgeCameraActive()) {
-            finishOverviewRelayoutAnimation();
-            if (debugLogsEnabled())
-                debugLog("[hymission] niri movecol handed interrupted leaf animation to native edge camera");
-        }
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
