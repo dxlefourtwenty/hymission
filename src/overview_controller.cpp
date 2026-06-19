@@ -8,6 +8,7 @@
 #include <cctype>
 #include <expected>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <linux/input-event-codes.h>
 #include <numeric>
@@ -18,6 +19,7 @@
 #include <string_view>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -226,6 +228,7 @@ constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 OverviewController* g_controller = nullptr;
 std::unordered_map<std::string, std::function<SDispatchResult(std::string)>> g_openingDispatcherGateOriginals;
+std::unordered_set<uint32_t> g_overviewOpeningBlockedKeycodes;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
@@ -234,8 +237,10 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
+        lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
         lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+        lowered.starts_with("movecol") || lowered.starts_with("movecolumn") || lowered.starts_with("swapcol") || lowered.starts_with("swapcolumn") ||
         lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
         lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
@@ -3738,17 +3743,48 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
     if (!shouldHandleInput())
         return;
 
-    if (m_state.phase == Phase::Opening) {
+    const bool openingNiriSingleWorkspaceInputGate =
+        m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
+
+    if (openingNiriSingleWorkspaceInputGate) {
+        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED)
+            g_overviewOpeningBlockedKeycodes.insert(event.keycode);
+        else if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED)
+            g_overviewOpeningBlockedKeycodes.erase(event.keycode);
+
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] block keyboard event during overview open"
+            out << "[hymission] block keyboard press during overview open"
                 << " keycode=" << event.keycode
                 << " state=" << event.state
-                << " modifiers=" << keyboard->getModifiers();
+                << " modifiers=" << keyboard->getModifiers()
+                << " latched=" << g_overviewOpeningBlockedKeycodes.size();
             debugLog(out.str());
         }
-        info.cancelled = true;
-        return;
+
+        // Block press/repeat while the zoom-out is still opening. Do not consume
+        // releases, otherwise toggle-switch/release tracking can stay armed and
+        // make the next toggle look like a cycle instead of a close.
+        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            info.cancelled = true;
+            return;
+        }
+    } else if (g_overviewOpeningBlockedKeycodes.contains(event.keycode)) {
+        if (event.state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+            g_overviewOpeningBlockedKeycodes.erase(event.keycode);
+        } else {
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] block latched opening key repeat"
+                    << " keycode=" << event.keycode
+                    << " state=" << event.state
+                    << " modifiers=" << keyboard->getModifiers()
+                    << " latched=" << g_overviewOpeningBlockedKeycodes.size();
+                debugLog(out.str());
+            }
+            info.cancelled = true;
+            return;
+        }
     }
 
     if (m_state.phase == Phase::Closing)
@@ -7653,6 +7689,10 @@ bool OverviewController::installHooks() {
         "setfloating",
         "settiled",
         "pin",
+        "movecol",
+        "movecolumn",
+        "swapcol",
+        "swapcolumn",
         "movewindowpixel",
         "resizewindowpixel",
         "window.move",
@@ -7704,12 +7744,22 @@ bool OverviewController::installHooks() {
 
             g_openingDispatcherGateOriginals[name] = original;
             it->second = [this, name](std::string args) -> SDispatchResult {
-                if (isVisible() && m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+                const std::string dispatcherLower = asciiLowerCopy(name);
+                const bool hymissionControlDispatcher = dispatcherLower == "hymission:toggle" || dispatcherLower == "hymission:open" ||
+                    dispatcherLower == "hymission:close" || dispatcherLower == "hymission:debug_current_layout" ||
+                    dispatcherLower.starts_with("hymission.");
+                const bool openingNiriSingleWorkspaceDispatcherGate = !hymissionControlDispatcher && isVisible() &&
+                    m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+                    (m_state.phase == Phase::Opening || m_postOpenRefreshFrames > 0 || !g_overviewOpeningBlockedKeycodes.empty());
+
+                if (openingNiriSingleWorkspaceDispatcherGate) {
                     if (debugLogsEnabled()) {
                         std::ostringstream out;
                         out << "[hymission] block dispatcher during overview open"
                             << " dispatcher=" << name
-                            << " args=" << args;
+                            << " args=" << args
+                            << " phase=" << static_cast<int>(m_state.phase)
+                            << " latchedKeys=" << g_overviewOpeningBlockedKeycodes.size();
                         debugLog(out.str());
                     }
                     return {};
@@ -10717,6 +10767,7 @@ CRegion OverviewController::transformRegionForWindow(const PHLWINDOW& window, co
 }
 
 void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requestedScope) {
+    g_overviewOpeningBlockedKeycodes.clear();
     setDamageTrackingOverride(true);
     setAnimationsEnabledOverride(false);
     const bool freshOpen = !isVisible();
@@ -10872,6 +10923,7 @@ bool OverviewController::retargetGestureScope(ScopeOverride requestedScope) {
 }
 
 void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVisualOverride, bool deferFullscreenMutations) {
+    g_overviewOpeningBlockedKeycodes.clear();
     if (!isVisible())
         return;
 
@@ -11195,6 +11247,7 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
 }
 
 void OverviewController::deactivate() {
+    g_overviewOpeningBlockedKeycodes.clear();
     setDamageTrackingOverride(false);
     const auto monitor = m_state.ownerMonitor;
     const auto ownedMonitors = m_state.participatingMonitors;
