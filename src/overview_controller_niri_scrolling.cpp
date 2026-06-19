@@ -4039,17 +4039,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
     const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
-    const bool animateDirectStripRelayout = !nativeEdgeCameraTransition && niriOverviewAnimationsEnabled() &&
+    const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
-    if (nativeEdgeCameraTransition && m_state.relayoutActive) {
-        m_relayoutProgressAnimation.reset();
-        m_state.relayoutProgress = 1.0;
-        m_state.relayoutActive = false;
-        m_state.relayoutStart = {};
-
-        if (debugLogsEnabled())
-            debugLog("[hymission] niri edge transition handed relayout to native window geometry");
-    }
     if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
         // Key repeat can dispatch the last leaf -> scroll-past movecol between
         // render ticks.  The visible windowsMove progress lives on the Hyprland
@@ -4272,11 +4263,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             // overview state is rebuilt. Previously only movefocus was synced here,
             // causing movecol/swapcol to rebuild state on stale layout data.
             const char* relayoutSource = nativeEdgeCameraFocusReleased ? "movecol-edge-release" :
-                ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus");
+                (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
+                 ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus"));
 
             if (nativeEdgeCameraTransition) {
                 if (debugLogsEnabled())
-                    debugLog("[hymission] niri movecol native edge transition kept live geometry");
+                    debugLog("[hymission] niri movecol edge transition retargeted overview relayout");
+                refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
