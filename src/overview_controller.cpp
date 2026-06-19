@@ -237,6 +237,20 @@ constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardb
 OverviewController* g_controller = nullptr;
 std::unordered_map<std::string, std::function<SDispatchResult(std::string)>> g_openingDispatcherGateOriginals;
 
+using LayoutMessageActionFn = Config::Actions::ActionResult (*)(const std::string&);
+using MoveFocusActionFn = Config::Actions::ActionResult (*)(Math::eDirection);
+using MoveInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
+using SwapInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
+
+CFunctionHook* g_layoutMessageActionHook = nullptr;
+CFunctionHook* g_moveFocusActionHook = nullptr;
+CFunctionHook* g_moveInDirectionActionHook = nullptr;
+CFunctionHook* g_swapInDirectionActionHook = nullptr;
+LayoutMessageActionFn g_layoutMessageActionOriginal = nullptr;
+MoveFocusActionFn g_moveFocusActionOriginal = nullptr;
+MoveInDirectionActionFn g_moveInDirectionActionOriginal = nullptr;
+SwapInDirectionActionFn g_swapInDirectionActionOriginal = nullptr;
+
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
 bool isOverviewEditingDispatcherCandidate(std::string_view name) {
@@ -283,6 +297,39 @@ void settleOverviewOpenInputBarrier() {
     if (niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewOpenInputBlockUntil)
         niri_scrolling_detail::overviewOpenInputBlockUntil = {};
+}
+
+bool shouldSuppressNativeActionDuringOverviewOpen() {
+    clearExpiredOverviewOpenInputBarrier();
+    return g_controller && overviewOpenInputBarrierActive();
+}
+
+Config::Actions::ActionResult hkLayoutMessageAction(const std::string& msg) {
+    if (shouldSuppressNativeActionDuringOverviewOpen())
+        return {};
+
+    return g_layoutMessageActionOriginal ? g_layoutMessageActionOriginal(msg) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkMoveFocusAction(Math::eDirection direction) {
+    if (shouldSuppressNativeActionDuringOverviewOpen())
+        return {};
+
+    return g_moveFocusActionOriginal ? g_moveFocusActionOriginal(direction) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkMoveInDirectionAction(Math::eDirection direction, std::optional<PHLWINDOW> window) {
+    if (shouldSuppressNativeActionDuringOverviewOpen())
+        return {};
+
+    return g_moveInDirectionActionOriginal ? g_moveInDirectionActionOriginal(direction, std::move(window)) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkSwapInDirectionAction(Math::eDirection direction, std::optional<PHLWINDOW> window) {
+    if (shouldSuppressNativeActionDuringOverviewOpen())
+        return {};
+
+    return g_swapInDirectionActionOriginal ? g_swapInDirectionActionOriginal(direction, std::move(window)) : Config::Actions::ActionResult{};
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2172,6 +2219,14 @@ OverviewController::~OverviewController() {
         m_scrollMoveGestureEndFunctionHook->unhook();
     if (m_moveToWorkspaceActionFunctionHook)
         m_moveToWorkspaceActionFunctionHook->unhook();
+    if (g_layoutMessageActionHook)
+        g_layoutMessageActionHook->unhook();
+    if (g_moveFocusActionHook)
+        g_moveFocusActionHook->unhook();
+    if (g_moveInDirectionActionHook)
+        g_moveInDirectionActionHook->unhook();
+    if (g_swapInDirectionActionHook)
+        g_swapInDirectionActionHook->unhook();
 
     if (m_surfaceTexBoxHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_surfaceTexBoxHook);
@@ -2215,9 +2270,30 @@ OverviewController::~OverviewController() {
         HyprlandAPI::removeFunctionHook(m_handle, m_scrollMoveGestureEndFunctionHook);
     if (m_moveToWorkspaceActionFunctionHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_moveToWorkspaceActionFunctionHook);
+    if (g_layoutMessageActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_layoutMessageActionHook);
+        g_layoutMessageActionHook = nullptr;
+        g_layoutMessageActionOriginal = nullptr;
+    }
+    if (g_moveFocusActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_moveFocusActionHook);
+        g_moveFocusActionHook = nullptr;
+        g_moveFocusActionOriginal = nullptr;
+    }
+    if (g_moveInDirectionActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_moveInDirectionActionHook);
+        g_moveInDirectionActionHook = nullptr;
+        g_moveInDirectionActionOriginal = nullptr;
+    }
+    if (g_swapInDirectionActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_swapInDirectionActionHook);
+        g_swapInDirectionActionHook = nullptr;
+        g_swapInDirectionActionOriginal = nullptr;
+    }
     if (m_handleGestureHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_handleGestureHook);
 
+    niri_scrolling_detail::overviewOpenInputBlockUntil = {};
     g_controller = nullptr;
 }
 
@@ -7800,6 +7876,10 @@ bool OverviewController::installHooks() {
     (void)hookFunction("end", "CScrollMoveTrackpadGesture::end(", m_scrollMoveGestureEndFunctionHook, reinterpret_cast<void*>(&hkScrollMoveGestureEnd));
     (void)hookFunction("moveToWorkspace", "Config::Actions::moveToWorkspace(", m_moveToWorkspaceActionFunctionHook,
                        reinterpret_cast<void*>(&hkMoveToWorkspaceAction));
+    (void)hookFunction("layoutMessage", "Config::Actions::layoutMessage(", g_layoutMessageActionHook, reinterpret_cast<void*>(&hkLayoutMessageAction));
+    (void)hookFunction("moveFocus", "Config::Actions::moveFocus(", g_moveFocusActionHook, reinterpret_cast<void*>(&hkMoveFocusAction));
+    (void)hookFunction("moveInDirection", "Config::Actions::moveInDirection(", g_moveInDirectionActionHook, reinterpret_cast<void*>(&hkMoveInDirectionAction));
+    (void)hookFunction("swapInDirection", "Config::Actions::swapInDirection(", g_swapInDirectionActionHook, reinterpret_cast<void*>(&hkSwapInDirectionAction));
 
     m_shouldRenderWindowOriginal = nullptr;
     m_surfaceTexBoxOriginal = nullptr;
@@ -7831,6 +7911,10 @@ bool OverviewController::installHooks() {
     m_scrollMoveGestureUpdateOriginal = nullptr;
     m_scrollMoveGestureEndOriginal = nullptr;
     m_moveToWorkspaceActionOriginal = nullptr;
+    g_layoutMessageActionOriginal = nullptr;
+    g_moveFocusActionOriginal = nullptr;
+    g_moveInDirectionActionOriginal = nullptr;
+    g_swapInDirectionActionOriginal = nullptr;
 
     activateOptionalHook(m_workspaceSwipeBeginFunctionHook, m_workspaceSwipeBeginOriginal, "workspace swipe begin");
     activateOptionalHook(m_workspaceSwipeUpdateFunctionHook, m_workspaceSwipeUpdateOriginal, "workspace swipe update");
@@ -7842,6 +7926,10 @@ bool OverviewController::installHooks() {
     activateOptionalHook(m_scrollMoveGestureUpdateFunctionHook, m_scrollMoveGestureUpdateOriginal, "scroll move gesture update");
     activateOptionalHook(m_scrollMoveGestureEndFunctionHook, m_scrollMoveGestureEndOriginal, "scroll move gesture end");
     activateOptionalHook(m_moveToWorkspaceActionFunctionHook, m_moveToWorkspaceActionOriginal, "move to workspace action");
+    activateOptionalHook(g_layoutMessageActionHook, g_layoutMessageActionOriginal, "layout message action");
+    activateOptionalHook(g_moveFocusActionHook, g_moveFocusActionOriginal, "move focus action");
+    activateOptionalHook(g_moveInDirectionActionHook, g_moveInDirectionActionOriginal, "move window action");
+    activateOptionalHook(g_swapInDirectionActionHook, g_swapInDirectionActionOriginal, "swap window action");
     return true;
 }
 
