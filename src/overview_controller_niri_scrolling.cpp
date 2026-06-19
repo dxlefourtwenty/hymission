@@ -983,18 +983,18 @@ const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
 }
 
 
+} // namespace
+
 bool overviewOpenInputBarrierActive() {
-    return niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
-        std::chrono::steady_clock::now() < niri_scrolling_detail::overviewOpenInputBlockUntil;
+    return overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < overviewOpenInputBlockUntil;
 }
 
 void clearExpiredOverviewOpenInputBarrier() {
-    if (niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
-        std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewOpenInputBlockUntil)
-        niri_scrolling_detail::overviewOpenInputBlockUntil = {};
+    if (overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() >= overviewOpenInputBlockUntil)
+        overviewOpenInputBlockUntil = {};
 }
-
-} // namespace
 
 SP<Hyprutils::Animation::SAnimationPropertyConfig> windowsMoveAnimationConfig() {
     const auto& tree = Config::animationTree();
@@ -1119,7 +1119,9 @@ using niri_scrolling_detail::armTwoColumnSwapTrace;
 using niri_scrolling_detail::armPendingTwoColumnSwapRepair;
 using niri_scrolling_detail::clearPendingTwoColumnSwapRepair;
 using niri_scrolling_detail::consumePendingTwoColumnSwapRepair;
+using niri_scrolling_detail::clearExpiredOverviewOpenInputBarrier;
 using niri_scrolling_detail::consumeTwoColumnSwapPreviewTrace;
+using niri_scrolling_detail::overviewOpenInputBarrierActive;
 using niri_scrolling_detail::shouldWrapWorkspaceIds;
 using niri_scrolling_detail::twoColumnSwapTraceActive;
 

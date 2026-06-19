@@ -279,7 +279,7 @@ void settleOverviewOpenInputBarrier() {
     niri_scrolling_detail::overviewOpenInputBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_INPUT_POST_SETTLE;
 }
 
-void clearExpiredOverviewOpenInputBarrier() {
+[[maybe_unused]] void clearExpiredOverviewOpenInputBarrier() {
     if (niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewOpenInputBlockUntil)
         niri_scrolling_detail::overviewOpenInputBlockUntil = {};
