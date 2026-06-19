@@ -6684,6 +6684,9 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             targetFocus = intendedTargetFocus;
         else if (!preserveTargetEdgeCamera)
             targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        const bool deferTargetFocusScrollSyncForEdgeRelease = targetStartedEdgeCamera && targetFocus && !preserveTargetEdgeCamera &&
+            next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace) &&
+            !scrollingWorkspaceHasSingleColumn(targetWorkspace);
         if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
             if (Desktop::focusState()->window() != targetFocus) {
@@ -6693,16 +6696,16 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
                     m_pendingLiveFocusWorkspaceChangeTarget.reset();
             }
         }
-        if (targetFocus)
+        if (targetFocus && !deferTargetFocusScrollSyncForEdgeRelease)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
-        else
+        else if (!targetFocus)
             clearWindowFocusCompat(transitionMonitor);
         if (g_pAnimationManager)
             g_pAnimationManager->frameTick();
 
         const bool edgeCameraRepositioned = targetStartedEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
-        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
-            isScrollingWorkspace(targetWorkspace);
+        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && !deferTargetFocusScrollSyncForEdgeRelease &&
+            next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
         if (rebuildDirectNiriTargetAfterFocusSync || edgeCameraRepositioned || targetWorkspaceSyntheticEmpty ||
             !containsHandle(next.managedWorkspaces, targetWorkspace) || next.ownerWorkspace != targetWorkspace) {
             const auto rebuildMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : transitionMonitor;
@@ -6783,12 +6786,14 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
         refreshWorkspaceStripSnapshots();
 
-        // Sync scrolling layout focus after state rebuild. The earlier sync at line
-        // ~6310 happens before the state rebuild (which reinitializes the scrolling
-        // layout data), so the focus is lost. Re-sync here to ensure the visual
-        // selection border matches the centered window.
-        if (targetFocus && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
-            isScrollingWorkspace(targetFocus->m_workspace)) {
+        // Sync scrolling layout focus after state rebuild.  For scroll-past -> leaf
+        // release, do not sync directly here: capture the scroll-past preview first,
+        // then let the direct-Niri refresh path rebuild final targets with
+        // forceFinalLayoutBox and animate relayoutFromGlobal -> targetGlobal.
+        if (deferTargetFocusScrollSyncForEdgeRelease) {
+            refreshNiriScrollingOverviewAfterFocusDispatcher("edge-release", targetFocus, true);
+        } else if (targetFocus && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+                   isScrollingWorkspace(targetFocus->m_workspace)) {
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         }
 
