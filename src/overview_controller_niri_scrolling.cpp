@@ -3909,7 +3909,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
         (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
-        isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher;
+        isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher ||
+        isDirectResizeActiveDispatcher;
 
     const bool niriSingleWorkspaceTransition = timedNiriSingleWorkspaceTransitionActive();
     const auto transitionAction = resolveOverviewEditTransitionAction(
@@ -4116,9 +4117,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
         });
     const bool directNiriFocusOrColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectResizeColumnDispatcher);
+        (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage || isResizeColumnLayoutMessage ||
+         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        (isMoveColumnLayoutMessage || isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectResizeColumnDispatcher);
+        (isMoveColumnLayoutMessage || isSwapColumnLayoutMessage || isResizeColumnLayoutMessage ||
+         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
     if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
@@ -4236,8 +4239,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             dispatchFocus->m_workspace && dispatchFocus->m_workspace == activeDispatchWorkspace && isScrollingWorkspace(dispatchFocus->m_workspace) &&
             dispatchTarget && !dispatchTarget->floating() && !isFloatingOverviewWindow(dispatchFocus);
 
-        if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage) && !dispatchFocusIsTiledScrolling &&
-            !preserveNativeEdgeCameraDispatchFocus) {
+        if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage || isDirectSwapColumnDispatcher ||
+             isResizeColumnLayoutMessage || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher) &&
+            !dispatchFocusIsTiledScrolling && !preserveNativeEdgeCameraDispatchFocus) {
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] consume niri edit dispatcher without tiled focus"
@@ -4342,9 +4346,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             // layout's lastFocusedTarget matches the new focus/column when the
             // overview state is rebuilt. Previously only movefocus was synced here,
             // causing movecol/swapcol to rebuild state on stale layout data.
+            const bool swapColumnDispatcher = isSwapColumnLayoutMessage || isDirectSwapColumnDispatcher;
+            const bool resizeColumnDispatcher = isResizeColumnLayoutMessage || isDirectResizeColumnDispatcher;
+            const bool resizeActiveDispatcher = isDirectResizeActiveDispatcher;
             const char* relayoutSource = nativeEdgeCameraFocusReleased ? "movecol-edge-release" :
                 (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
-                 ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus"));
+                 ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" :
+                  (swapColumnDispatcher ? "swapcol" :
+                   ((resizeColumnDispatcher || resizeActiveDispatcher) ? "geometry-edit" : "movefocus"))));
 
             if (nativeEdgeCameraTransition) {
                 if (debugLogsEnabled())
@@ -4353,7 +4362,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             } else if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
-                if (isMoveFocusDispatcher || isSwapColumnLayoutMessage)
+                if (isMoveFocusDispatcher || swapColumnDispatcher || resizeColumnDispatcher || resizeActiveDispatcher)
                     (void)syncScrollingWorkspaceSpotOnWindow(preferred);
                 refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             }
