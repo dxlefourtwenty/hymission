@@ -3780,6 +3780,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isDirectMoveColumnDispatcher = dispatcherNameLower == "movecol" || dispatcherNameLower == "movecolumn";
     const bool isDirectSwapColumnDispatcher = dispatcherNameLower == "swapcol" || dispatcherNameLower == "swapcolumn";
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
+    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
+        (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher;
 
@@ -3789,7 +3791,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         isFocusOrMovementDispatcher,
         m_workspaceTransition.mode == WorkspaceTransitionMode::TimedCommit,
         niriSingleWorkspaceTransition);
-    const bool retargetTimedNiriTransition = transitionAction == OverviewEditTransitionAction::Retarget;
+    const bool retargetTimedNiriTransition = transitionAction == OverviewEditTransitionAction::Retarget ||
+        (niriSingleWorkspaceTransition && isMoveToWorkspaceDispatcher);
 
     const auto blockNow = std::chrono::steady_clock::now();
     const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
@@ -3814,7 +3817,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return {};
     }
 
-    if (transitionAction == OverviewEditTransitionAction::Retarget) {
+    if (retargetTimedNiriTransition) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] retarget workspace transition for edit dispatcher"
@@ -3937,8 +3940,6 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
     }
 
-    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
-        (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
