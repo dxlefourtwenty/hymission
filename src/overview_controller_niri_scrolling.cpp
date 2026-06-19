@@ -3879,13 +3879,21 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
          dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
          dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
+    const bool isResizeColumnLayoutMessage = isLayoutMessageDispatcher &&
+        (dispatcherArgsLower == "resizecol" || dispatcherArgsLower.starts_with("resizecol ") || dispatcherArgsLower.starts_with("resizecol,") ||
+         dispatcherArgsLower == "resize +col" || dispatcherArgsLower.starts_with("resize +col ") || dispatcherArgsLower.starts_with("resize +col,") ||
+         dispatcherArgsLower == "resize col" || dispatcherArgsLower.starts_with("resize col ") || dispatcherArgsLower.starts_with("resize col,") ||
+         dispatcherArgsLower == "resize -col" || dispatcherArgsLower.starts_with("resize -col ") || dispatcherArgsLower.starts_with("resize -col,") ||
+         dispatcherArgsLower.find("resizecol") != std::string::npos || dispatcherArgsLower.find("resize col") != std::string::npos ||
+         dispatcherArgsLower.find("colresize") != std::string::npos);
     const bool isDirectMoveColumnDispatcher = dispatcherNameLower == "movecol" || dispatcherNameLower == "movecolumn";
     const bool isDirectSwapColumnDispatcher = dispatcherNameLower == "swapcol" || dispatcherNameLower == "swapcolumn";
+    const bool isDirectResizeColumnDispatcher = dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn";
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
         (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
-        isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher;
+        isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher;
 
     const bool niriSingleWorkspaceTransition = timedNiriSingleWorkspaceTransitionActive();
     const auto transitionAction = resolveOverviewEditTransitionAction(
@@ -4071,12 +4079,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     }
 
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
-        (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
+        (isResizeColumnLayoutMessage || dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos || isSwapColumnLayoutMessage);
     const bool forceGeometryRefocus =
-        dispatcherNameLower == "resizeactive" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
-        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") ||
+        dispatcherNameLower == "resizeactive" || dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
+        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("resizecol") || dispatcherNameLower.starts_with("resizecolumn") ||
         dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
         dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
         dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
@@ -4087,9 +4095,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
         });
     const bool directNiriFocusOrColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
+        (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectResizeColumnDispatcher);
     const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
+        (isMoveColumnLayoutMessage || isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectResizeColumnDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
     if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {

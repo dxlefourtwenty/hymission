@@ -241,15 +241,18 @@ using LayoutMessageActionFn = Config::Actions::ActionResult (*)(const std::strin
 using MoveFocusActionFn = Config::Actions::ActionResult (*)(Math::eDirection);
 using MoveInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
 using SwapInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
+using ResizeActionFn = Config::Actions::ActionResult (*)(const Vector2D&, bool, std::optional<PHLWINDOW>);
 
 CFunctionHook* g_layoutMessageActionHook = nullptr;
 CFunctionHook* g_moveFocusActionHook = nullptr;
 CFunctionHook* g_moveInDirectionActionHook = nullptr;
 CFunctionHook* g_swapInDirectionActionHook = nullptr;
+CFunctionHook* g_resizeActionHook = nullptr;
 LayoutMessageActionFn g_layoutMessageActionOriginal = nullptr;
 MoveFocusActionFn g_moveFocusActionOriginal = nullptr;
 MoveInDirectionActionFn g_moveInDirectionActionOriginal = nullptr;
 SwapInDirectionActionFn g_swapInDirectionActionOriginal = nullptr;
+ResizeActionFn g_resizeActionOriginal = nullptr;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
@@ -259,10 +262,11 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
         lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
+        lowered == "resizecol" || lowered == "resizecolumn" || lowered == "resizewindow" ||
         lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
         lowered.starts_with("movecol") || lowered.starts_with("movecolumn") || lowered.starts_with("swapcol") || lowered.starts_with("swapcolumn") ||
-        lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
+        lowered.starts_with("resizecol") || lowered.starts_with("resizecolumn") || lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
         lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
         lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
@@ -330,6 +334,13 @@ Config::Actions::ActionResult hkSwapInDirectionAction(Math::eDirection direction
         return {};
 
     return g_swapInDirectionActionOriginal ? g_swapInDirectionActionOriginal(direction, std::move(window)) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkResizeAction(const Vector2D& size, bool relative, std::optional<PHLWINDOW> window) {
+    if (shouldSuppressNativeActionDuringOverviewOpen())
+        return {};
+
+    return g_resizeActionOriginal ? g_resizeActionOriginal(size, relative, std::move(window)) : Config::Actions::ActionResult{};
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2227,6 +2238,8 @@ OverviewController::~OverviewController() {
         g_moveInDirectionActionHook->unhook();
     if (g_swapInDirectionActionHook)
         g_swapInDirectionActionHook->unhook();
+    if (g_resizeActionHook)
+        g_resizeActionHook->unhook();
 
     if (m_surfaceTexBoxHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_surfaceTexBoxHook);
@@ -2289,6 +2302,11 @@ OverviewController::~OverviewController() {
         HyprlandAPI::removeFunctionHook(m_handle, g_swapInDirectionActionHook);
         g_swapInDirectionActionHook = nullptr;
         g_swapInDirectionActionOriginal = nullptr;
+    }
+    if (g_resizeActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_resizeActionHook);
+        g_resizeActionHook = nullptr;
+        g_resizeActionOriginal = nullptr;
     }
     if (m_handleGestureHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_handleGestureHook);
@@ -7772,6 +7790,9 @@ bool OverviewController::installHooks() {
         "movetoworkspacesilent",
         "moveactive",
         "resizeactive",
+        "resizewindow",
+        "resizecol",
+        "resizecolumn",
         "togglefloating",
         "setfloating",
         "settiled",
@@ -7781,6 +7802,8 @@ bool OverviewController::installHooks() {
         "swapcol",
         "swapcolumn",
         "movewindowpixel",
+        "resizewindow",
+
         "resizewindowpixel",
         "window.move",
         "window.swap",
@@ -7880,6 +7903,7 @@ bool OverviewController::installHooks() {
     (void)hookFunction("moveFocus", "Config::Actions::moveFocus(", g_moveFocusActionHook, reinterpret_cast<void*>(&hkMoveFocusAction));
     (void)hookFunction("moveInDirection", "Config::Actions::moveInDirection(", g_moveInDirectionActionHook, reinterpret_cast<void*>(&hkMoveInDirectionAction));
     (void)hookFunction("swapInDirection", "Config::Actions::swapInDirection(", g_swapInDirectionActionHook, reinterpret_cast<void*>(&hkSwapInDirectionAction));
+    (void)hookFunction("resize", "Config::Actions::resize(", g_resizeActionHook, reinterpret_cast<void*>(&hkResizeAction));
 
     m_shouldRenderWindowOriginal = nullptr;
     m_surfaceTexBoxOriginal = nullptr;
@@ -7915,6 +7939,7 @@ bool OverviewController::installHooks() {
     g_moveFocusActionOriginal = nullptr;
     g_moveInDirectionActionOriginal = nullptr;
     g_swapInDirectionActionOriginal = nullptr;
+    g_resizeActionOriginal = nullptr;
 
     activateOptionalHook(m_workspaceSwipeBeginFunctionHook, m_workspaceSwipeBeginOriginal, "workspace swipe begin");
     activateOptionalHook(m_workspaceSwipeUpdateFunctionHook, m_workspaceSwipeUpdateOriginal, "workspace swipe update");
@@ -7930,6 +7955,7 @@ bool OverviewController::installHooks() {
     activateOptionalHook(g_moveFocusActionHook, g_moveFocusActionOriginal, "move focus action");
     activateOptionalHook(g_moveInDirectionActionHook, g_moveInDirectionActionOriginal, "move window action");
     activateOptionalHook(g_swapInDirectionActionHook, g_swapInDirectionActionOriginal, "swap window action");
+    activateOptionalHook(g_resizeActionHook, g_resizeActionOriginal, "resize window action");
     return true;
 }
 
