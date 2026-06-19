@@ -3843,7 +3843,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
     }
 
-    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace";
+    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
+        (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
     const bool isScrollingGeometryLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower.find("colresize") != std::string::npos || dispatcherArgsLower.find("fit") != std::string::npos ||
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
@@ -5816,27 +5817,37 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         return m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? translateRect(rect, 0.0, offset) :
                                                                                 translateRect(rect, offset, 0.0);
     };
-    const auto backgroundForWorkspace = [&](const State& state, WORKSPACEID workspaceId) -> const EmptyWorkspacePlaceholder* {
+    using BackgroundKey = std::pair<WORKSPACEID, bool>;
+    const auto backgroundForWorkspace = [&](const State& state, const BackgroundKey& key) -> const EmptyWorkspacePlaceholder* {
         const auto it = std::find_if(state.emptyWorkspacePlaceholders.begin(), state.emptyWorkspacePlaceholders.end(),
                                      [&](const EmptyWorkspacePlaceholder& background) {
-                                         return background.monitor == renderMonitor && background.workspaceId == workspaceId;
+                                         return background.monitor == renderMonitor && background.workspaceId == key.first &&
+                                             background.backingOnly == key.second;
                                      });
         return it == state.emptyWorkspacePlaceholders.end() ? nullptr : &*it;
     };
 
-    std::unordered_set<WORKSPACEID> workspaceIds;
-    for (const auto& background : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders) {
-        if (background.monitor == renderMonitor)
-            workspaceIds.insert(background.workspaceId);
-    }
-    for (const auto& background : m_workspaceTransition.targetState.emptyWorkspacePlaceholders) {
-        if (background.monitor == renderMonitor)
-            workspaceIds.insert(background.workspaceId);
-    }
+    std::vector<BackgroundKey> backgroundKeys;
+    const auto addBackgroundKey = [&](const EmptyWorkspacePlaceholder& background) {
+        if (background.monitor != renderMonitor)
+            return;
 
-    for (const auto workspaceId : workspaceIds) {
-        const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, workspaceId);
-        const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, workspaceId);
+        const BackgroundKey key{background.workspaceId, background.backingOnly};
+        const bool exists = std::ranges::any_of(backgroundKeys, [&](const BackgroundKey& existing) {
+            return existing.first == key.first && existing.second == key.second;
+        });
+        if (!exists)
+            backgroundKeys.push_back(key);
+    };
+
+    for (const auto& background : m_workspaceTransition.sourceState.emptyWorkspacePlaceholders)
+        addBackgroundKey(background);
+    for (const auto& background : m_workspaceTransition.targetState.emptyWorkspacePlaceholders)
+        addBackgroundKey(background);
+
+    for (const auto& backgroundKey : backgroundKeys) {
+        const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, backgroundKey);
+        const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, backgroundKey);
         if (!source && !target)
             continue;
 
