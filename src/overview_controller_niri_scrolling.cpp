@@ -35,8 +35,12 @@ using Render::GL::g_pHyprOpenGL;
 namespace {
 
 constexpr double RELAYOUT_DURATION_MS = 140.0;
+constexpr auto   EDGE_CAMERA_REFOCUS_GRACE = std::chrono::milliseconds(280);
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 bool             g_forceScrollingFinalLayoutBoxForOverview = false;
+bool             g_allowDirectNiriEdgeCameraSpotSync = false;
+WORKSPACEID      g_directNiriEdgeCameraFocusOverrideWorkspaceId = WORKSPACE_INVALID;
+std::chrono::steady_clock::time_point g_directNiriEdgeCameraFocusOverrideUntil{};
 
 class ScopedFlag {
   public:
@@ -52,6 +56,28 @@ class ScopedFlag {
     bool& m_flag;
     bool  m_previous;
 };
+
+void armDirectNiriEdgeCameraFocusOverride(const PHLWORKSPACE& workspace) {
+    if (!workspace)
+        return;
+
+    g_directNiriEdgeCameraFocusOverrideWorkspaceId = workspace->m_id;
+    g_directNiriEdgeCameraFocusOverrideUntil = std::chrono::steady_clock::now() + EDGE_CAMERA_REFOCUS_GRACE;
+}
+
+bool directNiriEdgeCameraFocusOverrideActive(const PHLWORKSPACE& workspace) {
+    if (!workspace || workspace->m_id != g_directNiriEdgeCameraFocusOverrideWorkspaceId)
+        return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (g_directNiriEdgeCameraFocusOverrideUntil == std::chrono::steady_clock::time_point{} || now > g_directNiriEdgeCameraFocusOverrideUntil) {
+        g_directNiriEdgeCameraFocusOverrideWorkspaceId = WORKSPACE_INVALID;
+        g_directNiriEdgeCameraFocusOverrideUntil = {};
+        return false;
+    }
+
+    return true;
+}
 
 long getConfigInt(HANDLE handle, const char* name, long fallback) {
     (void)handle;
@@ -1790,8 +1816,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
     const auto liveFocus = Desktop::focusState()->window();
     const bool liveFocusValid = liveFocus && liveFocus->m_isMapped && hasManagedWindow(liveFocus);
     const auto edgeCameraWorkspace = activeLayoutWorkspace();
+    const bool allowEdgeCameraLeafFocus = directNiriEdgeCameraFocusOverrideActive(edgeCameraWorkspace) && liveFocusValid &&
+        liveFocus->m_workspace == edgeCameraWorkspace;
     const bool preserveMultiColumnEdgeCamera = directNiriEdgeCameraActive() && directNiriScrollingColumnCount(edgeCameraWorkspace) != 1;
-    if (preserveMultiColumnEdgeCamera) {
+    if (preserveMultiColumnEdgeCamera && !allowEdgeCameraLeafFocus) {
         // In scroll-past mode Hyprland's scrolling controller has released the
         // active leaf. Window-active events can still arrive from the remembered
         // last leaf when the workspace is activated. Treat those as stale while
@@ -3001,7 +3029,8 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
         return false;
 
     const bool multiColumnEdgeCamera = scrollingEdgeCameraActive(scrolling) && directNiriScrollingColumnCount(window->m_workspace) != 1;
-    if (activeDirectNiriSingleWorkspaceOverview() && multiColumnEdgeCamera) {
+    const bool allowEdgeCameraSpotSync = g_allowDirectNiriEdgeCameraSpotSync || directNiriEdgeCameraFocusOverrideActive(window->m_workspace);
+    if (activeDirectNiriSingleWorkspaceOverview() && multiColumnEdgeCamera && !allowEdgeCameraSpotSync) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (preserve scroll-past edge-camera)"
@@ -3970,7 +3999,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
         moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnTowardEdge;
-    const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher);
+    const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+        !edgeMoveColumnAwayFromEdge;
     const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() && !directEdgeCameraBefore &&
         (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
@@ -4208,8 +4238,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
-        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnAwayFromEdge && !preferred &&
-            preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive();
+        const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnAwayFromEdge &&
+            preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive() &&
+            directNiriScrollingColumnCount(preferredWorkspace) != 1;
         if (nativeEdgeCameraFocusReleased) {
             // Match Hyprland's scrolling movecol edge behavior: once native
             // layout scrolls past the last column it calls fullWindowFocus(nullptr).
@@ -4223,13 +4254,18 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             m_queuedOverviewLiveFocusTarget.reset();
             m_queuedOverviewLiveFocusSyncScrollingSpot = false;
             m_queuedOverviewLiveFocusCenterCursor = false;
+            Desktop::focusState()->fullWindowFocus(nullptr, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+
+            preferred = PHLWINDOW{};
 
             if (debugLogsEnabled()) {
                 std::ostringstream out;
-                out << "[hymission] niri movecol preserved native edge-camera focus release"
+                out << "[hymission] niri movecol forced native edge-camera focus release"
                     << " dispatcher=" << dispatcherName
                     << " workspace=" << debugWorkspaceLabel(preferredWorkspace)
-                    << " previous=" << debugWindowLabel(dispatchFocus);
+                    << " previous=" << debugWindowLabel(dispatchFocus)
+                    << " stillEdge=" << (directNiriEdgeCameraActive() ? 1 : 0)
+                    << " columns=" << directNiriScrollingColumnCount(preferredWorkspace);
                 debugLog(out.str());
             }
         }
@@ -4247,11 +4283,16 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 preferred = focusCandidateForWorkspace(preferredWorkspace);
 
             if (edgeMoveColumnAwayFromEdge && validPreferred(preferred)) {
+                armDirectNiriEdgeCameraFocusOverride(preferredWorkspace);
                 if (Desktop::focusState()->window() != preferred)
                     focusWindowCompat(preferred, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
-                const bool spotSynced = syncScrollingWorkspaceSpotOnWindow(preferred);
+                bool spotSynced = false;
+                {
+                    const ScopedFlag allowEdgeCameraSpotSync(g_allowDirectNiriEdgeCameraSpotSync);
+                    spotSynced = syncScrollingWorkspaceSpotOnWindow(preferred);
+                }
 
                 if (debugLogsEnabled()) {
                     std::ostringstream out;
@@ -4280,14 +4321,20 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
-                if (isMoveFocusDispatcher || isSwapColumnLayoutMessage || edgeMoveColumnAwayFromEdge)
-                    (void)syncScrollingWorkspaceSpotOnWindow(preferred);
+                if (isMoveFocusDispatcher || isSwapColumnLayoutMessage || edgeMoveColumnAwayFromEdge) {
+                    if (edgeMoveColumnAwayFromEdge && validPreferred(preferred)) {
+                        const ScopedFlag allowEdgeCameraSpotSync(g_allowDirectNiriEdgeCameraSpotSync);
+                        (void)syncScrollingWorkspaceSpotOnWindow(preferred);
+                    } else {
+                        (void)syncScrollingWorkspaceSpotOnWindow(preferred);
+                    }
+                }
                 refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             }
 
             // Ensure overview focus state matches the new focused window before
             // refreshing the layout scroll.
-            if (preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
+            if (!nativeEdgeCameraFocusReleased && preferred && preferred->m_isMapped && hasManagedWindow(preferred)) {
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
             }
