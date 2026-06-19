@@ -76,6 +76,11 @@ using niri_scrolling_detail::twoColumnSwapTraceActive;
 using niri_scrolling_detail::windowsMoveAnimationConfig;
 using niri_scrolling_detail::workspaceAnimationConfig;
 
+namespace niri_scrolling_detail {
+extern std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
+extern bool workspaceSwitchDispatcherBlockRelayout;
+}
+
 class OverviewOverlayPassElement final : public IPassElement {
   public:
     OverviewOverlayPassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
@@ -194,6 +199,7 @@ namespace {
 
 constexpr double OPEN_DURATION_MS = 180.0;
 constexpr double CLOSE_DURATION_MS = 140.0;
+constexpr auto   DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION = std::chrono::milliseconds(750);
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 constexpr double WORKSPACE_TRANSITION_DURATION_MS = 180.0;
 constexpr double CLOSE_SETTLE_TIMEOUT_MS = 80.0;
@@ -3740,28 +3746,6 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
 
     if (!shouldHandleInput())
         return;
-
-    const bool openingNiriSingleWorkspaceInputGate =
-        m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state);
-
-    if (openingNiriSingleWorkspaceInputGate) {
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] block keyboard keybind during overview open"
-                << " keycode=" << event.keycode
-                << " state=" << event.state
-                << " modifiers=" << keyboard->getModifiers();
-            debugLog(out.str());
-        }
-
-        // Keybinds fire on press/repeat. Consume those while the zoom-out is
-        // still opening, but let releases through so the normal toggle/release
-        // session does not get stuck and overview toggle spam stays responsive.
-        if (event.state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            info.cancelled = true;
-            return;
-        }
-    }
 
     if (m_state.phase == Phase::Closing)
         return;
@@ -7724,9 +7708,15 @@ bool OverviewController::installHooks() {
                 const bool hymissionControlDispatcher = dispatcherLower == "hymission:toggle" || dispatcherLower == "hymission:open" ||
                     dispatcherLower == "hymission:close" || dispatcherLower == "hymission:debug_current_layout" ||
                     dispatcherLower.starts_with("hymission.");
+                const auto now = std::chrono::steady_clock::now();
+                const bool openDispatcherCooldownActive =
+                    niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
+                    now < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+                const bool openVisibilityAnimationActive =
+                    m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
                 const bool openingNiriSingleWorkspaceDispatcherGate = !hymissionControlDispatcher && isVisible() &&
                     m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
-                    (m_state.phase == Phase::Opening || m_postOpenRefreshFrames > 0);
+                    (m_state.phase == Phase::Opening || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || openDispatcherCooldownActive);
 
                 if (openingNiriSingleWorkspaceDispatcherGate) {
                     if (debugLogsEnabled()) {
@@ -10806,6 +10796,13 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
+    if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        const auto openDispatcherBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION;
+        if (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil == std::chrono::steady_clock::time_point{} ||
+            openDispatcherBlockUntil > niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil)
+            niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = openDispatcherBlockUntil;
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
+    }
     if (const auto* placeholder = directNiriEdgeCameraOpenPlaceholder(m_state)) {
         (void)applyNiriScrollingCameraOpenGeometry(*placeholder);
     } else if (const auto selected = selectedWindow(); selected) {

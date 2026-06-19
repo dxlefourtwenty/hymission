@@ -1917,7 +1917,7 @@ bool OverviewController::shouldSyncScrollingLayoutDuringOverviewFocus() const {
     return m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
 }
 bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uint32_t modifiers) {
-    if (!isVisible() || m_state.phase != Phase::Active || !niriModeAppliesToState(m_state))
+    if (!isVisible() || (m_state.phase != Phase::Opening && m_state.phase != Phase::Active) || !niriModeAppliesToState(m_state))
         return false;
 
     std::string direction;
@@ -1945,6 +1945,31 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
     if (!hasSuper)
         return false;
 
+    const bool editAction = hasShift || hasCtrl || hasAlt;
+    const auto openBlockNow = std::chrono::steady_clock::now();
+    const bool openDispatcherCooldownActive =
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
+        openBlockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
+    const bool openVisibilityAnimationActive =
+        m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
+    const bool openingEditKeybindGate = editAction && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (m_state.phase == Phase::Opening || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || openDispatcherCooldownActive);
+    if (openingEditKeybindGate) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] consume niri edit arrow during overview open"
+                << " direction=" << direction
+                << " shift=" << (hasShift ? 1 : 0)
+                << " ctrl=" << (hasCtrl ? 1 : 0)
+                << " alt=" << (hasAlt ? 1 : 0)
+                << " phase=" << static_cast<int>(m_state.phase)
+                << " openAnim=" << (openVisibilityAnimationActive ? 1 : 0)
+                << " openCooldown=" << (openDispatcherCooldownActive ? 1 : 0);
+            debugLog(out.str());
+        }
+        return true;
+    }
+
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri arrow keybind"
@@ -1971,7 +1996,6 @@ bool OverviewController::handleNiriOverviewArrowKeybind(xkb_keysym_t keysym, uin
         return target && !target->floating() && !isFloatingOverviewWindow(window);
     };
 
-    const bool editAction = hasShift || hasCtrl || hasAlt;
     if (editAction) {
         PHLWINDOW dispatchFocus = selectedWindow();
         if (!validTiledDispatchFocus(dispatchFocus))
@@ -3833,7 +3857,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const std::string dispatcherArgsLower = asciiLowerCopy(trimCopy(args));
     const bool isLayoutMessageDispatcher = dispatcherNameLower == "layoutmsg" || dispatcherNameLower == "layout";
     const bool isSwapColumnLayoutMessage = isLayoutMessageDispatcher &&
-        (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,"));
+        (dispatcherArgsLower == "swapcol" || dispatcherArgsLower.starts_with("swapcol ") || dispatcherArgsLower.starts_with("swapcol,") ||
+         dispatcherArgsLower.find("swapcol") != std::string::npos || dispatcherArgsLower == "swap col" ||
+         dispatcherArgsLower.starts_with("swap col ") || dispatcherArgsLower.starts_with("swap col,") ||
+         dispatcherArgsLower == "swap +col" || dispatcherArgsLower.starts_with("swap +col ") || dispatcherArgsLower.starts_with("swap +col,") ||
+         dispatcherArgsLower == "swap -col" || dispatcherArgsLower.starts_with("swap -col ") || dispatcherArgsLower.starts_with("swap -col,"));
     const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
          dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
@@ -3857,13 +3885,17 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (niriSingleWorkspaceTransition && isMoveToWorkspaceDispatcher);
 
     const auto blockNow = std::chrono::steady_clock::now();
+    const bool openVisibilityAnimationActive =
+        m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
+    const bool openDispatcherCooldownActive =
+        niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
+        blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
     const bool workspaceSwitchSettling = isVisible() && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (m_state.phase != Phase::Active || m_postOpenRefreshFrames > 0 || m_workspaceSwipeGesture.active ||
+        (m_state.phase != Phase::Active || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || m_workspaceSwipeGesture.active ||
          (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
          (m_workspaceTransitionCommitScheduled && !retargetTimedNiriTransition) || m_applyingWorkspaceTransitionCommit ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
-          blockNow < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil));
+         openDispatcherCooldownActive);
     if (!workspaceSwitchSettling && niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = {};
         niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
@@ -3874,7 +3906,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             std::ostringstream out;
             out << "[hymission] block overview edit dispatcher during workspace switch settle"
                 << " dispatcher=" << dispatcherNameLower
-                << " args=" << dispatcherArgsLower;
+                << " args=" << dispatcherArgsLower
+                << " phase=" << static_cast<int>(m_state.phase)
+                << " openAnim=" << (openVisibilityAnimationActive ? 1 : 0)
+                << " openCooldown=" << (openDispatcherCooldownActive ? 1 : 0)
+                << " postOpenFrames=" << m_postOpenRefreshFrames;
             debugLog(out.str());
         }
         return {};
