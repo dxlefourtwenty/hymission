@@ -7007,6 +7007,18 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         }
     }
 
+    // Match movecol's post-workspace-switch safety window for heavier scrolling
+    // edits.  swapcol / resizecol / resizeactive can otherwise reach Hyprland
+    // right after the workspace transition commits, mutating the layout before
+    // the overview relayout animation can start.  Keep movecol/movefocus free,
+    // but suppress heavy column/resize edits for the same post-switch settle
+    // window used by the overview heavy-edit gate.
+    if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+        settleOverviewHeavyEditInputBarrier();
+        if (debugLogsEnabled())
+            debugLog("[hymission] arm heavy edit delay after workspace switch");
+    }
+
     // Process queued edit dispatchers after the workspace transition commits
     // and state is rebuilt for the new workspace.
     processQueuedEditDispatchers();
