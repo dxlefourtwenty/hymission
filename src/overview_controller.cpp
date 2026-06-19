@@ -85,7 +85,8 @@ extern bool workspaceSwitchDispatcherBlockRelayout;
 
 class OverviewOverlayPassElement final : public IPassElement {
   public:
-    OverviewOverlayPassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
+    OverviewOverlayPassElement(OverviewController* controller, const PHLMONITOR& monitor, bool chromeOnly = false)
+        : m_controller(controller), m_monitor(monitor), m_chromeOnly(chromeOnly) {
     }
 
     std::vector<UP<IPassElement>> draw() override {
@@ -96,6 +97,11 @@ class OverviewOverlayPassElement final : public IPassElement {
         const auto expectedMonitor = m_monitor.lock();
         if (!expectedMonitor || renderMonitor != expectedMonitor)
             return {};
+
+        if (m_chromeOnly) {
+            m_controller->renderSelectionChrome();
+            return {};
+        }
 
         m_controller->renderHiddenStripLayerProxies();
         m_controller->renderEmptyOverviewPlaceholder();
@@ -139,61 +145,7 @@ class OverviewOverlayPassElement final : public IPassElement {
   private:
     OverviewController* m_controller = nullptr;
     PHLMONITORREF       m_monitor;
-};
-
-class OverviewChromePassElement final : public IPassElement {
-  public:
-    OverviewChromePassElement(OverviewController* controller, const PHLMONITOR& monitor) : m_controller(controller), m_monitor(monitor) {
-    }
-
-    std::vector<UP<IPassElement>> draw() override {
-        const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
-        if (!m_controller || !renderMonitor)
-            return {};
-
-        const auto expectedMonitor = m_monitor.lock();
-        if (!expectedMonitor || renderMonitor != expectedMonitor)
-            return {};
-
-        m_controller->renderSelectionChrome();
-        return {};
-    }
-
-    bool needsLiveBlur() override {
-        return false;
-    }
-
-    bool needsPrecomputeBlur() override {
-        return false;
-    }
-
-    bool undiscardable() override {
-        return true;
-    }
-
-    std::optional<CBox> boundingBox() override {
-        const auto monitor = m_monitor.lock();
-        if (!monitor)
-            return std::nullopt;
-
-        return CBox{{}, monitor->m_size};
-    }
-
-    CRegion opaqueRegion() override {
-        return {};
-    }
-
-    const char* passName() override {
-        return "OverviewChromePassElement";
-    }
-
-    ePassElementType type() override {
-        return EK_CUSTOM;
-    }
-
-  private:
-    OverviewController* m_controller = nullptr;
-    PHLMONITORREF       m_monitor;
+    bool                m_chromeOnly = false;
 };
 
 class OverviewWallpaperPassElement final : public IPassElement {
@@ -3579,7 +3531,7 @@ void OverviewController::renderStage(eRenderStage stage) {
             // desktop sample, but the overview still owns selection chrome until
             // deactivation. This prevents a one-frame native active-border blink
             // or border dropout at the end of the close animation.
-            g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewChromePassElement>(this, monitor));
+            g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewOverlayPassElement>(this, monitor, true));
             if (m_deactivatePending) {
                 if (debugLogsEnabled())
                     debugLog("[hymission] post-windows queue deferred deactivate");
@@ -3599,7 +3551,7 @@ void OverviewController::renderStage(eRenderStage stage) {
                 // this guard is the fallback that still lets the native handoff
                 // complete.
                 armDirectNiriNativeHandoffGuard();
-                g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewChromePassElement>(this, monitor));
+                g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewOverlayPassElement>(this, monitor, true));
                 damageOwnedMonitors();
                 return;
             }
