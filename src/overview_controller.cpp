@@ -233,8 +233,10 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
+        lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
         lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
+        lowered.starts_with("movecol") || lowered.starts_with("movecolumn") || lowered.starts_with("swapcol") || lowered.starts_with("swapcolumn") ||
         lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
         lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
@@ -7639,6 +7641,10 @@ bool OverviewController::installHooks() {
         "setfloating",
         "settiled",
         "pin",
+        "movecol",
+        "movecolumn",
+        "swapcol",
+        "swapcolumn",
         "movewindowpixel",
         "resizewindowpixel",
         "window.move",
