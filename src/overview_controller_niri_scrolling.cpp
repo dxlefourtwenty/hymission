@@ -3992,21 +3992,23 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const bool runDirectNiriDispatcherPath = directLiveGeometryAvailable || directNiriFocusOrColumnRelayout;
 
-    if (runDirectNiriDispatcherPath) {
+    if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && isMoveToWorkspaceDispatcher) {
         retainVisibleDirectNiriWorkspaceLanes();
 
-        if (isMoveToWorkspaceDispatcher) {
-            if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore); result)
-                return *result;
+        if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore); result)
+            return *result;
 
-            PHLWINDOW retainedMoveSource = selectedBefore;
-            if (const auto separator = args.find_last_of(','); separator != std::string::npos)
-                retainedMoveSource = g_pCompositor->getWindowByRegex(args.substr(separator + 1));
+        PHLWINDOW retainedMoveSource = selectedBefore;
+        if (const auto separator = args.find_last_of(','); separator != std::string::npos)
+            retainedMoveSource = g_pCompositor->getWindowByRegex(args.substr(separator + 1));
 
-            const auto retainedSourceWorkspace = retainedMoveSource ? retainedMoveSource->m_workspace : PHLWORKSPACE{};
-            const auto retainedSourceMonitor = retainedSourceWorkspace ? retainedSourceWorkspace->m_monitor.lock() : PHLMONITOR{};
-            niri_scrolling_detail::retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
-        }
+        const auto retainedSourceWorkspace = retainedMoveSource ? retainedMoveSource->m_workspace : PHLWORKSPACE{};
+        const auto retainedSourceMonitor = retainedSourceWorkspace ? retainedSourceWorkspace->m_monitor.lock() : PHLMONITOR{};
+        niri_scrolling_detail::retainDirectNiriWorkspaceLane(retainedSourceMonitor, retainedSourceWorkspace);
+    }
+
+    if (runDirectNiriDispatcherPath) {
+        retainVisibleDirectNiriWorkspaceLanes();
 
         const auto dispatchWorkspace = activeLayoutWorkspace();
         const auto validDispatchFocus = [&](const PHLWINDOW& window) {
