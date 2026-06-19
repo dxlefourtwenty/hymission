@@ -3943,6 +3943,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         !edgeMoveColumnAwayFromEdge;
     const bool nativeEdgeCameraTransition = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge);
+    const bool preserveNativeEdgeCameraDispatchFocus = preserveNativeEdgeCameraFocusRelease || edgeMoveColumnAwayFromEdge;
 
     if (debugLogsEnabled() && overviewActive && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher)) {
         std::ostringstream out;
@@ -3965,7 +3966,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (preserveNativeEdgeCameraFocusRelease)
         clearDirectNiriEdgeCameraFocusState("movecol-edge-preserve-before-dispatch");
 
-    if (overviewActive && isFocusOrMovementDispatcher && !preserveNativeEdgeCameraFocusRelease && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+    if (overviewActive && isFocusOrMovementDispatcher && !preserveNativeEdgeCameraDispatchFocus && m_state.collectionPolicy.onlyActiveWorkspace &&
+        niriModeAppliesToState(m_state)) {
         const auto dispatchWorkspace = activeLayoutWorkspace();
         const auto validTiledDispatchWindow = [&](const PHLWINDOW& window) {
             return window && window->m_isMapped && !window->m_pinned && !isFloatingOverviewWindow(window) && window->m_workspace == dispatchWorkspace;
@@ -4143,7 +4145,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         };
 
         PHLWINDOW dispatchFocus;
-        if (!preserveNativeEdgeCameraFocusRelease) {
+        if (!preserveNativeEdgeCameraDispatchFocus) {
             dispatchFocus = validDispatchFocus(selectedBefore) ? selectedBefore : PHLWINDOW{};
             if (!validDispatchFocus(dispatchFocus))
                 dispatchFocus = validDispatchFocus(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
@@ -4160,7 +4162,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             dispatchTarget && !dispatchTarget->floating() && !isFloatingOverviewWindow(dispatchFocus);
 
         if ((isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage) && !dispatchFocusIsTiledScrolling &&
-            !preserveNativeEdgeCameraFocusRelease) {
+            !preserveNativeEdgeCameraDispatchFocus) {
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] consume niri edit dispatcher without tiled focus"
@@ -4268,7 +4270,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             const char* relayoutSource = nativeEdgeCameraFocusReleased ? "movecol-edge-release" :
                 ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" : "movefocus");
 
-            if (nativeEdgeCameraFocusReleased) {
+            if (nativeEdgeCameraTransition) {
+                if (debugLogsEnabled())
+                    debugLog("[hymission] niri movecol native edge transition kept live geometry");
+            } else if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
                 if (isMoveFocusDispatcher || isSwapColumnLayoutMessage)
