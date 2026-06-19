@@ -4341,19 +4341,18 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (insideRenderLifecycle()) {
             scheduleVisibleStateRebuild();
         } else {
-            // Sync scrolling layout focus for ALL focus/movement dispatchers (movefocus,
-            // movecol, swapcol) BEFORE state rebuild. This ensures the scrolling
-            // layout's lastFocusedTarget matches the new focus/column when the
-            // overview state is rebuilt. Previously only movefocus was synced here,
-            // causing movecol/swapcol to rebuild state on stale layout data.
+            // Keep post-dispatch relayout behavior aligned with movecol.
+            // Movecol does not force a focus-fit/center sync here; doing that for
+            // swapcol or resize dispatchers snaps the scrolling camera after a
+            // workspace switch and skips the relayout animation.
             const bool swapColumnDispatcher = isSwapColumnLayoutMessage || isDirectSwapColumnDispatcher;
             const bool resizeColumnDispatcher = isResizeColumnLayoutMessage || isDirectResizeColumnDispatcher;
             const bool resizeActiveDispatcher = isDirectResizeActiveDispatcher;
+            const bool movecolStyleRelayout = isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher ||
+                swapColumnDispatcher || resizeColumnDispatcher || resizeActiveDispatcher;
             const char* relayoutSource = nativeEdgeCameraFocusReleased ? "movecol-edge-release" :
                 (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
-                 ((isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) ? "movecol" :
-                  (swapColumnDispatcher ? "swapcol" :
-                   ((resizeColumnDispatcher || resizeActiveDispatcher) ? "geometry-edit" : "movefocus"))));
+                 (movecolStyleRelayout ? "movecol" : "movefocus"));
 
             if (nativeEdgeCameraTransition) {
                 if (debugLogsEnabled())
@@ -4362,7 +4361,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             } else if (nativeEdgeCameraFocusReleased) {
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
-                if (isMoveFocusDispatcher || swapColumnDispatcher || resizeColumnDispatcher || resizeActiveDispatcher)
+                // Match movecol exactly for swapcol / resizecol / resizeactive here:
+                // do not force a focus-fit/center sync after the native dispatcher.
+                // Forcing that sync snaps the scrolling layout camera and skips the
+                // relayout animation after a workspace switch. Let the native
+                // dispatcher own the layout motion, then rebuild the overview from
+                // the captured preview origins just like movecol.
+                if (isMoveFocusDispatcher)
                     (void)syncScrollingWorkspaceSpotOnWindow(preferred);
                 refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             }
