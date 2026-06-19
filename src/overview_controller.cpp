@@ -225,6 +225,7 @@ constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard,rofi";
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 OverviewController* g_controller = nullptr;
+std::unordered_map<std::string, std::function<SDispatchResult(std::string)>> g_openingDispatcherGateOriginals;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
@@ -233,10 +234,8 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lowered == "movewindow" || lowered == "movewindoworgroup" || lowered == "swapwindow" || lowered == "movetoworkspace" ||
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
-        lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
         lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
-        lowered.starts_with("movecol") || lowered.starts_with("movecolumn") || lowered.starts_with("swapcol") || lowered.starts_with("swapcolumn") ||
         lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
         lowered.starts_with("settiled") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
@@ -3738,6 +3737,19 @@ void OverviewController::handleKeyboard(const IKeyboard::SKeyEvent& event, Event
 
     if (!shouldHandleInput())
         return;
+
+    if (m_state.phase == Phase::Opening) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] block keyboard event during overview open"
+                << " keycode=" << event.keycode
+                << " state=" << event.state
+                << " modifiers=" << keyboard->getModifiers();
+            debugLog(out.str());
+        }
+        info.cancelled = true;
+        return;
+    }
 
     if (m_state.phase == Phase::Closing)
         return;
@@ -7641,10 +7653,6 @@ bool OverviewController::installHooks() {
         "setfloating",
         "settiled",
         "pin",
-        "movecol",
-        "movecolumn",
-        "swapcol",
-        "swapcolumn",
         "movewindowpixel",
         "resizewindowpixel",
         "window.move",
@@ -7675,6 +7683,47 @@ bool OverviewController::installHooks() {
 
     for (const auto& dispatcher : overviewEditingDispatchers)
         wrapOverviewEditingDispatcher(dispatcher);
+
+    if (g_pKeybindManager) {
+        std::vector<std::string> dispatcherNames;
+        dispatcherNames.reserve(g_pKeybindManager->m_dispatchers.size());
+        for (const auto& [name, _] : g_pKeybindManager->m_dispatchers)
+            dispatcherNames.push_back(name);
+
+        for (const auto& name : dispatcherNames) {
+            if (g_openingDispatcherGateOriginals.contains(name))
+                continue;
+
+            const auto it = g_pKeybindManager->m_dispatchers.find(name);
+            if (it == g_pKeybindManager->m_dispatchers.end())
+                continue;
+
+            auto original = it->second;
+            if (!original)
+                continue;
+
+            g_openingDispatcherGateOriginals[name] = original;
+            it->second = [this, name](std::string args) -> SDispatchResult {
+                if (isVisible() && m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
+                    if (debugLogsEnabled()) {
+                        std::ostringstream out;
+                        out << "[hymission] block dispatcher during overview open"
+                            << " dispatcher=" << name
+                            << " args=" << args;
+                        debugLog(out.str());
+                    }
+                    return {};
+                }
+
+                const auto originalIt = g_openingDispatcherGateOriginals.find(name);
+                if (originalIt == g_openingDispatcherGateOriginals.end() || !originalIt->second)
+                    return {};
+
+                return originalIt->second(std::move(args));
+            };
+        }
+    }
+
     (void)hookFunction("begin", "CWorkspaceSwipeGesture::begin(", m_workspaceSwipeBeginFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeBegin));
     (void)hookFunction("update", "CWorkspaceSwipeGesture::update(", m_workspaceSwipeUpdateFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeUpdate));
     (void)hookFunction("end", "CWorkspaceSwipeGesture::end(", m_workspaceSwipeEndFunctionHook, reinterpret_cast<void*>(&hkWorkspaceSwipeEnd));
@@ -7884,6 +7933,12 @@ void OverviewController::restoreWrappedDispatchers() {
         original = nullptr;
         wrapped = false;
     };
+
+    for (auto& [name, original] : g_openingDispatcherGateOriginals) {
+        if (original)
+            g_pKeybindManager->m_dispatchers[name] = std::move(original);
+    }
+    g_openingDispatcherGateOriginals.clear();
 
     restore("fullscreen", m_fullscreenActiveDispatcherWrapped, m_fullscreenActiveOriginal);
     restore("fullscreenstate", m_fullscreenStateDispatcherWrapped, m_fullscreenStateActiveOriginal);
