@@ -6045,7 +6045,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .targetWorkspaceId = workspaceId,
         .targetWorkspaceName = overrides.front().workspaceName,
         .targetWorkspaceSyntheticEmpty = syntheticEmpty,
-        .targetEdgeCameraPreserved = directNiriOwnerEdgeCameraActive(target),
+        .targetEdgeCameraPreserved = !preferredTargetFocus && directNiriOwnerEdgeCameraActive(target),
         .sourceState = std::move(source),
         .targetState = std::move(target),
         .animationFromDelta = 0.0,

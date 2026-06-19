@@ -3669,9 +3669,19 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
         focusWindowCompat(movedWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
     State sourceState = captureOverviewWorkspaceTransitionSourceState();
 
-    const auto result = silentDispatcher->second(args);
+    SDispatchResult result;
+    {
+        // Hyprland's silent move refocuses a window under the moved window's
+        // old position. Keep that intermediate focus out of overview state;
+        // this transition explicitly owns focus for the moved window.
+        const ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
+        result = silentDispatcher->second(args);
+    }
     if (!result.success)
         return result;
+
+    selectWindowInState(m_state, movedWindow);
+    m_state.focusDuringOverview = movedWindow;
 
     // Keep the pre-dispatch target workspace viewport in the source transition
     // state.  movetoworkspace makes that workspace occupied only after the
