@@ -3942,7 +3942,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
         !edgeMoveColumnAwayFromEdge;
     const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() && !directEdgeCameraBefore &&
-        (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
+        (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !multiColumnEdgeFocusOverrideActive() &&
+        scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) &&
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
 
     if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
