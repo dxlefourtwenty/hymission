@@ -79,6 +79,7 @@ using niri_scrolling_detail::workspaceAnimationConfig;
 namespace niri_scrolling_detail {
 extern std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
 extern std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
+extern std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 extern bool workspaceSwitchDispatcherBlockRelayout;
 }
 
@@ -203,6 +204,8 @@ constexpr double CLOSE_DURATION_MS = 140.0;
 constexpr auto   DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION = std::chrono::milliseconds(750);
 constexpr auto   DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK = std::chrono::milliseconds(1200);
 constexpr auto   DIRECT_NIRI_OPEN_INPUT_POST_SETTLE = std::chrono::milliseconds(80);
+constexpr auto   DIRECT_NIRI_HEAVY_EDIT_EXTRA_DELAY = std::chrono::milliseconds(500);
+constexpr auto   DIRECT_NIRI_HEAVY_EDIT_POST_SETTLE = std::chrono::milliseconds(580);
 constexpr double RELAYOUT_DURATION_MS = 140.0;
 constexpr double WORKSPACE_TRANSITION_DURATION_MS = 180.0;
 constexpr double CLOSE_SETTLE_TIMEOUT_MS = 80.0;
@@ -281,9 +284,42 @@ bool isOverviewToggleControlDispatcher(std::string_view dispatcherName) {
         lowered == "hymission.close" || lowered == "hymission:close" || lowered == "hymission.toggle";
 }
 
+
+bool isDelayedOverviewOpenEditCommand(std::string_view dispatcherName, std::string_view dispatcherArgs) {
+    std::string name{dispatcherName};
+    std::string args{dispatcherArgs};
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(args.begin(), args.end(), args.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+
+    const bool layoutMessage = name == "layoutmsg" || name == "layout";
+    const bool swapColumnLayoutMessage = layoutMessage &&
+        (args == "swapcol" || args.starts_with("swapcol ") || args.starts_with("swapcol,") || args.find("swapcol") != std::string::npos ||
+         args == "swap col" || args.starts_with("swap col ") || args.starts_with("swap col,") ||
+         args == "swap +col" || args.starts_with("swap +col ") || args.starts_with("swap +col,") ||
+         args == "swap -col" || args.starts_with("swap -col ") || args.starts_with("swap -col,"));
+    const bool resizeColumnLayoutMessage = layoutMessage &&
+        (args == "resizecol" || args.starts_with("resizecol ") || args.starts_with("resizecol,") ||
+         args == "resize +col" || args.starts_with("resize +col ") || args.starts_with("resize +col,") ||
+         args == "resize col" || args.starts_with("resize col ") || args.starts_with("resize col,") ||
+         args == "resize -col" || args.starts_with("resize -col ") || args.starts_with("resize -col,") ||
+         args.find("resizecol") != std::string::npos || args.find("resize col") != std::string::npos || args.find("colresize") != std::string::npos);
+
+    return name == "swapcol" || name == "swapcolumn" || name == "resizeactive" ||
+        name == "resizecol" || name == "resizecolumn" || name == "resizewindow" ||
+        name.starts_with("swapcol") || name.starts_with("swapcolumn") ||
+        name.starts_with("resizeactive") || name.starts_with("resizecol") ||
+        name.starts_with("resizecolumn") || name.starts_with("resizewindow") ||
+        name.find("window.resize") != std::string::npos || swapColumnLayoutMessage || resizeColumnLayoutMessage;
+}
+
 bool overviewOpenInputBarrierActive() {
     return niri_scrolling_detail::overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() < niri_scrolling_detail::overviewOpenInputBlockUntil;
+}
+
+bool overviewHeavyEditInputBarrierActive() {
+    return niri_scrolling_detail::overviewHeavyEditInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < niri_scrolling_detail::overviewHeavyEditInputBlockUntil;
 }
 
 void armOverviewOpenInputBarrier(std::chrono::milliseconds duration) {
@@ -293,8 +329,19 @@ void armOverviewOpenInputBarrier(std::chrono::milliseconds duration) {
         niri_scrolling_detail::overviewOpenInputBlockUntil = until;
 }
 
+void armOverviewHeavyEditInputBarrier(std::chrono::milliseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    if (niri_scrolling_detail::overviewHeavyEditInputBlockUntil == std::chrono::steady_clock::time_point{} ||
+        until > niri_scrolling_detail::overviewHeavyEditInputBlockUntil)
+        niri_scrolling_detail::overviewHeavyEditInputBlockUntil = until;
+}
+
 void settleOverviewOpenInputBarrier() {
     niri_scrolling_detail::overviewOpenInputBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_INPUT_POST_SETTLE;
+}
+
+void settleOverviewHeavyEditInputBarrier() {
+    niri_scrolling_detail::overviewHeavyEditInputBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_HEAVY_EDIT_POST_SETTLE;
 }
 
 [[maybe_unused]] void clearExpiredOverviewOpenInputBarrier() {
@@ -303,13 +350,20 @@ void settleOverviewOpenInputBarrier() {
         niri_scrolling_detail::overviewOpenInputBlockUntil = {};
 }
 
-bool shouldSuppressNativeActionDuringOverviewOpen() {
+void clearExpiredOverviewHeavyEditInputBarrier() {
+    if (niri_scrolling_detail::overviewHeavyEditInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() >= niri_scrolling_detail::overviewHeavyEditInputBlockUntil)
+        niri_scrolling_detail::overviewHeavyEditInputBlockUntil = {};
+}
+
+bool shouldSuppressNativeActionDuringOverviewOpen(bool delayedHeavyEdit = false) {
     clearExpiredOverviewOpenInputBarrier();
-    return g_controller && overviewOpenInputBarrierActive();
+    clearExpiredOverviewHeavyEditInputBarrier();
+    return g_controller && (overviewOpenInputBarrierActive() || (delayedHeavyEdit && overviewHeavyEditInputBarrierActive()));
 }
 
 Config::Actions::ActionResult hkLayoutMessageAction(const std::string& msg) {
-    if (shouldSuppressNativeActionDuringOverviewOpen())
+    if (shouldSuppressNativeActionDuringOverviewOpen(isDelayedOverviewOpenEditCommand("layoutmsg", msg)))
         return {};
 
     return g_layoutMessageActionOriginal ? g_layoutMessageActionOriginal(msg) : Config::Actions::ActionResult{};
@@ -337,7 +391,7 @@ Config::Actions::ActionResult hkSwapInDirectionAction(Math::eDirection direction
 }
 
 Config::Actions::ActionResult hkResizeAction(const Vector2D& size, bool relative, std::optional<PHLWINDOW> window) {
-    if (shouldSuppressNativeActionDuringOverviewOpen())
+    if (shouldSuppressNativeActionDuringOverviewOpen(true))
         return {};
 
     return g_resizeActionOriginal ? g_resizeActionOriginal(size, relative, std::move(window)) : Config::Actions::ActionResult{};
@@ -2312,6 +2366,7 @@ OverviewController::~OverviewController() {
         HyprlandAPI::removeFunctionHook(m_handle, m_handleGestureHook);
 
     niri_scrolling_detail::overviewOpenInputBlockUntil = {};
+    niri_scrolling_detail::overviewHeavyEditInputBlockUntil = {};
     g_controller = nullptr;
 }
 
@@ -7857,11 +7912,13 @@ bool OverviewController::installHooks() {
                 const std::string dispatcherLower = asciiLowerCopy(name);
                 const bool hymissionControlDispatcher = isOverviewToggleControlDispatcher(dispatcherLower);
                 const bool openDispatcherCooldownActive = overviewOpenInputBarrierActive();
+                const bool delayedHeavyEditCooldownActive = isDelayedOverviewOpenEditCommand(name, args) && overviewHeavyEditInputBarrierActive();
                 const bool openVisibilityAnimationActive =
                     m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
                 const bool openingNiriSingleWorkspaceDispatcherGate = !hymissionControlDispatcher && isVisible() &&
                     m_state.collectionPolicy.onlyActiveWorkspace && niriModeEnabled() &&
-                    (m_state.phase == Phase::Opening || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || openDispatcherCooldownActive);
+                    (m_state.phase == Phase::Opening || openVisibilityAnimationActive || m_postOpenRefreshFrames > 0 || openDispatcherCooldownActive ||
+                     delayedHeavyEditCooldownActive);
 
                 if (openingNiriSingleWorkspaceDispatcherGate) {
                     if (debugLogsEnabled()) {
@@ -7870,7 +7927,8 @@ bool OverviewController::installHooks() {
                             << " dispatcher=" << name
                             << " args=" << args
                             << " phase=" << static_cast<int>(m_state.phase)
-                            << " openBarrier=" << (openDispatcherCooldownActive ? 1 : 0);
+                            << " openBarrier=" << (openDispatcherCooldownActive ? 1 : 0)
+                            << " heavyBarrier=" << (delayedHeavyEditCooldownActive ? 1 : 0);
                         debugLog(out.str());
                     }
                     return {};
@@ -10959,6 +11017,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_state = std::move(next);
     if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
         armOverviewOpenInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK);
+        armOverviewHeavyEditInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK + DIRECT_NIRI_HEAVY_EDIT_EXTRA_DELAY);
         const auto openDispatcherBlockUntil = std::chrono::steady_clock::now() + DIRECT_NIRI_OPEN_DISPATCHER_BLOCK_DURATION;
         if (niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil == std::chrono::steady_clock::time_point{} ||
             openDispatcherBlockUntil > niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil)
@@ -11551,6 +11610,7 @@ void OverviewController::deactivate() {
     ++m_visibleStateRebuildGeneration;
     m_postOpenRefreshFrames = 0;
     niri_scrolling_detail::overviewOpenInputBlockUntil = {};
+    niri_scrolling_detail::overviewHeavyEditInputBlockUntil = {};
     clearPendingWindowGeometryRetry();
     clearOverviewWorkspaceTransition();
     if (desiredFocus && desiredFocus->m_workspace)
@@ -11812,6 +11872,7 @@ void OverviewController::updateAnimation() {
             m_state.animationToVisual = 1.0;
             m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
             settleOverviewOpenInputBarrier();
+            settleOverviewHeavyEditInputBarrier();
             refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");
             updateSelectedWindowLayout({});
             updateHoveredFromPointer(false, false, false, false, "begin-open");
@@ -11858,6 +11919,7 @@ void OverviewController::updateAnimation() {
         m_state.animationToVisual = 1.0;
         m_postOpenRefreshFrames = std::max<std::size_t>(m_postOpenRefreshFrames, 3);
         settleOverviewOpenInputBarrier();
+        settleOverviewHeavyEditInputBarrier();
         if (debugLogsEnabled())
             debugLog("[hymission] anim opening complete");
         refreshNiriScrollingOverviewAfterFocusDispatcher("opening-complete");

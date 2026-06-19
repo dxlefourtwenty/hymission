@@ -901,6 +901,7 @@ namespace niri_scrolling_detail {
 bool stripSnapshotSingleWorkspaceOnly = false;
 std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
 std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
+std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 bool workspaceSwitchDispatcherBlockRelayout = false;
 
 namespace {
@@ -990,10 +991,21 @@ bool overviewOpenInputBarrierActive() {
         std::chrono::steady_clock::now() < overviewOpenInputBlockUntil;
 }
 
+bool overviewHeavyEditInputBarrierActive() {
+    return overviewHeavyEditInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() < overviewHeavyEditInputBlockUntil;
+}
+
 void clearExpiredOverviewOpenInputBarrier() {
     if (overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() >= overviewOpenInputBlockUntil)
         overviewOpenInputBlockUntil = {};
+}
+
+void clearExpiredOverviewHeavyEditInputBarrier() {
+    if (overviewHeavyEditInputBlockUntil != std::chrono::steady_clock::time_point{} &&
+        std::chrono::steady_clock::now() >= overviewHeavyEditInputBlockUntil)
+        overviewHeavyEditInputBlockUntil = {};
 }
 
 SP<Hyprutils::Animation::SAnimationPropertyConfig> windowsMoveAnimationConfig() {
@@ -1117,11 +1129,13 @@ bool consumePendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace) {
 
 using niri_scrolling_detail::armTwoColumnSwapTrace;
 using niri_scrolling_detail::armPendingTwoColumnSwapRepair;
+using niri_scrolling_detail::clearExpiredOverviewHeavyEditInputBarrier;
 using niri_scrolling_detail::clearPendingTwoColumnSwapRepair;
 using niri_scrolling_detail::consumePendingTwoColumnSwapRepair;
 using niri_scrolling_detail::clearExpiredOverviewOpenInputBarrier;
 using niri_scrolling_detail::consumeTwoColumnSwapPreviewTrace;
 using niri_scrolling_detail::overviewOpenInputBarrierActive;
+using niri_scrolling_detail::overviewHeavyEditInputBarrierActive;
 using niri_scrolling_detail::shouldWrapWorkspaceIds;
 using niri_scrolling_detail::twoColumnSwapTraceActive;
 
@@ -3889,6 +3903,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isDirectMoveColumnDispatcher = dispatcherNameLower == "movecol" || dispatcherNameLower == "movecolumn";
     const bool isDirectSwapColumnDispatcher = dispatcherNameLower == "swapcol" || dispatcherNameLower == "swapcolumn";
     const bool isDirectResizeColumnDispatcher = dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn";
+    const bool isDirectResizeActiveDispatcher = dispatcherNameLower == "resizeactive" || dispatcherNameLower.starts_with("resizeactive") ||
+        dispatcherNameLower.find("window.resize") != std::string::npos;
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
         (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
@@ -3905,9 +3921,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         (niriSingleWorkspaceTransition && isMoveToWorkspaceDispatcher);
 
     clearExpiredOverviewOpenInputBarrier();
+    clearExpiredOverviewHeavyEditInputBarrier();
+    const bool heavyDelayedOpenEditDispatcher = isSwapColumnLayoutMessage || isResizeColumnLayoutMessage || isDirectSwapColumnDispatcher ||
+        isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher;
     const bool openVisibilityAnimationActive =
         m_overviewVisibilityAnimation && m_overviewVisibilityAnimation->isBeingAnimated();
     const bool openDispatcherCooldownActive = overviewOpenInputBarrierActive();
+    const bool heavyOpenDispatcherCooldownActive = heavyDelayedOpenEditDispatcher && overviewHeavyEditInputBarrierActive();
     const bool workspaceSwitchDispatcherCooldownActive =
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{} &&
         std::chrono::steady_clock::now() < niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil;
@@ -3916,7 +3936,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          (m_workspaceTransition.active && !retargetTimedNiriTransition) ||
          (m_workspaceTransitionCommitScheduled && !retargetTimedNiriTransition) || m_applyingWorkspaceTransitionCommit ||
          (niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout && m_state.relayoutActive && niriModeAppliesToState(m_state)) ||
-         openDispatcherCooldownActive || workspaceSwitchDispatcherCooldownActive);
+         openDispatcherCooldownActive || heavyOpenDispatcherCooldownActive || workspaceSwitchDispatcherCooldownActive);
     if (!workspaceSwitchSettling && niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil != std::chrono::steady_clock::time_point{}) {
         niri_scrolling_detail::workspaceSwitchDispatcherBlockUntil = {};
         niri_scrolling_detail::workspaceSwitchDispatcherBlockRelayout = false;
@@ -3931,6 +3951,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 << " phase=" << static_cast<int>(m_state.phase)
                 << " openAnim=" << (openVisibilityAnimationActive ? 1 : 0)
                 << " openBarrier=" << (openDispatcherCooldownActive ? 1 : 0)
+                << " heavyBarrier=" << (heavyOpenDispatcherCooldownActive ? 1 : 0)
                 << " workspaceCooldown=" << (workspaceSwitchDispatcherCooldownActive ? 1 : 0)
                 << " postOpenFrames=" << m_postOpenRefreshFrames;
             debugLog(out.str());
