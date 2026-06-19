@@ -3635,14 +3635,22 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
     if (!result.success)
         return result;
 
-    (void)removeOccupiedWorkspacePlaceholder(sourceState, movedWindow);
-    (void)removeOccupiedWorkspacePlaceholder(m_state, movedWindow);
+    // Keep the pre-dispatch target workspace viewport in the source transition
+    // state.  movetoworkspace makes that workspace occupied only after the
+    // silent dispatcher runs; deleting its old empty viewport here leaves the
+    // wallpaper renderer with a target-only lane, so it enters from the native
+    // full-workspace offset and snaps at the end instead of scrolling with the
+    // overview rows.
     targetWorkspace->m_lastFocusedWindow = movedWindow;
     if (!beginOverviewWorkspaceTransition(sourceMonitor, targetWorkspace->m_id, targetWorkspace->m_name, targetWorkspace, false,
                                           WorkspaceTransitionMode::TimedCommit, std::move(sourceState), movedWindow))
         return result;
 
-    (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.sourceState, movedWindow);
+    // Same reason as above: the source transition state must retain the
+    // target workspace's pre-move empty viewport so source and target lanes can
+    // be matched by workspace id and interpolated row-to-row.  The target state
+    // may still contain a stale non-backing placeholder for the now-occupied
+    // workspace, so only clean that side.
     (void)removeOccupiedWorkspacePlaceholder(m_workspaceTransition.targetState, movedWindow);
 
     const auto placeholderForWorkspace = [&](State& state, WORKSPACEID workspaceId) -> EmptyWorkspacePlaceholder* {
@@ -5900,6 +5908,28 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     for (const auto& background : m_workspaceTransition.targetState.emptyWorkspacePlaceholders)
         addBackgroundWorkspaceId(background);
 
+    const bool directNiriRowTransition = m_workspaceTransition.sourceState.collectionPolicy.onlyActiveWorkspace &&
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+
+    std::optional<Vector2D> rowShift;
+    if (directNiriRowTransition) {
+        double bestPrimary = -1.0;
+        for (const auto workspaceId : backgroundWorkspaceIds) {
+            const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, workspaceId);
+            const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, workspaceId);
+            if (!source || !target)
+                continue;
+
+            const double dx = target->targetGlobal.x - source->targetGlobal.x;
+            const double dy = target->targetGlobal.y - source->targetGlobal.y;
+            const double primary = m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? std::abs(dy) : std::abs(dx);
+            if (primary > bestPrimary) {
+                bestPrimary = primary;
+                rowShift = Vector2D{dx, dy};
+            }
+        }
+    }
+
     for (const auto workspaceId : backgroundWorkspaceIds) {
         const auto* source = backgroundForWorkspace(m_workspaceTransition.sourceState, workspaceId);
         const auto* target = backgroundForWorkspace(m_workspaceTransition.targetState, workspaceId);
@@ -5908,7 +5938,26 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
 
         Rect viewportRect;
         double alpha = phaseAlpha;
-        if (source && target) {
+        if (directNiriRowTransition) {
+            if (source && target) {
+                // Direct single-workspace Niri mode already stores each workspace
+                // wallpaper viewport in its overview-row coordinates. Interpolate
+                // those row rects directly. Adding the native full-workspace
+                // renderOffset here makes target-only lanes move independently
+                // from the windows and then snap into the row at commit.
+                viewportRect = lerpRect(source->targetGlobal, target->targetGlobal, progress);
+            } else if (source && rowShift) {
+                viewportRect = lerpRect(source->targetGlobal, translateRect(source->targetGlobal, rowShift->x, rowShift->y), progress);
+            } else if (target && rowShift) {
+                viewportRect = lerpRect(translateRect(target->targetGlobal, -rowShift->x, -rowShift->y), target->targetGlobal, progress);
+            } else if (source) {
+                viewportRect = translated(source->targetGlobal, sourceOffset);
+                alpha *= 1.0 - progress;
+            } else {
+                viewportRect = translated(target->targetGlobal, targetOffset);
+                alpha *= progress;
+            }
+        } else if (source && target) {
             viewportRect = lerpRect(translated(source->targetGlobal, sourceOffset), translated(target->targetGlobal, targetOffset), progress);
         } else if (source) {
             viewportRect = translated(source->targetGlobal, sourceOffset);
@@ -5979,6 +6028,28 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
                     placeholderWorkspaceIds.insert(placeholder.workspaceId);
             }
 
+            const bool directNiriRowTransition = m_workspaceTransition.sourceState.collectionPolicy.onlyActiveWorkspace &&
+                (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+
+            std::optional<Vector2D> rowShift;
+            if (directNiriRowTransition) {
+                double bestPrimary = -1.0;
+                for (const auto workspaceId : placeholderWorkspaceIds) {
+                    const auto* sourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, workspaceId);
+                    const auto* targetPlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, workspaceId);
+                    if (!sourcePlaceholder || !targetPlaceholder)
+                        continue;
+
+                    const double dx = targetPlaceholder->targetGlobal.x - sourcePlaceholder->targetGlobal.x;
+                    const double dy = targetPlaceholder->targetGlobal.y - sourcePlaceholder->targetGlobal.y;
+                    const double primary = m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical ? std::abs(dy) : std::abs(dx);
+                    if (primary > bestPrimary) {
+                        bestPrimary = primary;
+                        rowShift = Vector2D{dx, dy};
+                    }
+                }
+            }
+
             for (const auto workspaceId : placeholderWorkspaceIds) {
                 const auto* sourcePlaceholder = placeholderForWorkspace(m_workspaceTransition.sourceState, workspaceId);
                 const auto* targetPlaceholder = placeholderForWorkspace(m_workspaceTransition.targetState, workspaceId);
@@ -5987,7 +6058,23 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
 
                 Rect transitionGlobal;
                 double alpha = phaseAlpha;
-                if (sourcePlaceholder && targetPlaceholder) {
+                if (directNiriRowTransition) {
+                    if (sourcePlaceholder && targetPlaceholder) {
+                        transitionGlobal = lerpRect(sourcePlaceholder->targetGlobal, targetPlaceholder->targetGlobal, t);
+                    } else if (sourcePlaceholder && rowShift) {
+                        transitionGlobal = lerpRect(sourcePlaceholder->targetGlobal,
+                                                    translateRect(sourcePlaceholder->targetGlobal, rowShift->x, rowShift->y), t);
+                    } else if (targetPlaceholder && rowShift) {
+                        transitionGlobal = lerpRect(translateRect(targetPlaceholder->targetGlobal, -rowShift->x, -rowShift->y),
+                                                    targetPlaceholder->targetGlobal, t);
+                    } else if (sourcePlaceholder) {
+                        transitionGlobal = translated(sourcePlaceholder->targetGlobal, sourceOffset);
+                        alpha *= 1.0 - t;
+                    } else {
+                        transitionGlobal = translated(targetPlaceholder->targetGlobal, targetOffset);
+                        alpha *= t;
+                    }
+                } else if (sourcePlaceholder && targetPlaceholder) {
                     const Rect sourceRect = translated(sourcePlaceholder->targetGlobal, sourceOffset);
                     const Rect targetRect = translated(targetPlaceholder->targetGlobal, targetOffset);
                     transitionGlobal = lerpRect(sourceRect, targetRect, t);
