@@ -2109,6 +2109,14 @@ bool OverviewController::shouldSuppressNiriFocusScrollForMonitorReturn(const PHL
     const auto currentMonitor = focusMonitorForWindow(window);
     return currentMonitor && currentMonitor == m_state.ownerMonitor && previousFocusMonitor != m_state.ownerMonitor;
 }
+std::size_t directNiriScrollingColumnCount(const PHLWORKSPACE& workspace) {
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return 0;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    return scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
+}
+
 PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state) const {
     if (!usesDirectNiriScrollingOverview(state))
         return {};
@@ -2134,6 +2142,26 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
     };
 
     if (directNiriOwnerEdgeCameraActive(state)) {
+        const bool singleColumnOwnerWorkspace = directNiriScrollingColumnCount(state.ownerWorkspace) == 1;
+        if (singleColumnOwnerWorkspace) {
+            // A single centered scrolling column can still report the edge-camera
+            // predicate even though Hyprland conceptually treats it as a normal
+            // focused leaf. Prefer the overview-selected leaf immediately so the
+            // active border/focus handoff works on the first workspace switch.
+            if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
+                return overviewFocus;
+
+            if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
+                if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected)
+                    return selected;
+            }
+
+            if (const auto liveFocus = validManagedFocus(Desktop::focusState()->window()); liveFocus)
+                return liveFocus;
+
+            return {};
+        }
+
         // Hyprland keeps the scroll offset past the normal clamp for a short time
         // while returning from scroll-past to the last leaf.  In that interval the
         // edge-camera predicate is still true, but native focus has already been
@@ -2307,6 +2335,9 @@ bool OverviewController::shouldPreserveDirectNiriEdgeCamera(const PHLWINDOW& win
 
     auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
     if (!scrollingEdgeCameraActive(scrolling))
+        return false;
+
+    if (directNiriScrollingColumnCount(window->m_workspace) == 1)
         return false;
 
     // A centered first/last column can legally put Hyprland's scroll offset outside
