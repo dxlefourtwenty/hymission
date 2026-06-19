@@ -2110,7 +2110,7 @@ bool OverviewController::shouldSuppressNiriFocusScrollForMonitorReturn(const PHL
     return currentMonitor && currentMonitor == m_state.ownerMonitor && previousFocusMonitor != m_state.ownerMonitor;
 }
 std::size_t directNiriScrollingColumnCount(const PHLWORKSPACE& workspace) {
-    if (!workspace || !isScrollingWorkspace(workspace))
+    if (!workspace)
         return 0;
 
     auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);

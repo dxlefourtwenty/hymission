@@ -1846,7 +1846,7 @@ bool scrollingWindowIntersectsNativeViewport(const PHLWINDOW& window) {
 }
 
 std::size_t scrollingWorkspaceColumnCount(const PHLWORKSPACE& workspace) {
-    if (!workspace || !isScrollingWorkspace(workspace))
+    if (!workspace)
         return 0;
 
     auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
