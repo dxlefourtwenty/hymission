@@ -1977,6 +1977,63 @@ double rectCenterDistanceSquared(const Rect& rect, double x, double y) {
     return dx * dx + dy * dy;
 }
 
+
+bool usableOverviewRect(const Rect& rect) {
+    return rect.width > 1.0 && rect.height > 1.0;
+}
+
+Rect unionOverviewRect(const Rect& lhs, const Rect& rhs) {
+    if (!usableOverviewRect(lhs))
+        return rhs;
+    const double x1 = std::min(lhs.x, rhs.x);
+    const double y1 = std::min(lhs.y, rhs.y);
+    const double x2 = std::max(lhs.x + lhs.width, rhs.x + rhs.width);
+    const double y2 = std::max(lhs.y + lhs.height, rhs.y + rhs.height);
+    return makeRect(x1, y1, x2 - x1, y2 - y1);
+}
+
+std::optional<Rect> stripWindowPreviewRectForHitTest(const OverviewController::WorkspaceStripEntry& entry, const Rect& stripRect, const PHLWINDOW& window) {
+    if (!window || !usableOverviewRect(stripRect))
+        return std::nullopt;
+
+    const auto targetPreview = std::find_if(entry.windows.begin(), entry.windows.end(), [&](const auto& preview) {
+        return preview.window == window && usableOverviewRect(preview.naturalGlobal);
+    });
+    if (targetPreview == entry.windows.end())
+        return std::nullopt;
+
+    Rect sourceBounds{};
+    bool hasSourceBounds = false;
+    for (const auto& preview : entry.windows) {
+        if (!preview.window || preview.window->m_pinned || !usableOverviewRect(preview.naturalGlobal))
+            continue;
+
+        sourceBounds = hasSourceBounds ? unionOverviewRect(sourceBounds, preview.naturalGlobal) : preview.naturalGlobal;
+        hasSourceBounds = true;
+    }
+
+    if (!hasSourceBounds)
+        sourceBounds = targetPreview->naturalGlobal;
+    if (!usableOverviewRect(sourceBounds))
+        return std::nullopt;
+
+    const double padding = std::clamp(std::min(stripRect.width, stripRect.height) * 0.045, 2.0, 10.0);
+    const Rect inner = makeRect(stripRect.x + padding, stripRect.y + padding,
+                                std::max(1.0, stripRect.width - padding * 2.0),
+                                std::max(1.0, stripRect.height - padding * 2.0));
+    const double scale = std::min(inner.width / std::max(1.0, sourceBounds.width), inner.height / std::max(1.0, sourceBounds.height));
+    if (scale <= 0.0)
+        return std::nullopt;
+
+    const Rect& natural = targetPreview->naturalGlobal;
+    const double centerX = inner.centerX() + (natural.centerX() - sourceBounds.centerX()) * scale;
+    const double centerY = inner.centerY() + (natural.centerY() - sourceBounds.centerY()) * scale;
+    return makeRect(centerX - natural.width * scale * 0.5,
+                    centerY - natural.height * scale * 0.5,
+                    std::max(1.0, natural.width * scale),
+                    std::max(1.0, natural.height * scale));
+}
+
 std::optional<Vector2D> visiblePointForRectOnMonitor(const Rect& windowRect, const PHLMONITOR& monitor) {
     if (!monitor)
         return std::nullopt;
@@ -3880,6 +3937,61 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         return true;
 
     if (effectiveHoveredStripIndex && *effectiveHoveredStripIndex < m_state.stripEntries.size()) {
+        const auto stripWindowIndexAtPointer = [&]() -> std::optional<std::size_t> {
+            if (!usesDirectNiriScrollingOverview(m_state) || !m_state.collectionPolicy.onlyActiveWorkspace)
+                return std::nullopt;
+
+            const auto& entry = m_state.stripEntries[*effectiveHoveredStripIndex];
+            if (!entry.monitor || entry.newWorkspaceSlot || entry.windows.empty())
+                return std::nullopt;
+
+            const Rect stripRect = animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), entry.monitor);
+            if (!usableOverviewRect(stripRect))
+                return std::nullopt;
+
+            std::optional<std::size_t> bestWindowIndex;
+            double bestDistance = std::numeric_limits<double>::infinity();
+            for (const auto& preview : entry.windows) {
+                if (!preview.window || !canDragWindowInDirectNiriOverview(preview.window))
+                    continue;
+
+                const auto stateWindowIt = std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) {
+                    return managed.window == preview.window;
+                });
+                if (stateWindowIt == m_state.windows.end())
+                    continue;
+
+                const auto stripPreviewRect = stripWindowPreviewRectForHitTest(entry, stripRect, preview.window);
+                if (!stripPreviewRect || !rectContainsPoint(*stripPreviewRect, pointerBeforeUpdate.x, pointerBeforeUpdate.y))
+                    continue;
+
+                const double distance = rectCenterDistanceSquared(*stripPreviewRect, pointerBeforeUpdate.x, pointerBeforeUpdate.y);
+                if (!bestWindowIndex || distance < bestDistance) {
+                    bestWindowIndex = static_cast<std::size_t>(std::distance(m_state.windows.begin(), stateWindowIt));
+                    bestDistance = distance;
+                }
+            }
+
+            return bestWindowIndex;
+        }();
+
+        if (stripWindowIndexAtPointer && *stripWindowIndexAtPointer < m_state.windows.size()) {
+            clearStripWindowDragState();
+            m_state.selectedIndex = stripWindowIndexAtPointer;
+            m_state.focusDuringOverview = m_state.windows[*stripWindowIndexAtPointer].window;
+            m_pressedWindowIndex = stripWindowIndexAtPointer;
+            m_pressedWindowPointer = pointerBeforeUpdate;
+            latchHoverSelectionAnchor(m_pressedWindowPointer);
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] mouse press captured strip window index=" << *m_pressedWindowIndex
+                    << " strip=" << *effectiveHoveredStripIndex;
+                debugLog(out.str());
+            }
+            damageOwnedMonitors();
+            return true;
+        }
+
         clearStripWindowDragState();
         m_pressedStripIndex = *effectiveHoveredStripIndex;
         if (debugLogsEnabled()) {

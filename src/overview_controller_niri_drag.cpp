@@ -76,6 +76,55 @@ bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
 }
 
+
+std::optional<Rect> stripWindowPreviewRect(const OverviewController::WorkspaceStripEntry &entry, const Rect &stripRect, const PHLWINDOW &window) {
+    if (!window || !usableRect(stripRect))
+        return std::nullopt;
+
+    const auto targetPreview = std::find_if(entry.windows.begin(), entry.windows.end(), [&](const auto &preview) {
+        return preview.window == window && usableRect(preview.naturalGlobal);
+    });
+    if (targetPreview == entry.windows.end())
+        return std::nullopt;
+
+    Rect sourceBounds{};
+    bool hasSourceBounds = false;
+    for (const auto &preview : entry.windows) {
+        if (!preview.window || preview.window->m_pinned || !usableRect(preview.naturalGlobal))
+            continue;
+
+        sourceBounds = hasSourceBounds ? unionRect(sourceBounds, preview.naturalGlobal) : preview.naturalGlobal;
+        hasSourceBounds = true;
+    }
+
+    if (!hasSourceBounds)
+        sourceBounds = targetPreview->naturalGlobal;
+    if (!usableRect(sourceBounds))
+        return std::nullopt;
+
+    const double padding = std::clamp(std::min(stripRect.width, stripRect.height) * 0.045, 2.0, 10.0);
+    const Rect inner = {
+        stripRect.x + padding,
+        stripRect.y + padding,
+        std::max(1.0, stripRect.width - padding * 2.0),
+        std::max(1.0, stripRect.height - padding * 2.0),
+    };
+
+    const double scale = std::min(inner.width / std::max(1.0, sourceBounds.width), inner.height / std::max(1.0, sourceBounds.height));
+    if (scale <= 0.0)
+        return std::nullopt;
+
+    const Rect &natural = targetPreview->naturalGlobal;
+    const double centerX = inner.centerX() + (natural.centerX() - sourceBounds.centerX()) * scale;
+    const double centerY = inner.centerY() + (natural.centerY() - sourceBounds.centerY()) * scale;
+    return Rect{
+        centerX - natural.width * scale * 0.5,
+        centerY - natural.height * scale * 0.5,
+        std::max(1.0, natural.width * scale),
+        std::max(1.0, natural.height * scale),
+    };
+}
+
 template <typename LayoutTargetPtr>
 void addLayoutTargetToColumn(const SP<Layout::Tiled::SColumnData> &column, const LayoutTargetPtr &layoutTarget,
                              std::size_t tileIndex = 0, bool append = false) {
@@ -132,8 +181,22 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
     if (!canDragWindowInDirectNiriOverview(managed.window))
         return;
 
-    const Rect preview = currentPreviewRect(managed);
-    if (preview.width <= 1.0 || preview.height <= 1.0)
+    Rect preview = currentPreviewRect(managed);
+    if (!usableRect(preview) || !contains(preview, pointer)) {
+        for (const auto &entry : m_state.stripEntries) {
+            if (!entry.monitor)
+                continue;
+
+            const Rect stripRect = animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), entry.monitor);
+            const auto stripPreview = stripWindowPreviewRect(entry, stripRect, managed.window);
+            if (!stripPreview || !usableRect(*stripPreview) || !contains(*stripPreview, pointer))
+                continue;
+
+            preview = *stripPreview;
+            break;
+        }
+    }
+    if (!usableRect(preview))
         return;
 
     std::size_t sourceColumnIndex = 0;
@@ -207,15 +270,22 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
 
     const EmptyWorkspacePlaceholder *lane = nullptr;
     Rect laneRect;
+    double laneArea = std::numeric_limits<double>::infinity();
     for (const auto &placeholder : m_state.emptyWorkspacePlaceholders) {
-        if (!placeholder.backingOnly || !placeholder.monitor)
+        if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
             continue;
         const Rect current = currentEmptyWorkspacePlaceholderRect(placeholder);
         if (!usableRect(current) || !contains(current, pointer))
             continue;
-        lane = &placeholder;
-        laneRect = current;
-        break;
+
+        const double area = current.width * current.height;
+        const bool preferVisibleEmptyViewport = lane && lane->backingOnly && !placeholder.backingOnly;
+        const bool preferSmallerSameKind = (!lane || placeholder.backingOnly == lane->backingOnly) && area < laneArea;
+        if (!lane || preferVisibleEmptyViewport || preferSmallerSameKind) {
+            lane = &placeholder;
+            laneRect = current;
+            laneArea = area;
+        }
     }
     if (!lane)
         return std::nullopt;
@@ -298,7 +368,7 @@ void OverviewController::updateDirectNiriWindowDrag(const Vector2D &pointer) {
     if (m_niriDragSession.target) {
         const auto &target = *m_niriDragSession.target;
         const auto lane = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(), [&](const auto &placeholder) {
-            return placeholder.backingOnly && placeholder.monitor == target.monitor && placeholder.workspaceId == target.workspaceId;
+            return placeholder.monitor == target.monitor && placeholder.workspaceId == target.workspaceId && usableRect(currentEmptyWorkspacePlaceholderRect(placeholder));
         });
         if (lane != m_state.emptyWorkspacePlaceholders.end()) {
             const auto direction = scrollingLayoutDirection();
