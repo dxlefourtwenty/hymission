@@ -193,6 +193,27 @@ std::size_t backendColumnIndexForVisualGap(const std::vector<overview_drag::Colu
     return columns[visualIndex].index;
 }
 
+std::size_t finalColumnIndexForSameWorkspaceGap(std::size_t backendGapIndex,
+                                                std::size_t currentColumnCount,
+                                                std::size_t sourceColumnIndex,
+                                                bool sourceColumnMovesAsColumn) {
+    if (currentColumnCount == 0)
+        return 0;
+
+    std::size_t desired = backendGapIndex;
+
+    // The drag target is computed from the preview list with the dragged window
+    // omitted.  When the dragged window is already a single-tile column, the
+    // backend gap still used the old real column indices.  Normalize the gap to
+    // the post-move column order before issuing native movecol commands; otherwise
+    // drops between visible columns land one slot too far and often end up at an
+    // edge of the strip.
+    if (sourceColumnMovesAsColumn && sourceColumnIndex < desired)
+        --desired;
+
+    return std::min(desired, currentColumnCount - 1);
+}
+
 std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overview_drag::Rect &workspace,
                                                                     const std::vector<overview_drag::Column> &columns,
                                                                     const Vector2D &pointer, overview_drag::Axis axis,
@@ -929,8 +950,12 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                     return false;
             }
             const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
+            const bool sourceColumnWasSingleTile = scrollingWindowColumnIsSingleTile(scrolling, window);
 
-            const bool insertBeforeSource = std::min(target.insertion.column, data->columns.size()) <= sourceColumnIndex;
+            const std::size_t normalizedTargetColumn = sourceColumnWasSingleTile ?
+                finalColumnIndexForSameWorkspaceGap(target.insertion.column, data->columns.size(), sourceColumnIndex, true) :
+                std::min(target.insertion.column, data->columns.size());
+            const bool insertBeforeSource = normalizedTargetColumn <= sourceColumnIndex;
             const auto direction = scrollingLayoutDirection();
             const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
             const std::string moveDirection = horizontal ? (insertBeforeSource ? "l" : "r") : (insertBeforeSource ? "u" : "d");
@@ -966,28 +991,36 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                 return result;
             };
 
-            SDispatchResult result = runNativeWindowMove(moveDirection);
-            if (!result.success)
-                return false;
+            // If the window is already its own column, do not run movewindow first.
+            // Native movewindow is a split/stack operation, so using it on a
+            // single-tile column can temporarily stack the window into a neighbor
+            // and then the follow-up movecol only moves that accidental edge
+            // result.  For an existing single-column window, the Niri-style move
+            // grab is simply a column move to the hinted gap.
+            if (!sourceColumnWasSingleTile) {
+                SDispatchResult result = runNativeWindowMove(moveDirection);
+                if (!result.success)
+                    return false;
 
-            // The hint can be outside the native viewport, but a single native
-            // movewindow only knows "move one step in this direction".  In a
-            // stacked/partial column it can leave the window stacked, and when
-            // it does create a new column it creates it next to the old column,
-            // not necessarily at the hinted off-viewport gap.  Match Niri's
-            // move-grab semantics by treating the hint as the authoritative
-            // placement target: first make sure the dragged window is actually
-            // split into its own column, then move that column to the requested
-            // backend gap with native movecol so Hyprland still owns column
-            // bookkeeping.
-            for (std::size_t attempt = 0; attempt < 3; ++attempt) {
-                auto *afterScrolling = scrollingForWorkspace(workspace);
-                if (scrollingWindowColumnIsSingleTile(afterScrolling, window))
-                    break;
+                // The hint can be outside the native viewport, but a single native
+                // movewindow only knows "move one step in this direction".  In a
+                // stacked/partial column it can leave the window stacked, and when
+                // it does create a new column it creates it next to the old column,
+                // not necessarily at the hinted off-viewport gap.  Match Niri's
+                // move-grab semantics by treating the hint as the authoritative
+                // placement target: first make sure the dragged window is actually
+                // split into its own column, then move that column to the requested
+                // backend gap with native movecol so Hyprland still owns column
+                // bookkeeping.
+                for (std::size_t attempt = 0; attempt < 3; ++attempt) {
+                    auto *afterScrolling = scrollingForWorkspace(workspace);
+                    if (scrollingWindowColumnIsSingleTile(afterScrolling, window))
+                        break;
 
-                const SDispatchResult splitResult = runNativeWindowMove(moveDirection);
-                if (!splitResult.success)
-                    break;
+                    const SDispatchResult splitResult = runNativeWindowMove(moveDirection);
+                    if (!splitResult.success)
+                        break;
+                }
             }
 
             for (std::size_t attempt = 0; attempt < 12; ++attempt) {
@@ -999,7 +1032,9 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                 if (!currentColumnIndex)
                     break;
 
-                const std::size_t desiredColumnIndex = std::min(target.insertion.column, afterScrolling->m_scrollingData->columns.size() - 1);
+                const std::size_t desiredColumnIndex = sourceColumnWasSingleTile ?
+                    finalColumnIndexForSameWorkspaceGap(target.insertion.column, afterScrolling->m_scrollingData->columns.size(), sourceColumnIndex, true) :
+                    std::min(target.insertion.column, afterScrolling->m_scrollingData->columns.size() - 1);
                 if (*currentColumnIndex == desiredColumnIndex)
                     break;
 
@@ -1039,7 +1074,6 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             if (sourceTileIndexRaw < 0)
                 return false;
         }
-        const std::size_t sourceTileIndex = nonNegativeIndex(sourceTileIndexRaw);
         sourceColumn->remove(layoutTarget);
 
         const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
@@ -1056,8 +1090,10 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             return false;
 
         std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
-        if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
-            --tileIndex;
+        // target.insertion.tile is computed from the preview column after the
+        // dragged window has already been omitted.  After sourceColumn->remove()
+        // the live column matches that preview ordering, so applying an extra
+        // same-column decrement shifts between-window drops toward an edge.
         tileIndex = std::min(tileIndex, column->targetDatas.size());
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
