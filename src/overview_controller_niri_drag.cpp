@@ -91,7 +91,8 @@ bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::op
     // column as "back on the original spot", so native movecol never ran and
     // the window appeared to snap back to its own strip.
     return target->insertion.kind == overview_drag::InsertKind::InColumn &&
-        target->insertion.column == session.sourceColumn && target->insertion.tile == session.sourceTile;
+        target->insertion.column == session.sourceColumn &&
+        (target->insertion.tile == session.sourceTile || target->insertion.tile == session.sourceTile + 1);
 }
 
 Rect unionRect(const Rect &lhs, const Rect &rhs) {
@@ -175,6 +176,22 @@ std::size_t backendColumnIndexForVisualGap(const std::vector<overview_drag::Colu
     if (visualIndex >= columns.size())
         return columns.back().index + 1;
     return columns[visualIndex].index;
+}
+
+std::size_t backendTileIndexForVisualGap(const std::vector<overview_drag::Column> &columns, std::size_t backendColumnIndex, std::size_t visualIndex) {
+    const auto columnIt = std::find_if(columns.begin(), columns.end(), [&](const overview_drag::Column &column) {
+        return column.index == backendColumnIndex;
+    });
+    if (columnIt == columns.end() || columnIt->tiles.empty())
+        return visualIndex;
+
+    visualIndex = std::min(visualIndex, columnIt->tiles.size());
+    if (visualIndex == 0)
+        return columnIt->tiles.front().index;
+    if (visualIndex >= columnIt->tiles.size())
+        return columnIt->tiles.back().index + 1;
+
+    return columnIt->tiles[visualIndex].index;
 }
 
 std::size_t finalColumnIndexForSameWorkspaceGap(std::size_t backendGapIndex,
@@ -704,6 +721,14 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
             visualIndex = columns.size() - visualIndex;
 
         insertion->column = backendColumnIndexForVisualGap(columns, visualIndex);
+    } else if (insertion->kind == overview_drag::InsertKind::InColumn && !columns.empty()) {
+        // overview_drag::insertionTarget computes the vertical gap in the
+        // sorted preview order.  Niri's scrolling_insert_position returns the
+        // layout/backend tile index directly, and add_tile_to_column consumes
+        // that same backend index.  Convert the visual gap to the backend index
+        // here so between-window hints apply to the exact hinted slot rather
+        // than drifting to the top or bottom of the column.
+        insertion->tile = backendTileIndexForVisualGap(columns, insertion->column, insertion->tile);
     }
 
     return NiriDragTarget{
@@ -1098,6 +1123,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             if (sourceTileIndexRaw < 0)
                 return false;
         }
+        const std::size_t sourceTileIndex = nonNegativeIndex(sourceTileIndexRaw);
         sourceColumn->remove(layoutTarget);
 
         const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
@@ -1113,11 +1139,9 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         if (!column)
             return false;
 
-        std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
-        // target.insertion.tile is computed from the preview column after the
-        // dragged window has already been omitted.  After sourceColumn->remove()
-        // the live column matches that preview ordering, so applying an extra
-        // same-column decrement shifts between-window drops toward an edge.
+        std::size_t tileIndex = target.insertion.tile;
+        if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
+            --tileIndex;
         tileIndex = std::min(tileIndex, column->targetDatas.size());
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
