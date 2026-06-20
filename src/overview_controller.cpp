@@ -3924,7 +3924,34 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         }
 
         if (m_pressedWindowIndex && *m_pressedWindowIndex < m_state.windows.size()) {
-            m_state.selectedIndex = m_pressedWindowIndex;
+            const auto pressedIndex = *m_pressedWindowIndex;
+            const auto pressedWindow = m_state.windows[pressedIndex].window;
+            const bool directNiriPressedWindow =
+                usesDirectNiriScrollingOverview(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && pressedWindow && pressedWindow->m_workspace &&
+                isScrollingWorkspace(pressedWindow->m_workspace);
+            const bool wasAlreadySelected = m_state.selectedIndex && *m_state.selectedIndex == pressedIndex;
+
+            if (directNiriPressedWindow && !wasAlreadySelected) {
+                const auto previousSelectedWindow = selectedWindow();
+                const auto previousPreviewRects = captureCurrentPreviewRects();
+
+                m_state.selectedIndex = pressedIndex;
+                m_state.focusDuringOverview = pressedWindow;
+                m_queuedOverviewSelectionTarget.reset();
+                m_queuedOverviewSelectionSyncScrollingSpot = false;
+                m_queuedOverviewSelectionCenterCursor = false;
+                m_queuedOverviewLiveFocusTarget.reset();
+                m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+                m_queuedOverviewLiveFocusCenterCursor = false;
+                clearStripWindowDragState();
+
+                syncRealFocusDuringOverview(pressedWindow, true, &previousPreviewRects, true);
+                updateSelectedWindowLayout(previousSelectedWindow);
+                damageOwnedMonitors();
+                return true;
+            }
+
+            m_state.selectedIndex = pressedIndex;
             clearStripWindowDragState();
             activateSelection();
             return true;
@@ -4016,6 +4043,29 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         const bool directNiriCrossWorkspaceClick = directNiriSingleWorkspaceScrollClick && clickedWorkspace && currentNiriWorkspace &&
             clickedWorkspace != currentNiriWorkspace && !clickedWorkspace->m_isSpecialWorkspace;
 
+        if (directNiriSingleWorkspaceScrollClick) {
+            clearStripWindowDragState();
+
+            // Match Niri's grab semantics: button press only arms a possible
+            // operation.  Do not focus, retarget the scrolling camera, or start
+            // a workspace transition until release proves this was a click.
+            // Movement past binds:drag_threshold turns the armed press into a
+            // direct drag, so unfocused windows can still be dragged.
+            m_pressedWindowIndex = effectiveHoveredIndex;
+            m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
+            latchHoverSelectionAnchor(m_pressedWindowPointer);
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] mouse press captured direct niri window index=" << *m_pressedWindowIndex
+                    << " deferredFocus=1 threshold=" << nativeWindowDragThreshold();
+                if (directNiriCrossWorkspaceClick)
+                    out << " crossWorkspace=1";
+                debugLog(out.str());
+            }
+            damageOwnedMonitors();
+            return true;
+        }
+
         if (directNiriCrossWorkspaceClick) {
             clearStripWindowDragState();
             m_queuedOverviewSelectionTarget.reset();
@@ -4090,21 +4140,6 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             updateSelectedWindowLayout(previousSelectedWindow);
             if (!directNiriSingleWorkspaceScrollClick)
                 refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus");
-            damageOwnedMonitors();
-            return true;
-        }
-
-        if (directNiriSingleWorkspaceScrollClick) {
-            clearStripWindowDragState();
-            m_pressedWindowIndex = effectiveHoveredIndex;
-            m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
-            latchHoverSelectionAnchor(m_pressedWindowPointer);
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] mouse press captured direct niri window index=" << *m_pressedWindowIndex
-                    << " deferredFocus=1";
-                debugLog(out.str());
-            }
             damageOwnedMonitors();
             return true;
         }
