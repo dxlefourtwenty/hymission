@@ -80,6 +80,134 @@ bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
 }
 
+double dragPrimaryStart(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? rect.x : rect.y;
+}
+
+double dragPrimarySize(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? rect.width : rect.height;
+}
+
+double dragSecondaryStart(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? rect.y : rect.x;
+}
+
+double dragSecondarySize(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? rect.height : rect.width;
+}
+
+double dragPointerPrimary(const Vector2D &point, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? point.x : point.y;
+}
+
+double dragPointerSecondary(const Vector2D &point, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? point.y : point.x;
+}
+
+overview_drag::Rect dragRectFromAxes(double primary, double secondary, double primaryLength, double secondaryLength, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? overview_drag::Rect{primary, secondary, primaryLength, secondaryLength} :
+                                                    overview_drag::Rect{secondary, primary, secondaryLength, primaryLength};
+}
+
+double clampedDragHintLength(double preferred, double available) {
+    return std::clamp(preferred, std::min(24.0, available), std::max(24.0, available));
+}
+
+Rect expandedLaneHitRectForDirectDrag(const Rect &lane, overview_drag::Axis axis) {
+    if (!usableRect(lane))
+        return lane;
+
+    Rect expanded = lane;
+    const double primaryExpansion = std::max(48.0, (axis == overview_drag::Axis::Horizontal ? lane.width : lane.height) * 0.75);
+    const double secondaryExpansion = 8.0;
+    if (axis == overview_drag::Axis::Horizontal) {
+        expanded.x -= primaryExpansion;
+        expanded.width += primaryExpansion * 2.0;
+        expanded.y -= secondaryExpansion;
+        expanded.height += secondaryExpansion * 2.0;
+    } else {
+        expanded.y -= primaryExpansion;
+        expanded.height += primaryExpansion * 2.0;
+        expanded.x -= secondaryExpansion;
+        expanded.width += secondaryExpansion * 2.0;
+    }
+    return expanded;
+}
+
+std::size_t backendColumnIndexForVisualGap(const std::vector<overview_drag::Column> &columns, std::size_t visualIndex) {
+    if (columns.empty())
+        return 0;
+
+    visualIndex = std::min(visualIndex, columns.size());
+    if (visualIndex == 0)
+        return columns.front().index;
+    if (visualIndex >= columns.size())
+        return columns.back().index + 1;
+    return columns[visualIndex].index;
+}
+
+std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overview_drag::Rect &workspace,
+                                                                    const std::vector<overview_drag::Column> &columns,
+                                                                    const Vector2D &pointer, overview_drag::Axis axis,
+                                                                    const overview_drag::Rect &draggedPreview) {
+    if (columns.empty() || workspace.width <= 1.0 || workspace.height <= 1.0)
+        return std::nullopt;
+
+    const double pointerP = dragPointerPrimary(pointer, axis);
+    const double pointerS = dragPointerSecondary(pointer, axis);
+    const double workspaceS = dragSecondaryStart(workspace, axis);
+    const double workspaceSLength = dragSecondarySize(workspace, axis);
+    const double workspacePLength = dragPrimarySize(workspace, axis);
+    const double draggedP = dragPrimarySize(draggedPreview, axis);
+    const double draggedS = dragSecondarySize(draggedPreview, axis);
+
+    const auto makeTarget = [&](std::size_t visualGapIndex, double gapPosition) {
+        const double hintP = clampedDragHintLength(draggedP, workspacePLength * 0.28);
+        const double hintS = std::min(std::max(24.0, draggedS), workspaceSLength * 0.9);
+        return overview_drag::InsertTarget{
+            .kind = overview_drag::InsertKind::NewColumn,
+            .column = visualGapIndex,
+            .hint = dragRectFromAxes(gapPosition - hintP * 0.5, workspaceS + (workspaceSLength - hintS) * 0.5, hintP, hintS, axis),
+        };
+    };
+
+    const double firstStart = dragPrimaryStart(columns.front().rect, axis);
+    const double lastEnd = dragPrimaryStart(columns.back().rect, axis) + dragPrimarySize(columns.back().rect, axis);
+    if (pointerP < firstStart)
+        return makeTarget(0, firstStart);
+    if (pointerP > lastEnd)
+        return makeTarget(columns.size(), lastEnd);
+
+    for (std::size_t visualIndex = 0; visualIndex < columns.size(); ++visualIndex) {
+        const auto &column = columns[visualIndex];
+        const double columnP = dragPrimaryStart(column.rect, axis);
+        const double columnPLength = dragPrimarySize(column.rect, axis);
+        const double columnS = dragSecondaryStart(column.rect, axis);
+        const double columnSLength = dragSecondarySize(column.rect, axis);
+        if (columnPLength <= 1.0 || columnSLength <= 1.0)
+            continue;
+
+        const double secondaryMargin = std::clamp(workspaceSLength * 0.08, 12.0, 96.0);
+        if (pointerS < columnS - secondaryMargin || pointerS > columnS + columnSLength + secondaryMargin)
+            continue;
+
+        // Niri's move grab treats the primary axis as the column placement axis:
+        // dropping near a column's primary edge creates a neighboring column,
+        // while dropping through the middle stacks/splits inside that column.
+        // Hymission's generic nearest-gap heuristic was too eager to choose the
+        // secondary/tile gap for partial columns, so positions just outside the
+        // visible viewport became vertical stacks instead of side columns.
+        double sideBand = std::clamp(columnPLength * 0.28, 16.0, 96.0);
+        sideBand = std::min(sideBand, columnPLength * 0.42);
+        if (pointerP <= columnP + sideBand)
+            return makeTarget(visualIndex, columnP);
+        if (pointerP >= columnP + columnPLength - sideBand)
+            return makeTarget(visualIndex + 1, columnP + columnPLength);
+    }
+
+    return std::nullopt;
+}
+
 bool tiledWorkspaceHasWindowOtherThan(const PHLWORKSPACE &workspace, const PHLWINDOW &ignoredWindow) {
     if (!workspace)
         return false;
@@ -331,23 +459,35 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
     if (!draggedWindow)
         return std::nullopt;
 
+    const auto direction = scrollingLayoutDirection();
+    const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
+    const bool reversed = direction == ScrollingLayoutDirection::Left || direction == ScrollingLayoutDirection::Up;
+    const auto primaryAxis = horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical;
+
     const EmptyWorkspacePlaceholder *lane = nullptr;
     Rect laneRect;
     double laneArea = std::numeric_limits<double>::infinity();
+    bool laneExactHit = false;
     for (const auto &placeholder : m_state.emptyWorkspacePlaceholders) {
         if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
             continue;
         const Rect current = currentEmptyWorkspacePlaceholderRect(placeholder);
-        if (!usableRect(current) || !contains(current, pointer))
+        if (!usableRect(current))
+            continue;
+
+        const bool exactHit = contains(current, pointer);
+        if (!exactHit && !contains(expandedLaneHitRectForDirectDrag(current, primaryAxis), pointer))
             continue;
 
         const double area = current.width * current.height;
-        const bool preferVisibleEmptyViewport = lane && lane->backingOnly && !placeholder.backingOnly;
-        const bool preferSmallerSameKind = (!lane || placeholder.backingOnly == lane->backingOnly) && area < laneArea;
-        if (!lane || preferVisibleEmptyViewport || preferSmallerSameKind) {
+        const bool preferExactLane = exactHit && !laneExactHit;
+        const bool preferVisibleEmptyViewport = !preferExactLane && lane && lane->backingOnly && !placeholder.backingOnly;
+        const bool preferSmallerSameKind = !preferExactLane && (!lane || placeholder.backingOnly == lane->backingOnly) && area < laneArea;
+        if (!lane || preferExactLane || preferVisibleEmptyViewport || preferSmallerSameKind) {
             lane = &placeholder;
             laneRect = current;
             laneArea = area;
+            laneExactHit = exactHit;
         }
     }
     if (!lane)
@@ -400,9 +540,6 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         }
     }
 
-    const auto direction = scrollingLayoutDirection();
-    const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
-    const bool reversed = direction == ScrollingLayoutDirection::Left || direction == ScrollingLayoutDirection::Up;
     std::ranges::sort(columns, [&](const overview_drag::Column &lhs, const overview_drag::Column &rhs) {
         const double lhsStart = horizontal ? lhs.rect.x : lhs.rect.y;
         const double rhsStart = horizontal ? rhs.rect.x : rhs.rect.y;
@@ -414,30 +551,26 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         });
     }
 
-    auto insertion = overview_drag::insertionTarget(dragRect(laneRect), columns, pointer.x, pointer.y,
-                                                    horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical, reversed,
+    auto insertion = overview_drag::insertionTarget(dragRect(laneRect), columns, pointer.x, pointer.y, primaryAxis, reversed,
                                                     dragRect(directNiriDraggedPreviewRect()));
     if (!insertion)
         return std::nullopt;
 
-    // overview_drag::insertionTarget returns NewColumn indices in visual-column
-    // space. The scrolling backend needs real SScrollingData column indices.
-    // This especially matters for partial-width columns and skipped/dragged
-    // columns, where visual index != backend index.
-    if (insertion->kind == overview_drag::InsertKind::NewColumn && !columns.empty()) {
+    const auto sideInsertion = sideColumnInsertionTarget(dragRect(laneRect), columns, pointer, primaryAxis, dragRect(directNiriDraggedPreviewRect()));
+    if (sideInsertion) {
+        insertion = sideInsertion;
+        insertion->column = backendColumnIndexForVisualGap(columns, insertion->column);
+    } else if (insertion->kind == overview_drag::InsertKind::NewColumn && !columns.empty()) {
+        // overview_drag::insertionTarget returns NewColumn indices in the
+        // insertion axis's logical direction. Convert back to screen/visual gap
+        // space, then to the real SScrollingData backend column index. This
+        // especially matters for partial-width columns and skipped/dragged
+        // columns, where visual index != backend index.
         std::size_t visualIndex = std::min(insertion->column, columns.size());
         if (reversed)
             visualIndex = columns.size() - visualIndex;
 
-        std::size_t backendIndex = 0;
-        if (visualIndex == 0)
-            backendIndex = columns.front().index;
-        else if (visualIndex >= columns.size())
-            backendIndex = columns.back().index + 1;
-        else
-            backendIndex = columns[visualIndex].index;
-
-        insertion->column = backendIndex;
+        insertion->column = backendColumnIndexForVisualGap(columns, visualIndex);
     }
 
     return NiriDragTarget{
