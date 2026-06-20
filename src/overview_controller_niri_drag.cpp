@@ -77,6 +77,43 @@ bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
 }
 
+bool tiledWorkspaceHasWindowOtherThan(const PHLWORKSPACE &workspace, const PHLWINDOW &ignoredWindow) {
+    if (!workspace)
+        return false;
+
+    for (const auto &candidate : g_pCompositor->m_windows) {
+        if (!candidate || candidate == ignoredWindow || !candidate->m_isMapped || candidate->m_fadingOut || candidate->m_pinned || candidate->onSpecialWorkspace() ||
+            candidate->m_workspace != workspace)
+            continue;
+
+        const auto target = candidate->layoutTarget();
+        if (target && !target->floating())
+            return true;
+    }
+
+    return false;
+}
+
+bool scrollingDataHasUsableColumnOtherThan(Layout::Tiled::CScrollingAlgorithm *scrolling, const PHLWINDOW &ignoredWindow) {
+    if (!scrolling || !scrolling->m_scrollingData)
+        return false;
+
+    for (const auto &column : scrolling->m_scrollingData->columns) {
+        if (!column)
+            continue;
+
+        for (const auto &targetData : column->targetDatas) {
+            const auto target = targetData ? targetData->target.lock() : nullptr;
+            const auto window = target ? target->window() : PHLWINDOW{};
+            if (window && window != ignoredWindow && window->m_isMapped && !window->m_fadingOut && !window->m_pinned && !target->floating())
+                return true;
+        }
+    }
+
+    return false;
+}
+
+
 float safeColumnWidth(float width) {
     if (!std::isfinite(static_cast<double>(width)) || width <= 0.01F)
         return 1.0F;
@@ -477,12 +514,17 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         return false;
 
     auto workspace = target.workspace ? target.workspace : g_pCompositor->getWorkspaceByID(target.workspaceId);
+    const bool createdWorkspaceForDrop = !workspace;
     if (!workspace)
         workspace = g_pCompositor->createNewWorkspace(target.workspaceId, target.monitor->m_id, std::to_string(target.workspaceId), false);
     if (!workspace || workspace->m_isSpecialWorkspace)
         return false;
 
     const auto sourceWorkspace = window->m_workspace;
+    auto *scrollingBeforeMove = scrollingForWorkspace(workspace);
+    const bool targetHadTiledContentBeforeMove = tiledWorkspaceHasWindowOtherThan(workspace, window) || scrollingDataHasUsableColumnOtherThan(scrollingBeforeMove, window);
+    const bool dropIntoEmptyWorkspace = !target.floating && sourceWorkspace != workspace && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
+
     if (sourceWorkspace && sourceWorkspace != workspace)
         niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(sourceWorkspace->m_monitor.lock(), sourceWorkspace);
 
@@ -494,7 +536,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     }
 
-    if (!target.floating) {
+    if (!target.floating && !dropIntoEmptyWorkspace) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (!scrolling || !scrolling->m_scrollingData || !layoutTarget)
@@ -529,6 +571,16 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         }
         data->recalculate();
+    } else if (dropIntoEmptyWorkspace) {
+        // Empty-workspace drops are the unstable path: Hyprland's normal
+        // moveWindowToWorkspaceSafe() already creates the first scrolling column.
+        // Do not remove/re-add the freshly moved target or call SScrollingData::add()
+        // here; doing so can leave renderer-visible window state with an invalid
+        // variant on the next frame.
+        if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
+            scrolling->m_scrollingData->recalculate();
+        if (target.monitor && g_layoutManager)
+            g_layoutManager->recalculateMonitor(target.monitor);
     }
 
     workspace->m_lastFocusedWindow = window;
