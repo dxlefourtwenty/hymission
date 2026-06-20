@@ -501,10 +501,13 @@ void OverviewController::tickDirectNiriWindowDragEdgeScroll() {
     if (!scrolling || !scrolling->m_scrollingData)
         return;
 
-    const auto previousRects = captureCurrentPreviewRects();
+    // Niri keeps the move drag itself as pointer/UI state and only scrolls the
+    // view-offset during the frame tick; it does not rebuild overview cards while
+    // the pointer is still moving. Rebuilding Hymission metadata here was causing
+    // relayout origins/placeholders to be retargeted every edge-scroll frame,
+    // which made workspace wallpaper viewports drift and left ghost previews.
     scrolling->moveTape(static_cast<float>(-m_niriDragSession.edgeVelocity * elapsed));
     refreshWorkspaceLayoutSnapshot(workspace);
-    refreshVisibleStateMetadata(m_niriDragSession.window.lock(), &previousRects, "drag-edge-scroll");
     updateDirectNiriWindowDrag(g_pInputManager->getMouseCoordsInternal());
     damageOwnedMonitors();
 }
@@ -584,12 +587,24 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     }
 
     workspace->m_lastFocusedWindow = window;
+
+    // Dropping into another Niri single-workspace viewport is a workspace-focus
+    // handoff. Keep the overview's authoritative owner on the drop workspace
+    // before rebuilding, otherwise buildState() can keep the old source viewport
+    // centered while the moved window is already on the target workspace. That
+    // mismatch is what produced duplicated/ghost wallpaper viewports after
+    // dragging into an empty workspace.
+    if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        m_state.ownerWorkspace = workspace;
+        m_state.ownerMonitor = target.monitor;
+    }
+
     if (sourceWorkspace)
         refreshWorkspaceLayoutSnapshot(sourceWorkspace);
     refreshWorkspaceLayoutSnapshot(workspace);
     selectWindowInState(m_state, window);
     rebuildVisibleState(window, true);
-    if (!previousPreviewRects.empty())
+    if (!previousPreviewRects.empty() && !dropIntoEmptyWorkspace)
         refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop");
     return true;
 }
