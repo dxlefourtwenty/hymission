@@ -526,7 +526,8 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const auto sourceWorkspace = window->m_workspace;
     auto *scrollingBeforeMove = scrollingForWorkspace(workspace);
     const bool targetHadTiledContentBeforeMove = tiledWorkspaceHasWindowOtherThan(workspace, window) || scrollingDataHasUsableColumnOtherThan(scrollingBeforeMove, window);
-    const bool dropIntoEmptyWorkspace = !target.floating && sourceWorkspace != workspace && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
+    const bool crossWorkspaceDrop = sourceWorkspace && sourceWorkspace != workspace;
+    const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
 
     if (sourceWorkspace && sourceWorkspace != workspace)
         niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(sourceWorkspace->m_monitor.lock(), sourceWorkspace);
@@ -535,11 +536,32 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
         m_applyingWorkspaceTransitionCommit = true;
         g_pCompositor->moveWindowToWorkspaceSafe(window, workspace);
+
+        if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
+            workspace->m_lastFocusedWindow = window;
+            target.monitor->changeWorkspace(workspace, true, true, true);
+            workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+            workspace->m_alpha->setValueAndWarp(1.F);
+            if (g_layoutManager)
+                g_layoutManager->recalculateMonitor(target.monitor);
+        }
+
+        m_applyingWorkspaceTransitionCommit = previousGuard;
+        m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+    } else if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
+        const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+        m_applyingWorkspaceTransitionCommit = true;
+        workspace->m_lastFocusedWindow = window;
+        target.monitor->changeWorkspace(workspace, true, true, true);
+        workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+        workspace->m_alpha->setValueAndWarp(1.F);
+        if (g_layoutManager)
+            g_layoutManager->recalculateMonitor(target.monitor);
         m_applyingWorkspaceTransitionCommit = previousGuard;
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     }
 
-    if (!target.floating && !dropIntoEmptyWorkspace) {
+    if (!target.floating && !dropIntoEmptyWorkspace && !crossWorkspaceDrop) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (!scrolling || !scrolling->m_scrollingData || !layoutTarget)
@@ -574,12 +596,33 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         }
         data->recalculate();
+    } else if (!target.floating && crossWorkspaceDrop) {
+        // Cross-workspace drops must stay native-owned. Niri routes cross-workspace
+        // movement through its interactive move transaction; it does not remove a
+        // live target from one workspace's scrolling data and reinsert it into
+        // another after the move. Doing that here can duplicate target bookkeeping
+        // or leave stale targetDatas that render as ghost columns. Let Hyprland's
+        // moveWindowToWorkspaceSafe() own the target transfer, then rebuild from
+        // the compositor's real window/workspace ownership.
+        if (auto *sourceScrolling = scrollingForWorkspace(sourceWorkspace); sourceScrolling && sourceScrolling->m_scrollingData)
+            sourceScrolling->m_scrollingData->recalculate();
+        if (auto *targetScrolling = scrollingForWorkspace(workspace); targetScrolling && targetScrolling->m_scrollingData)
+            targetScrolling->m_scrollingData->recalculate();
+        if (sourceWorkspace) {
+            if (const auto sourceMonitor = sourceWorkspace->m_monitor.lock(); sourceMonitor && g_layoutManager)
+                g_layoutManager->recalculateMonitor(sourceMonitor);
+        }
+        if (target.monitor && g_layoutManager)
+            g_layoutManager->recalculateMonitor(target.monitor);
     } else if (dropIntoEmptyWorkspace) {
         // Empty-workspace drops are the unstable path: Hyprland's normal
         // moveWindowToWorkspaceSafe() already creates the first scrolling column.
         // Do not remove/re-add the freshly moved target or call SScrollingData::add()
         // here; doing so can leave renderer-visible window state with an invalid
-        // variant on the next frame.
+        // variant on the next frame. Also make the drop workspace the real active
+        // workspace before rebuilding the overview: otherwise Hyprland hides the
+        // moved window because it now belongs to an inactive workspace, leaving
+        // only Hymission's selection border visible.
         if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
             scrolling->m_scrollingData->recalculate();
         if (target.monitor && g_layoutManager)
@@ -604,7 +647,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     refreshWorkspaceLayoutSnapshot(workspace);
     selectWindowInState(m_state, window);
     rebuildVisibleState(window, true);
-    if (!previousPreviewRects.empty() && !dropIntoEmptyWorkspace)
+    if (!previousPreviewRects.empty() && !dropIntoEmptyWorkspace && !crossWorkspaceDrop)
         refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop");
     return true;
 }

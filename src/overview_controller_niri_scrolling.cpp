@@ -162,6 +162,16 @@ bool isFloatingOverviewWindow(const PHLWINDOW& window) {
     return target && target->floating();
 }
 
+template <typename TargetDataPtr>
+bool scrollingTargetDataBelongsToWorkspace(const TargetDataPtr& targetData, const PHLWORKSPACE& workspace) {
+    if (!targetData || !targetData->target || !workspace)
+        return false;
+
+    const auto candidateWindow = targetData->target->window();
+    return candidateWindow && candidateWindow->m_isMapped && !candidateWindow->m_fadingOut && !candidateWindow->m_pinned &&
+        !candidateWindow->onSpecialWorkspace() && candidateWindow->m_workspace == workspace && !targetData->target->floating();
+}
+
 std::string vectorToString(const Vector2D& value) {
     std::ostringstream out;
     out << value.x << ',' << value.y;
@@ -673,7 +683,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         Rect columnBounds{};
         bool hasColumnBounds = false;
         for (const auto& candidate : column->targetDatas) {
-            if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
+            if (!scrollingTargetDataBelongsToWorkspace(candidate, window->m_workspace) || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
                 continue;
 
             const CBox candidateLayoutBox = liveScrollingLayoutBoxForTarget(candidate->target, candidate->layoutBox);
@@ -714,7 +724,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     std::optional<std::size_t> anchorColumnIndex;
     for (std::size_t index = 0; index < columns.size(); ++index) {
         for (const auto& candidate : columns[index].column->targetDatas) {
-            if (!candidate)
+            if (!scrollingTargetDataBelongsToWorkspace(candidate, window->m_workspace))
                 continue;
             if (candidate == targetData)
                 targetColumnIndex = index;
@@ -831,7 +841,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     std::optional<Rect> targetAnchor;
     const auto& targetColumn = columns[*targetColumnIndex];
     for (const auto& candidate : targetColumn.column->targetDatas) {
-        if (!candidate || !candidate->target || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
+        if (!scrollingTargetDataBelongsToWorkspace(candidate, window->m_workspace) || candidate->layoutBox.width <= 1.0 || candidate->layoutBox.height <= 1.0)
             continue;
 
         if (candidate != targetData)
@@ -6941,7 +6951,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (!target)
                 continue;
 
-            appendCandidate(target->window());
+            const auto targetWindow = target->window();
+            if (!targetWindow || targetWindow->m_workspace != workspace)
+                continue;
+
+            appendCandidate(targetWindow);
         }
     }
 
