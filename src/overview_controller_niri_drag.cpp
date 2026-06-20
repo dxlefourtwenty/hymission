@@ -535,27 +535,6 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
         m_applyingWorkspaceTransitionCommit = true;
         g_pCompositor->moveWindowToWorkspaceSafe(window, workspace);
-
-        if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
-            workspace->m_lastFocusedWindow = window;
-            target.monitor->changeWorkspace(workspace, true, true, true);
-            workspace->m_renderOffset->setValueAndWarp(Vector2D{});
-            workspace->m_alpha->setValueAndWarp(1.F);
-            if (g_layoutManager)
-                g_layoutManager->recalculateMonitor(target.monitor);
-        }
-
-        m_applyingWorkspaceTransitionCommit = previousGuard;
-        m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
-    } else if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
-        const bool previousGuard = m_applyingWorkspaceTransitionCommit;
-        m_applyingWorkspaceTransitionCommit = true;
-        workspace->m_lastFocusedWindow = window;
-        target.monitor->changeWorkspace(workspace, true, true, true);
-        workspace->m_renderOffset->setValueAndWarp(Vector2D{});
-        workspace->m_alpha->setValueAndWarp(1.F);
-        if (g_layoutManager)
-            g_layoutManager->recalculateMonitor(target.monitor);
         m_applyingWorkspaceTransitionCommit = previousGuard;
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     }
@@ -600,10 +579,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // moveWindowToWorkspaceSafe() already creates the first scrolling column.
         // Do not remove/re-add the freshly moved target or call SScrollingData::add()
         // here; doing so can leave renderer-visible window state with an invalid
-        // variant on the next frame. Also make the drop workspace the real active
-        // workspace before rebuilding the overview: otherwise Hyprland hides the
-        // moved window because it now belongs to an inactive workspace, leaving
-        // only Hymission's selection border visible.
+        // variant on the next frame.
         if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
             scrolling->m_scrollingData->recalculate();
         if (target.monitor && g_layoutManager)
