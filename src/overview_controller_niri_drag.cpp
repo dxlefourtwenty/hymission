@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <type_traits>
 
 #define private public
@@ -126,19 +127,12 @@ SP<Layout::Tiled::SColumnData> appendColumnAt(ScrollingDataPtr &data, std::size_
     if (!data)
         return {};
 
+    // Hyprland's SScrollingData::add contract is (index, optional width).
+    // Calling add(width) accidentally treats a partial column width such as 0.5
+    // or 1.0 as the insertion index, which corrupts column ordering and can
+    // crash inside SScrollingData::add when dragging stacked/partial columns.
     const std::size_t clampedIndex = std::min(requestedIndex, data->columns.size());
-    auto column = data->add(safeColumnWidth(width));
-    if (!column)
-        return {};
-
-    auto it = std::find(data->columns.begin(), data->columns.end(), column);
-    if (it != data->columns.end() && clampedIndex + 1 < data->columns.size()) {
-        auto inserted = *it;
-        data->columns.erase(it);
-        data->columns.insert(data->columns.begin() + static_cast<std::ptrdiff_t>(std::min(clampedIndex, data->columns.size())), inserted);
-    }
-
-    return column;
+    return data->add(static_cast<int>(clampedIndex), std::optional<float>{safeColumnWidth(width)});
 }
 
 template <typename ScrollingDataPtr>
@@ -434,11 +428,31 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         });
     }
 
-    const auto insertion = overview_drag::insertionTarget(dragRect(laneRect), columns, pointer.x, pointer.y,
-                                                          horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical, reversed,
-                                                          dragRect(directNiriDraggedPreviewRect()));
+    auto insertion = overview_drag::insertionTarget(dragRect(laneRect), columns, pointer.x, pointer.y,
+                                                    horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical, reversed,
+                                                    dragRect(directNiriDraggedPreviewRect()));
     if (!insertion)
         return std::nullopt;
+
+    // overview_drag::insertionTarget returns NewColumn indices in visual-column
+    // space. The scrolling backend needs real SScrollingData column indices.
+    // This especially matters for partial-width columns and skipped/dragged
+    // columns, where visual index != backend index.
+    if (insertion->kind == overview_drag::InsertKind::NewColumn && !columns.empty()) {
+        std::size_t visualIndex = std::min(insertion->column, columns.size());
+        if (reversed)
+            visualIndex = columns.size() - visualIndex;
+
+        std::size_t backendIndex = 0;
+        if (visualIndex == 0)
+            backendIndex = columns.front().index;
+        else if (visualIndex >= columns.size())
+            backendIndex = columns.back().index + 1;
+        else
+            backendIndex = columns[visualIndex].index;
+
+        insertion->column = backendIndex;
+    }
 
     return NiriDragTarget{
         .workspace = workspace,
