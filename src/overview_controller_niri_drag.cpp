@@ -141,6 +141,20 @@ SP<Layout::Tiled::SColumnData> appendColumnAt(ScrollingDataPtr &data, std::size_
     return column;
 }
 
+template <typename ScrollingDataPtr>
+bool eraseColumnIfEmpty(ScrollingDataPtr &data, const SP<Layout::Tiled::SColumnData> &column) {
+    if (!data || !column || !column->targetDatas.empty())
+        return false;
+
+    const auto it = std::find(data->columns.begin(), data->columns.end(), column);
+    if (it == data->columns.end())
+        return false;
+
+    data->columns.erase(it);
+    return true;
+}
+
+
 template <typename Index>
 std::size_t nonNegativeIndex(Index index) {
     if constexpr (std::is_signed_v<Index>)
@@ -381,8 +395,14 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
             for (const auto &targetData : column->targetDatas) {
                 const auto target = targetData ? targetData->target.lock() : nullptr;
                 const auto window = target ? target->window() : PHLWINDOW{};
-                if (!window || window == draggedWindow)
+                if (!window || window == draggedWindow || !window->m_isMapped || window->m_fadingOut || window->m_pinned ||
+                    window->onSpecialWorkspace() || window->m_workspace != workspace)
                     continue;
+
+                const auto liveTarget = window->layoutTarget();
+                if (!liveTarget || liveTarget != target || liveTarget->floating())
+                    continue;
+
                 const auto *managed = managedWindowFor(m_state, window, true);
                 if (!managed)
                     continue;
@@ -573,26 +593,51 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // Do not reuse targetData after remove(). Hyprland's scrolling column owns
         // that bookkeeping object, and re-adding a removed targetData can poison
         // the next render pass. Reinsert the stable layout target instead.
-        if (sourceColumn)
-            sourceColumn->remove(layoutTarget);
-
         auto &data = scrolling->m_scrollingData;
-        if (!data)
+        if (!data || !sourceColumn)
             return false;
 
+        const auto sourceColumnIndexRaw = data->idx(sourceColumn);
+        if constexpr (std::is_signed_v<decltype(sourceColumnIndexRaw)>) {
+            if (sourceColumnIndexRaw < 0)
+                return false;
+        }
+        const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
+
+        const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
+        if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>) {
+            if (sourceTileIndexRaw < 0)
+                return false;
+        }
+        const std::size_t sourceTileIndex = nonNegativeIndex(sourceTileIndexRaw);
+        sourceColumn->remove(layoutTarget);
+
+        const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
+
         if (target.insertion.kind == overview_drag::InsertKind::NewColumn || data->columns.empty()) {
-            const std::size_t index = data->columns.empty() ? 0 : std::min(target.insertion.column, data->columns.size());
+            std::size_t index = data->columns.empty() ? 0 : std::min(target.insertion.column, data->columns.size());
+            if (erasedSourceColumn && sourceColumnIndex < index)
+                --index;
+            index = std::min(index, data->columns.size());
+
             auto column = appendColumnAt(data, index, sourceWidth);
             if (!column)
                 return false;
             column->add(layoutTarget);
         } else {
-            const std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
+            std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
+            if (erasedSourceColumn && sourceColumnIndex < columnIndex)
+                --columnIndex;
+            columnIndex = std::min(columnIndex, data->columns.size() - 1);
+
             auto column = data->columns[columnIndex];
             if (!column)
                 return false;
 
-            const std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
+            std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
+            if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
+                --tileIndex;
+            tileIndex = std::min(tileIndex, column->targetDatas.size());
             addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         }
         data->recalculate();
@@ -604,14 +649,10 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // or leave stale targetDatas that render as ghost columns. Let Hyprland's
         // moveWindowToWorkspaceSafe() own the target transfer, then rebuild from
         // the compositor's real window/workspace ownership.
-        if (auto *sourceScrolling = scrollingForWorkspace(sourceWorkspace); sourceScrolling && sourceScrolling->m_scrollingData)
-            sourceScrolling->m_scrollingData->recalculate();
-        if (auto *targetScrolling = scrollingForWorkspace(workspace); targetScrolling && targetScrolling->m_scrollingData)
-            targetScrolling->m_scrollingData->recalculate();
-        if (sourceWorkspace) {
-            if (const auto sourceMonitor = sourceWorkspace->m_monitor.lock(); sourceMonitor && g_layoutManager)
-                g_layoutManager->recalculateMonitor(sourceMonitor);
-        }
+        // Do not force-recalculate the source scrolling data immediately after a
+        // native cross-workspace transfer. Hyprland can still carry old weak
+        // target entries for a short time; recalculating that source workspace here
+        // can revive those entries as ghost partial columns or crash the next render.
         if (target.monitor && g_layoutManager)
             g_layoutManager->recalculateMonitor(target.monitor);
     } else if (dropIntoEmptyWorkspace) {
@@ -642,7 +683,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         m_state.ownerMonitor = target.monitor;
     }
 
-    if (sourceWorkspace)
+    if (sourceWorkspace && !crossWorkspaceDrop)
         refreshWorkspaceLayoutSnapshot(sourceWorkspace);
     refreshWorkspaceLayoutSnapshot(workspace);
     selectWindowInState(m_state, window);

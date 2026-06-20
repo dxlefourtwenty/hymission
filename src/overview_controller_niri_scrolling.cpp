@@ -168,8 +168,40 @@ bool scrollingTargetDataBelongsToWorkspace(const TargetDataPtr& targetData, cons
         return false;
 
     const auto candidateWindow = targetData->target->window();
-    return candidateWindow && candidateWindow->m_isMapped && !candidateWindow->m_fadingOut && !candidateWindow->m_pinned &&
-        !candidateWindow->onSpecialWorkspace() && candidateWindow->m_workspace == workspace && !targetData->target->floating();
+    if (!candidateWindow || !candidateWindow->m_isMapped || candidateWindow->m_fadingOut || candidateWindow->m_pinned ||
+        candidateWindow->onSpecialWorkspace() || candidateWindow->m_workspace != workspace)
+        return false;
+
+    const auto liveTarget = candidateWindow->layoutTarget();
+    return liveTarget && liveTarget == targetData->target && !targetData->target->floating();
+}
+
+bool scrollingDataHasStaleWorkspaceTargets(Layout::Tiled::CScrollingAlgorithm* scrolling, const PHLWORKSPACE& workspace) {
+    if (!scrolling || !scrolling->m_scrollingData || !workspace)
+        return false;
+
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column)
+            continue;
+        if (column->targetDatas.empty())
+            return true;
+
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target)
+                return true;
+
+            const auto candidateWindow = targetData->target->window();
+            if (!candidateWindow)
+                return true;
+
+            const auto liveTarget = candidateWindow->layoutTarget();
+            if (!candidateWindow->m_isMapped || candidateWindow->m_fadingOut || candidateWindow->m_pinned ||
+                candidateWindow->onSpecialWorkspace() || candidateWindow->m_workspace != workspace || !liveTarget || liveTarget != targetData->target)
+                return true;
+        }
+    }
+
+    return false;
 }
 
 std::string vectorToString(const Vector2D& value) {
@@ -5306,6 +5338,12 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
     if (isScrollingWorkspace(workspace)) {
         auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
         if (scrolling && scrolling->m_scrollingData) {
+            if (scrollingDataHasStaleWorkspaceTargets(scrolling, workspace)) {
+                if (debugLogsEnabled())
+                    debugLog("[hymission] skip stale scrolling snapshot workspace=" + debugWorkspaceLabel(workspace));
+                return;
+            }
+
             scrolling->m_scrollingData->recalculate(true);
             return;
         }
@@ -6953,6 +6991,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
             const auto targetWindow = target->window();
             if (!targetWindow || targetWindow->m_workspace != workspace)
+                continue;
+
+            const auto liveTarget = targetWindow->layoutTarget();
+            if (!liveTarget || liveTarget != target)
                 continue;
 
             appendCandidate(targetWindow);
