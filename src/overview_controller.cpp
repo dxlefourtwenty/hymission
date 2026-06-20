@@ -3949,14 +3949,17 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             m_pressedWindowIndex.reset();
             m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
             latchHoverSelectionAnchor(m_pressedWindowPointer);
-            if (clickedWindow)
+            if (directNiriSingleWorkspaceScrollClick) {
+                syncRealFocusDuringOverview(clickedWindow, true, &previousPreviewRects, true);
+            } else if (clickedWindow) {
                 (void)syncScrollingWorkspaceSpotOnWindow(
                     clickedWindow,
                     ScrollingSpotTargeting::Configured,
-                    directNiriSingleWorkspaceScrollClick ? ScrollingSpotSyncIntent::FocusChange : ScrollingSpotSyncIntent::PreserveNativeCamera);
+                    ScrollingSpotSyncIntent::PreserveNativeCamera);
+            }
             updateSelectedWindowLayout(previousSelectedWindow);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus",
-                                                           directNiriSingleWorkspaceScrollClick ? &previousPreviewRects : nullptr);
+            if (!directNiriSingleWorkspaceScrollClick)
+                refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus");
             damageOwnedMonitors();
             return true;
         }
@@ -3974,12 +3977,9 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         m_pressedWindowIndex = effectiveHoveredIndex;
         m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
         latchHoverSelectionAnchor(m_pressedWindowPointer);
+        if (directNiriSingleWorkspaceScrollClick)
+            syncRealFocusDuringOverview(clickedWindow, true, &previousPreviewRects, true);
         updateSelectedWindowLayout(previousSelectedWindow);
-        if (directNiriSingleWorkspaceScrollClick) {
-            (void)syncScrollingWorkspaceSpotOnWindow(
-                clickedWindow, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus", &previousPreviewRects);
-        }
         damageOwnedMonitors();
         return true;
     }

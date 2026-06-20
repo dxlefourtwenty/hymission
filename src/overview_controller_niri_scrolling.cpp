@@ -3165,7 +3165,8 @@ void OverviewController::refreshExitLayoutForFocus(const PHLWINDOW& window) cons
     for (const auto& monitor : monitors)
         g_layoutManager->recalculateMonitor(monitor);
 }
-void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot, const PreviewRectSnapshot* previousPreviewRects) {
+void OverviewController::syncRealFocusDuringOverview(
+    const PHLWINDOW& window, bool syncScrollingSpot, const PreviewRectSnapshot* previousPreviewRects, bool forceRealFocus) {
     if (!window || !window->m_isMapped || !hasManagedWindow(window))
         return;
 
@@ -3178,16 +3179,24 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
             << " workspace=" << debugWorkspaceLabel(workspace)
             << " syncScrollingSpot=" << (syncScrollingSpot ? 1 : 0)
             << " suppressSwapcolScroll=" << (suppressSwapColumnFollowupScroll ? 1 : 0)
+            << " forceRealFocus=" << (forceRealFocus ? 1 : 0)
             << " shouldSyncRealFocus=" << (shouldSyncRealFocusDuringOverview() ? 1 : 0)
             << " active=" << debugWindowLabel(Desktop::focusState()->window());
         debugLog(out.str());
         logSwapColumnFollowupState("sync-real-focus-request", workspace, "focus-sync", window);
     }
 
-    if (!shouldSyncRealFocusDuringOverview()) {
-        if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
-            (void)syncScrollingWorkspaceSpotOnWindow(
-                window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
+    const auto syncSpotWithoutFocusChange = [&]() {
+        if (!syncScrollingSpot || suppressSwapColumnFollowupScroll)
+            return;
+
+        if (syncScrollingWorkspaceSpotOnWindow(window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange) &&
+            shouldSyncScrollingLayoutDuringOverviewFocus())
+            refreshNiriScrollingOverviewAfterLayoutScroll("focus-sync", previousPreviewRects);
+    };
+
+    if (!forceRealFocus && !shouldSyncRealFocusDuringOverview()) {
+        syncSpotWithoutFocusChange();
         if (debugLogsEnabled()) {
             debugLog("[hymission] sync real focus early return reason=real-focus-disabled");
             logSwapColumnFollowupState("sync-real-focus-disabled", workspace, "focus-sync", window);
@@ -3196,9 +3205,7 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     }
 
     if (Desktop::focusState()->window() == window) {
-        if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
-            (void)syncScrollingWorkspaceSpotOnWindow(
-                window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
+        syncSpotWithoutFocusChange();
         if (debugLogsEnabled()) {
             debugLog("[hymission] sync real focus early return reason=already-focused");
             logSwapColumnFollowupState("sync-real-focus-already-focused", workspace, "focus-sync", window);

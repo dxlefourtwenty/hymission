@@ -756,7 +756,7 @@ class OverviewController {
         ScrollingSpotSyncIntent intent = ScrollingSpotSyncIntent::PreserveNativeCamera) const;
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
-                                                          const PreviewRectSnapshot* previousPreviewRects = nullptr);
+                                                          const PreviewRectSnapshot* previousPreviewRects = nullptr, bool forceRealFocus = false);
     void                       syncFocusDuringOverviewFromSelection(bool syncScrollingSpot = true, const char* source = "?", bool centerCursor = false);
     [[nodiscard]] bool         refocusDirectNiriSelectionWithoutScroll(const char* source = "?");
     void                       armPendingSwapColumnRelayoutCommit(const PHLWORKSPACE& workspace);
