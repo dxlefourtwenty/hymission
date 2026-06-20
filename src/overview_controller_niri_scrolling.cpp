@@ -4138,8 +4138,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
-    const bool commitLeafEdgeRelayout = animateDirectStripRelayout && leafMoveColumnTowardEdge && m_state.phase == Phase::Active;
-    const auto directStripPreviewRects = commitLeafEdgeRelayout ? commitActiveNiriRelayoutForRetarget() :
+    const bool commitActiveStripRelayout = animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive;
+    const auto directStripPreviewRects = commitActiveStripRelayout ? commitActiveNiriRelayoutForRetarget() :
         (animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{});
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
 
