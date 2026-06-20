@@ -3978,15 +3978,16 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
 
         if (stripWindowIndexAtPointer && *stripWindowIndexAtPointer < m_state.windows.size()) {
             clearStripWindowDragState();
-            m_state.selectedIndex = stripWindowIndexAtPointer;
-            m_state.focusDuringOverview = m_state.windows[*stripWindowIndexAtPointer].window;
+            // Do not focus/retarget the native scrolling camera on press. A strip
+            // press is only a click if it is released under binds:drag_threshold;
+            // movement past that threshold becomes a drag/drop operation instead.
             m_pressedWindowIndex = stripWindowIndexAtPointer;
             m_pressedWindowPointer = pointerBeforeUpdate;
             latchHoverSelectionAnchor(m_pressedWindowPointer);
             if (debugLogsEnabled()) {
                 std::ostringstream out;
                 out << "[hymission] mouse press captured strip window index=" << *m_pressedWindowIndex
-                    << " strip=" << *effectiveHoveredStripIndex;
+                    << " strip=" << *effectiveHoveredStripIndex << " deferredFocus=1";
                 debugLog(out.str());
             }
             damageOwnedMonitors();
@@ -4093,8 +4094,22 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             return true;
         }
 
+        if (directNiriSingleWorkspaceScrollClick) {
+            clearStripWindowDragState();
+            m_pressedWindowIndex = effectiveHoveredIndex;
+            m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
+            latchHoverSelectionAnchor(m_pressedWindowPointer);
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] mouse press captured direct niri window index=" << *m_pressedWindowIndex
+                    << " deferredFocus=1";
+                debugLog(out.str());
+            }
+            damageOwnedMonitors();
+            return true;
+        }
+
         const auto previousSelectedWindow = selectedWindow();
-        const auto previousPreviewRects = directNiriSingleWorkspaceScrollClick ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
         m_state.selectedIndex = effectiveHoveredIndex;
         m_state.focusDuringOverview = clickedWindow;
         m_queuedOverviewSelectionTarget.reset();
@@ -4106,8 +4121,6 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         m_pressedWindowIndex = effectiveHoveredIndex;
         m_pressedWindowPointer = g_pInputManager->getMouseCoordsInternal();
         latchHoverSelectionAnchor(m_pressedWindowPointer);
-        if (directNiriSingleWorkspaceScrollClick)
-            syncRealFocusDuringOverview(clickedWindow, true, &previousPreviewRects, true);
         updateSelectedWindowLayout(previousSelectedWindow);
         damageOwnedMonitors();
         return true;

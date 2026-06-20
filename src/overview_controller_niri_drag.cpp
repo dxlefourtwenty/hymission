@@ -2,6 +2,7 @@
 #include "overview_controller_niri_scrolling.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 #include <type_traits>
@@ -74,6 +75,33 @@ bool g_directNiriDragFinishScheduled = false;
 
 bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
+}
+
+float safeColumnWidth(float width) {
+    if (!std::isfinite(static_cast<double>(width)) || width <= 0.01F)
+        return 1.0F;
+
+    return std::clamp(width, 0.05F, 10.0F);
+}
+
+template <typename ScrollingDataPtr>
+SP<Layout::Tiled::SColumnData> appendColumnAt(ScrollingDataPtr &data, std::size_t requestedIndex, float width) {
+    if (!data)
+        return {};
+
+    const std::size_t clampedIndex = std::min(requestedIndex, data->columns.size());
+    auto column = data->add(safeColumnWidth(width));
+    if (!column)
+        return {};
+
+    auto it = std::find(data->columns.begin(), data->columns.end(), column);
+    if (it != data->columns.end() && clampedIndex + 1 < data->columns.size()) {
+        auto inserted = *it;
+        data->columns.erase(it);
+        data->columns.insert(data->columns.begin() + static_cast<std::ptrdiff_t>(std::min(clampedIndex, data->columns.size())), inserted);
+    }
+
+    return column;
 }
 
 template <typename Index>
@@ -160,7 +188,7 @@ void restoreDetachedDragSource(const PHLWINDOW &window, const PHLWORKSPACE &work
     auto &data = scrolling->m_scrollingData;
     const std::size_t columnIndex = std::min(sourceColumn, data->columns.size());
     if (columnIndex == data->columns.size()) {
-        auto column = data->add(sourceColumnWidth);
+        auto column = appendColumnAt(data, data->columns.size(), sourceColumnWidth);
         addLayoutTargetToColumn(column, layoutTarget, 0, true);
     } else {
         auto column = data->columns[columnIndex];
@@ -473,27 +501,32 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             return false;
         const auto targetData = scrolling->dataFor(layoutTarget);
         const auto sourceColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-        const float sourceWidth = m_niriDragSession.detached ? m_niriDragSession.sourceColumnWidth
-                                                             : (sourceColumn ? sourceColumn->getColumnWidth() : m_niriDragSession.sourceColumnWidth);
+        const float sourceWidth = safeColumnWidth(sourceColumn ? sourceColumn->getColumnWidth() : 1.0F);
+
+        // Do not reuse targetData after remove(). Hyprland's scrolling column owns
+        // that bookkeeping object, and re-adding a removed targetData can poison
+        // the next render pass. Reinsert the stable layout target instead.
         if (sourceColumn)
             sourceColumn->remove(layoutTarget);
 
         auto &data = scrolling->m_scrollingData;
+        if (!data)
+            return false;
+
         if (target.insertion.kind == overview_drag::InsertKind::NewColumn || data->columns.empty()) {
-            const std::size_t index = std::min(target.insertion.column, data->columns.size());
-            auto column = index == data->columns.size() ? data->add(sourceWidth) : data->add(static_cast<int>(index) - 1, sourceWidth);
-            if (targetData)
-                column->add(targetData);
-            else
-                column->add(layoutTarget);
+            const std::size_t index = data->columns.empty() ? 0 : std::min(target.insertion.column, data->columns.size());
+            auto column = appendColumnAt(data, index, sourceWidth);
+            if (!column)
+                return false;
+            column->add(layoutTarget);
         } else {
             const std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
             auto column = data->columns[columnIndex];
+            if (!column)
+                return false;
+
             const std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
-            if (targetData)
-                column->add(targetData, static_cast<int>(tileIndex) - 1);
-            else
-                column->add(layoutTarget, static_cast<int>(tileIndex) - 1);
+            addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         }
         data->recalculate();
     }
@@ -547,20 +580,25 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         damageOwnedMonitors();
     };
 
-    if (insideRenderLifecycle() && g_pEventLoopManager) {
+    if (g_pEventLoopManager) {
         if (!g_directNiriDragFinishScheduled) {
             g_directNiriDragFinishScheduled = true;
             g_pEventLoopManager->doLater([this, finishCommit] {
-                g_directNiriDragFinishScheduled = false;
-                if (insideRenderLifecycle() && g_pEventLoopManager) {
-                    g_directNiriDragFinishScheduled = true;
-                    g_pEventLoopManager->doLater([finishCommit] {
-                        g_directNiriDragFinishScheduled = false;
-                        finishCommit();
-                    });
-                    return;
-                }
-                finishCommit();
+                const auto runAfterRender = [this, finishCommit] {
+                    if (insideRenderLifecycle() && g_pEventLoopManager) {
+                        g_pEventLoopManager->doLater([this, finishCommit] {
+                            g_directNiriDragFinishScheduled = false;
+                            if (!insideRenderLifecycle())
+                                finishCommit();
+                        });
+                        return;
+                    }
+
+                    g_directNiriDragFinishScheduled = false;
+                    finishCommit();
+                };
+
+                runAfterRender();
             });
         }
         m_niriDragSession = {};
