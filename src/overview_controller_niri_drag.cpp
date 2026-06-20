@@ -63,6 +63,53 @@ bool contains(const Rect &rect, const Vector2D &point) {
     return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
 }
 
+
+double rectArea(const Rect &rect) {
+    return std::max(0.0, rect.width) * std::max(0.0, rect.height);
+}
+
+double rectIntersectionArea(const Rect &lhs, const Rect &rhs) {
+    const double x1 = std::max(lhs.x, rhs.x);
+    const double y1 = std::max(lhs.y, rhs.y);
+    const double x2 = std::min(lhs.x + lhs.width, rhs.x + rhs.width);
+    const double y2 = std::min(lhs.y + lhs.height, rhs.y + rhs.height);
+    return std::max(0.0, x2 - x1) * std::max(0.0, y2 - y1);
+}
+
+template <typename SessionLike, typename TargetLike>
+bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::optional<TargetLike> &target, const Vector2D &releasePoint) {
+    if (!target || target->floating)
+        return false;
+
+    const auto sourceWorkspace = session.sourceWorkspace.lock();
+    if (!sourceWorkspace || target->workspace != sourceWorkspace)
+        return false;
+
+    if (target->insertion.kind == overview_drag::InsertKind::InColumn && target->insertion.column == session.sourceColumn &&
+        target->insertion.tile == session.sourceTile)
+        return true;
+
+    if (session.previewRect.width <= 1.0 || session.previewRect.height <= 1.0)
+        return false;
+
+    const Rect droppedPreview{
+        releasePoint.x - session.previewRect.width * session.pointerRatio.x,
+        releasePoint.y - session.previewRect.height * session.pointerRatio.y,
+        session.previewRect.width,
+        session.previewRect.height,
+    };
+
+    const double sourceArea = rectArea(session.previewRect);
+    if (sourceArea <= 1.0)
+        return contains(session.previewRect, releasePoint);
+
+    const double overlapRatio = rectIntersectionArea(session.previewRect, droppedPreview) / sourceArea;
+    if (overlapRatio >= 0.50)
+        return true;
+
+    return contains(session.previewRect, releasePoint);
+}
+
 Rect unionRect(const Rect &lhs, const Rect &rhs) {
     if (lhs.width <= 0.0 || lhs.height <= 0.0)
         return rhs;
@@ -641,33 +688,14 @@ void OverviewController::updateDirectNiriWindowDrag(const Vector2D &pointer) {
         return;
 
     m_niriDragSession.target = directNiriDragTargetAt(pointer);
-    double velocity = 0.0;
-    if (m_niriDragSession.target) {
-        const auto &target = *m_niriDragSession.target;
-        const auto lane = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(), [&](const auto &placeholder) {
-            return placeholder.monitor == target.monitor && placeholder.workspaceId == target.workspaceId && usableRect(currentEmptyWorkspacePlaceholderRect(placeholder));
-        });
-        if (lane != m_state.emptyWorkspacePlaceholders.end()) {
-            const auto direction = scrollingLayoutDirection();
-            const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
-            const bool reversed = direction == ScrollingLayoutDirection::Left || direction == ScrollingLayoutDirection::Up;
-            velocity = overview_drag::edgeScrollVelocity(dragRect(currentEmptyWorkspacePlaceholderRect(*lane)), pointer.x, pointer.y,
-                                                         horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical, reversed,
-                                                         configFloat("plugin:hymission:niri_drag_edge_scroll_trigger", 30.0),
-                                                         configFloat("plugin:hymission:niri_drag_edge_scroll_max_speed", 1500.0));
-        }
-    }
 
-    const auto now = std::chrono::steady_clock::now();
-    if (std::abs(velocity) <= 0.001) {
-        m_niriDragSession.edgeEnteredAt = {};
-        m_niriDragSession.edgeVelocity = 0.0;
-    } else {
-        if (m_niriDragSession.edgeEnteredAt == std::chrono::steady_clock::time_point{})
-            m_niriDragSession.edgeEnteredAt = now;
-        m_niriDragSession.edgeVelocity = velocity;
-    }
-    m_niriDragSession.lastEdgeTick = now;
+    // Niri's move grab keeps placement as pointer/UI state.  Do not pan the
+    // scrolling tape while a window is being positioned in the overview: the
+    // slow edge-scroll fights the drop hint, makes off-viewport placement janky,
+    // and can move the target out from under the pointer before release.
+    m_niriDragSession.edgeEnteredAt = {};
+    m_niriDragSession.edgeVelocity = 0.0;
+    m_niriDragSession.lastEdgeTick = std::chrono::steady_clock::now();
     damageOwnedMonitors();
 }
 
@@ -1107,6 +1135,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
     const auto window = session.window.lock();
     const auto target = session.target;
     const auto previousRects = captureCurrentPreviewRects();
+    const Vector2D releasePoint = g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : Vector2D{};
 
     m_niriDragSession.active = false;
     m_draggedWindowIndex.reset();
@@ -1117,12 +1146,17 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         return true;
     }
 
-    const auto finishCommit = [this, session, window, target, previousRects] {
+    const auto finishCommit = [this, session, window, target, previousRects, releasePoint] {
         const NiriDragSession previousSession = m_niriDragSession;
         m_niriDragSession = session;
         m_niriDragSession.active = false;
 
-        if (target) {
+        if (target && directNiriDropReturnsToSourceSlot(session, target, releasePoint)) {
+            const auto sourceWorkspace = session.sourceWorkspace.lock();
+            refreshWorkspaceLayoutSnapshot(sourceWorkspace);
+            selectWindowInState(m_state, window);
+            rebuildVisibleState(window, true);
+        } else if (target) {
             (void)applyDirectNiriDragTarget(window, *target, previousRects);
         } else if (session.detached) {
             const auto sourceWorkspace = session.sourceWorkspace.lock();
