@@ -8640,6 +8640,38 @@ OverviewController::PreviewRectSnapshot OverviewController::captureCurrentPrevie
     return rects;
 }
 
+OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRelayoutForRetarget() {
+    if (m_state.relayoutActive && m_relayoutProgressAnimation)
+        m_state.relayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
+
+    auto previewRects = captureCurrentPreviewRects();
+    if (!m_state.relayoutActive)
+        return previewRects;
+
+    m_state.slots.clear();
+    m_state.slots.reserve(m_state.windows.size());
+    for (auto& managed : m_state.windows) {
+        const auto preview = std::ranges::find_if(previewRects, [&](const auto& candidate) { return candidate.first == managed.window; });
+        if (preview != previewRects.end()) {
+            managed.targetGlobal = preview->second;
+            managed.relayoutFromGlobal = preview->second;
+            if (managed.targetMonitor)
+                managed.slot.target = rectToMonitorLocal(preview->second, managed.targetMonitor);
+        }
+        m_state.slots.push_back(managed.slot);
+    }
+
+    m_relayoutProgressAnimation.reset();
+    m_state.relayoutActive = false;
+    m_state.relayoutProgress = 1.0;
+    m_state.relayoutStart = {};
+
+    if (debugLogsEnabled())
+        debugLog("[hymission] committed active niri relayout for retarget");
+
+    return previewRects;
+}
+
 std::vector<Rect> OverviewController::targetRects() const {
     std::vector<Rect> rects;
     rects.reserve(m_state.windows.size());

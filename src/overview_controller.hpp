@@ -612,6 +612,7 @@ class OverviewController {
     [[nodiscard]] bool         shouldManageWindow(const PHLWINDOW& window, const State& state) const;
     [[nodiscard]] std::string  collectionSummary(const PHLMONITOR& monitor) const;
     [[nodiscard]] PreviewRectSnapshot captureCurrentPreviewRects() const;
+    [[nodiscard]] PreviewRectSnapshot commitActiveNiriRelayoutForRetarget();
     [[nodiscard]] std::vector<Rect> targetRects() const;
     [[nodiscard]] Rect         workspaceStripBandRectForMonitor(const PHLMONITOR& monitor, const State& state) const;
     [[nodiscard]] Rect         overviewContentRectForMonitor(const PHLMONITOR& monitor, const State& state) const;

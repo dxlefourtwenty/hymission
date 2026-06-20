@@ -4138,18 +4138,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
-    if (animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive) {
-        // Key repeat can dispatch the last leaf -> scroll-past movecol between
-        // render ticks.  The visible windowsMove progress lives on the Hyprland
-        // animation variable, while m_state.relayoutProgress may still contain the
-        // previous frame.  Pull the current value before capturing relayout origins
-        // so the edge-camera animation starts from the actually visible strip.
-        if (m_relayoutProgressAnimation)
-            m_state.relayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
-        else
-            m_state.relayoutProgress = 1.0;
-    }
-    const auto directStripPreviewRects = animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
+    const bool commitLeafEdgeRelayout = animateDirectStripRelayout && leafMoveColumnTowardEdge && m_state.phase == Phase::Active;
+    const auto directStripPreviewRects = commitLeafEdgeRelayout ? commitActiveNiriRelayoutForRetarget() :
+        (animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{});
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
