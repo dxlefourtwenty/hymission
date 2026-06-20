@@ -3932,6 +3932,61 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             const bool wasAlreadySelected = m_state.selectedIndex && *m_state.selectedIndex == pressedIndex;
 
             if (directNiriPressedWindow && !wasAlreadySelected) {
+                const auto pressedWorkspace = pressedWindow && !pressedWindow->m_pinned ? pressedWindow->m_workspace : PHLWORKSPACE{};
+                const auto currentNiriWorkspace = m_state.ownerWorkspace ? m_state.ownerWorkspace : activeLayoutWorkspace();
+                const bool directNiriCrossWorkspacePress = pressedWorkspace && currentNiriWorkspace && pressedWorkspace != currentNiriWorkspace &&
+                    !pressedWorkspace->m_isSpecialWorkspace;
+
+                if (directNiriCrossWorkspacePress) {
+                    m_queuedOverviewSelectionTarget.reset();
+                    m_queuedOverviewSelectionSyncScrollingSpot = false;
+                    m_queuedOverviewSelectionCenterCursor = false;
+                    m_queuedOverviewLiveFocusTarget.reset();
+                    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+                    m_queuedOverviewLiveFocusCenterCursor = false;
+                    clearStripWindowDragState();
+
+                    if (m_workspaceTransition.active)
+                        commitActiveNiriWorkspaceTransitionForRetarget();
+
+                    if (m_workspaceTransition.active) {
+                        damageOwnedMonitors();
+                        return true;
+                    }
+
+                    const auto pressedMonitor = pressedWorkspace->m_monitor.lock();
+                    auto       transitionMonitor = pressedMonitor ? pressedMonitor : m_state.ownerMonitor;
+                    if (!transitionMonitor)
+                        transitionMonitor = g_pCompositor->getMonitorFromCursor();
+
+                    if (transitionMonitor) {
+                        if (debugLogsEnabled()) {
+                            std::ostringstream out;
+                            out << "[hymission] mouse release workspace transition target=" << debugWindowLabel(pressedWindow)
+                                << " from=" << debugWorkspaceLabel(currentNiriWorkspace)
+                                << " to=" << debugWorkspaceLabel(pressedWorkspace)
+                                << " deferredPress=1";
+                            debugLog(out.str());
+                        }
+
+                        const bool startedTransition = beginOverviewWorkspaceTransition(
+                            transitionMonitor,
+                            pressedWorkspace->m_id,
+                            pressedWorkspace->m_name,
+                            pressedWorkspace,
+                            false,
+                            WorkspaceTransitionMode::TimedCommit,
+                            std::nullopt,
+                            pressedWindow);
+
+                        if (startedTransition)
+                            return true;
+                    }
+
+                    // Fall through to the same-workspace focus path if the transition could
+                    // not be created. This keeps a click from being dropped entirely.
+                }
+
                 const auto previousSelectedWindow = selectedWindow();
                 const auto previousPreviewRects = captureCurrentPreviewRects();
 
