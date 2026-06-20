@@ -6494,6 +6494,11 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         clearOverviewWorkspaceTransition();
         return false;
     }
+    if (activateTimedNiriTarget && preferredTargetFocus && !m_workspaceTransition.targetEdgeCameraPreserved &&
+        !rebuildTimedNiriWorkspaceTransitionTarget(preferredTargetFocus)) {
+        clearOverviewWorkspaceTransition();
+        return false;
+    }
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -6505,6 +6510,52 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     }
 
     damageOwnedMonitors();
+    return true;
+}
+
+bool OverviewController::rebuildTimedNiriWorkspaceTransitionTarget(const PHLWINDOW& preferredTargetFocus) {
+    if (!m_workspaceTransition.active || !m_workspaceTransition.targetActivatedEarly || !m_workspaceTransition.monitor ||
+        !preferredTargetFocus || !preferredTargetFocus->m_isMapped)
+        return false;
+
+    const auto targetWorkspace = preferredTargetFocus->m_workspace;
+    if (!targetWorkspace || targetWorkspace->m_id != m_workspaceTransition.targetWorkspaceId)
+        return false;
+
+    const auto anchorMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : m_workspaceTransition.monitor;
+    const std::vector<WorkspaceOverride> overrides = {{
+        .monitorId = m_workspaceTransition.monitor->m_id,
+        .workspace = targetWorkspace,
+        .workspaceId = targetWorkspace->m_id,
+        .workspaceName = targetWorkspace->m_name,
+        .syntheticEmpty = false,
+    }};
+    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, preferredTargetFocus);
+    if (target.participatingMonitors.empty())
+        return false;
+
+    target.ownerWorkspace = targetWorkspace;
+    target.phase = Phase::Active;
+    target.focusBeforeOpen = windowMatchesOverviewScope(m_state.focusBeforeOpen, target, false) ? m_state.focusBeforeOpen : PHLWINDOW{};
+    target.closeMode = m_state.closeMode;
+    target.pendingExitFocus = windowMatchesOverviewScope(m_state.pendingExitFocus, target, false) ? m_state.pendingExitFocus : PHLWINDOW{};
+    target.pendingExitWorkspace = containsHandle(target.managedWorkspaces, m_state.pendingExitWorkspace) ? m_state.pendingExitWorkspace : PHLWORKSPACE{};
+    target.relayoutActive = false;
+    target.relayoutProgress = 1.0;
+    target.relayoutStart = {};
+    refreshWorkspaceStripActivity(target, m_workspaceTransition.monitor, targetWorkspace->m_id);
+    selectWindowInState(target, preferredTargetFocus);
+    target.focusDuringOverview = preferredTargetFocus;
+    m_workspaceTransition.targetState = std::move(target);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] rebuilt timed niri transition target after focus scroll"
+            << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+            << " focus=" << debugWindowLabel(preferredTargetFocus);
+        debugLog(out.str());
+    }
+
     return true;
 }
 

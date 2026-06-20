@@ -662,9 +662,10 @@ class OverviewController {
     [[nodiscard]] bool         resolveOverviewWorkspaceTargetByStep(const PHLMONITOR& monitor, int step, WORKSPACEID& workspaceId, std::string& workspaceName,
                                                                     PHLWORKSPACE& workspace, bool& syntheticEmpty) const;
     [[nodiscard]] bool         beginOverviewWorkspaceTransition(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName, PHLWORKSPACE workspace,
-                                                               bool syntheticEmpty, WorkspaceTransitionMode mode,
-                                                               std::optional<State> sourceStateOverride = std::nullopt,
-                                                               PHLWINDOW preferredTargetFocus = {});
+                                                                bool syntheticEmpty, WorkspaceTransitionMode mode,
+                                                                std::optional<State> sourceStateOverride = std::nullopt,
+                                                                PHLWINDOW preferredTargetFocus = {});
+    [[nodiscard]] bool         rebuildTimedNiriWorkspaceTransitionTarget(const PHLWINDOW& preferredTargetFocus);
     [[nodiscard]] State        captureOverviewWorkspaceTransitionSourceState() const;
     [[nodiscard]] bool         beginExternalOverviewWorkspaceTransition(const PHLWORKSPACE& workspace);
     [[nodiscard]] bool         startOverviewWorkspaceTransitionByStep(const PHLMONITOR& monitor, int step, WorkspaceTransitionMode mode);
