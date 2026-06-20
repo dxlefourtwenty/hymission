@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 #define private public
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
@@ -548,6 +549,29 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool crossWorkspaceDrop = sourceWorkspace && sourceWorkspace != workspace;
     const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
 
+    std::optional<State> crossWorkspaceTransitionSource;
+    if (!target.floating && crossWorkspaceDrop && target.monitor && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+        if (m_workspaceTransition.active)
+            commitActiveNiriWorkspaceTransitionForRetarget();
+
+        State sourceState = captureOverviewWorkspaceTransitionSourceState();
+        if (!previousPreviewRects.empty()) {
+            for (auto &managed : sourceState.windows) {
+                const auto rectIt = std::find_if(previousPreviewRects.begin(), previousPreviewRects.end(), [&](const auto &entry) {
+                    return entry.first == managed.window;
+                });
+                if (rectIt == previousPreviewRects.end())
+                    continue;
+
+                managed.targetGlobal = rectIt->second;
+                managed.relayoutFromGlobal = rectIt->second;
+            }
+        }
+        selectWindowInState(sourceState, window);
+        sourceState.focusDuringOverview = window;
+        crossWorkspaceTransitionSource = std::move(sourceState);
+    }
+
     if (sourceWorkspace && sourceWorkspace != workspace)
         niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(sourceWorkspace->m_monitor.lock(), sourceWorkspace);
 
@@ -555,16 +579,6 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
         m_applyingWorkspaceTransitionCommit = true;
         g_pCompositor->moveWindowToWorkspaceSafe(window, workspace);
-
-        if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
-            workspace->m_lastFocusedWindow = window;
-            target.monitor->changeWorkspace(workspace, true, true, true);
-            workspace->m_renderOffset->setValueAndWarp(Vector2D{});
-            workspace->m_alpha->setValueAndWarp(1.F);
-            if (g_layoutManager)
-                g_layoutManager->recalculateMonitor(target.monitor);
-        }
-
         m_applyingWorkspaceTransitionCommit = previousGuard;
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     } else if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
@@ -711,6 +725,26 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     }
 
     workspace->m_lastFocusedWindow = window;
+
+    if (crossWorkspaceTransitionSource && target.monitor) {
+        selectWindowInState(m_state, window);
+        m_state.focusDuringOverview = window;
+
+        const std::string targetName = workspace->m_name.empty() ? std::to_string(workspace->m_id) : workspace->m_name;
+        const bool startedTransition = beginOverviewWorkspaceTransition(
+            target.monitor,
+            workspace->m_id,
+            targetName,
+            workspace,
+            false,
+            WorkspaceTransitionMode::TimedCommit,
+            std::move(crossWorkspaceTransitionSource),
+            window);
+        if (startedTransition) {
+            damageOwnedMonitors();
+            return true;
+        }
+    }
 
     // Dropping into another Niri single-workspace viewport is a workspace-focus
     // handoff. Keep the overview's authoritative owner on the drop workspace
