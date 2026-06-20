@@ -17,5 +17,6 @@ void clearPendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace);
 bool consumePendingTwoColumnSwapRepair(const PHLWORKSPACE& workspace);
 bool isActiveController(const OverviewController* controller);
 bool shouldWrapWorkspaceIds(WORKSPACEID targetId, WORKSPACEID currentId);
+void retainDirectNiriWorkspaceLaneForDrag(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace);
 
 } // namespace hymission::niri_scrolling_detail

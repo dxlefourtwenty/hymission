@@ -32,8 +32,10 @@ add_library(hymission SHARED
   src/main.cpp
   src/mission_layout.cpp
   src/overview_logic.cpp
+  src/overview_drag_logic.cpp
   src/overview_controller.cpp
   src/overview_controller_niri_scrolling.cpp
+  src/overview_controller_niri_drag.cpp
 )
 
 target_include_directories(hymission PRIVATE ${HYPR_DEPS_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})
@@ -63,6 +65,14 @@ if(BUILD_TESTING)
 
   target_include_directories(hymission-overview-logic-test PRIVATE src)
   add_test(NAME hymission-overview-logic-test COMMAND hymission-overview-logic-test)
+
+  add_executable(hymission-overview-drag-logic-test
+    tools/overview_drag_logic_test.cpp
+    src/overview_drag_logic.cpp
+  )
+
+  target_include_directories(hymission-overview-drag-logic-test PRIVATE src)
+  add_test(NAME hymission-overview-drag-logic-test COMMAND hymission-overview-drag-logic-test)
 endif()
 
 install(TARGETS hymission LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})

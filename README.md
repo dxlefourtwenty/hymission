@@ -392,6 +392,10 @@ hl.config({
 | `niri_preview_disabled` | bool | `0` | Legacy compatibility option. The preview strip is always disabled in single-workspace scrolling niri mode. |
 | `niri_overview_animations` | bool | `1` | Keep live Hyprland window movement available while the niri overview is open. Open/close and relayout motion use `windowsMove`; workspace switching uses `workspaces`. |
 | `niri_overview_open_close_speed_multiplier` | float | `1.5` | Speed multiplier applied to the live `windowsMove` animation for niri single-workspace overview open and close transitions. The configured curve and style are preserved. |
+| `niri_drag_preview_alpha` | float | `0.75` | Opacity of a window while it is being dragged in the niri single-workspace scrolling overview. |
+| `niri_drag_edge_scroll_trigger` | float | `30.0` | Width in logical pixels of the scrolling-layout edge zone used while dragging a window. |
+| `niri_drag_edge_scroll_delay_ms` | int | `100` | Delay before drag edge scrolling begins. |
+| `niri_drag_edge_scroll_max_speed` | float | `1500.0` | Maximum drag edge-scroll speed in logical pixels per second. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
 | `switch_release_key` | string | `Super_L` | Toggle switch mode only. Release of this key commits the current selection and closes the switch session. Supports keysym names such as `Alt_L` / `Super_L` and `code:N`, and release tracking is resilient to missing per-window release events. |
@@ -432,6 +436,8 @@ Behavior notes:
 The workspace strip is shown when the current overview scope displays only the active workspace.
 By default it only shows real workspaces plus the trailing new-workspace card. In `continuous` mode, synthetic empty workspaces progressively expose numbered gaps one slot at a time and render the monitor background/wallpaper when available; the trailing new-workspace card keeps its dedicated `+` styling.
 With `niri_mode = 1`, `only_active_workspace = 1`, and a Hyprland `scrolling` layout, there is no separate preview strip. Workspaces share one overview scene and use `niri_workspace_gap` for spacing. Tiled previews are rebuilt from Hyprland's live scrolling layout geometry, so resize, move, swap, and focus dispatchers remain owned by Hyprland. `focus_fit_method = 0` centers the focused column; `focus_fit_method = 1` fits it inside the viewport. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the layout while overview is open.
+
+Left-dragging a window in this mode uses Hyprland's `binds:drag_threshold`. Crossing the threshold detaches the tiled window so its source column reflows immediately. The translucent preview follows the grabbed point, and a niri-style insertion hint selects a new column or a position inside an existing column on any visible workspace lane. Releasing outside a valid lane restores the original position. Holding the pointer at a lane's scrolling edge moves its preview camera after the configured delay.
 
 ### Optional Waybar Single-Entry Setup
 

@@ -36,6 +36,7 @@
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 #include "mission_layout.hpp"
+#include "overview_drag_logic.hpp"
 #include "overview_logic.hpp"
 
 class CEventLoopTimer;
@@ -227,6 +228,30 @@ class OverviewController {
         PHLMONITOR               monitor;
         PHLLS                    layer;
         SP<Render::IFramebuffer> framebuffer;
+    };
+
+    struct NiriDragTarget {
+        PHLWORKSPACE                workspace;
+        PHLMONITOR                  monitor;
+        WORKSPACEID                 workspaceId = WORKSPACE_INVALID;
+        overview_drag::InsertTarget insertion;
+        bool                        floating = false;
+    };
+
+    struct NiriDragSession {
+        bool                                  active = false;
+        PHLWINDOWREF                          window;
+        PHLWORKSPACEREF                       sourceWorkspace;
+        Vector2D                              pointerRatio;
+        Rect                                  previewRect;
+        std::size_t                           sourceColumn = 0;
+        std::size_t                           sourceTile = 0;
+        float                                 sourceColumnWidth = 1.0F;
+        bool                                  detached = false;
+        std::optional<NiriDragTarget>         target;
+        std::chrono::steady_clock::time_point edgeEnteredAt = {};
+        std::chrono::steady_clock::time_point lastEdgeTick = {};
+        double                                edgeVelocity = 0.0;
     };
 
     struct State {
@@ -854,11 +879,24 @@ class OverviewController {
     void renderNiriWorkspaceBackgrounds() const;
     void renderEmptyOverviewPlaceholder(bool backingOnlyPass = false) const;
     void renderSelectionChrome() const;
+    void renderNiriDragHint() const;
     void renderOutline(const Rect& rect, const CHyprColor& color, double thickness) const;
     void renderOutline(const Rect& rect, const Config::CGradientValueData& gradient, double thickness, double alpha = 1.0, int round = 0,
                        float roundingPower = 2.0F) const;
     void activateStripTarget(std::size_t index);
     void clearStripWindowDragState();
+    [[nodiscard]] bool canDragWindowInDirectNiriOverview(const PHLWINDOW& window) const;
+    [[nodiscard]] double nativeWindowDragThreshold() const;
+    void beginDirectNiriWindowDrag(std::size_t windowIndex, const Vector2D& pointer);
+    void updateDirectNiriWindowDrag(const Vector2D& pointer);
+    [[nodiscard]] bool finishDirectNiriWindowDrag();
+    void cancelDirectNiriWindowDrag();
+    void tickDirectNiriWindowDragEdgeScroll();
+    [[nodiscard]] Rect directNiriDraggedPreviewRect() const;
+    [[nodiscard]] float directNiriDraggedPreviewAlpha(const PHLWINDOW& window, float fallback) const;
+    [[nodiscard]] std::optional<NiriDragTarget> directNiriDragTargetAt(const Vector2D& pointer) const;
+    [[nodiscard]] bool applyDirectNiriDragTarget(const PHLWINDOW& window, const NiriDragTarget& target,
+                                                  const PreviewRectSnapshot& previousPreviewRects);
     void applyWorkspaceStripCursorShape() const;
     bool refreshWorkspaceStripActivity(State& state, const PHLMONITOR& overrideMonitor = {}, WORKSPACEID overrideWorkspaceId = WORKSPACE_INVALID) const;
     void resetStaleClientCursorShape() const;
@@ -1059,6 +1097,7 @@ class OverviewController {
     std::optional<std::size_t> m_draggedWindowIndex;
     Vector2D                  m_pressedWindowPointer;
     Vector2D                  m_draggedWindowPointerOffset;
+    NiriDragSession           m_niriDragSession;
     Vector2D                  m_hoverSelectionAnchorPointer;
     bool                      m_hoverSelectionAnchorValid = false;
     std::chrono::steady_clock::time_point m_hoverSelectionRetargetBlockedUntil = {};

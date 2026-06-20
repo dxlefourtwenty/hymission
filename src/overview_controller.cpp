@@ -106,6 +106,7 @@ class OverviewOverlayPassElement final : public IPassElement {
         m_controller->renderHiddenStripLayerProxies();
         m_controller->renderEmptyOverviewPlaceholder();
         m_controller->renderSelectionChrome();
+        m_controller->renderNiriDragHint();
         m_controller->renderWorkspaceStrip();
         return {};
     }
@@ -3502,6 +3503,8 @@ void OverviewController::renderStage(eRenderStage stage) {
     }
 
     if (stage == RENDER_POST_WALLPAPER) {
+        if (m_niriDragSession.active && monitor == m_state.ownerMonitor)
+            tickDirectNiriWindowDragEdgeScroll();
         if (m_cursorShapeResetFrames > 0) {
             resetStaleClientCursorShape();
             --m_cursorShapeResetFrames;
@@ -3647,9 +3650,17 @@ void OverviewController::handleMouseMove() {
         updateHoveredFromPointer(false, false, false, false, "mouse-move-drag");
 
         const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
+        if (m_niriDragSession.active) {
+            updateDirectNiriWindowDrag(pointer);
+            return;
+        }
+
         if (!m_draggedWindowIndex && m_pressedWindowIndex && *m_pressedWindowIndex < m_state.windows.size()) {
             const double distance = std::hypot(pointer.x - m_pressedWindowPointer.x, pointer.y - m_pressedWindowPointer.y);
-            if (distance >= 14.0) {
+            const auto window = m_state.windows[*m_pressedWindowIndex].window;
+            if (canDragWindowInDirectNiriOverview(window) && distance >= nativeWindowDragThreshold()) {
+                beginDirectNiriWindowDrag(*m_pressedWindowIndex, pointer);
+            } else if (!canDragWindowInDirectNiriOverview(window) && distance >= 14.0) {
                 const auto& managed = m_state.windows[*m_pressedWindowIndex];
                 const Rect  rect = currentPreviewRect(managed);
                 m_draggedWindowIndex = m_pressedWindowIndex;
@@ -3748,6 +3759,11 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
     }
 
     if (effectiveState == WL_POINTER_BUTTON_STATE_RELEASED) {
+        if (finishDirectNiriWindowDrag()) {
+            clearStripWindowDragState();
+            return true;
+        }
+
         if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size()) {
             const auto window = m_state.windows[*m_draggedWindowIndex].window;
             const auto hoveredStripIndex = m_state.hoveredStripIndex;
@@ -8807,7 +8823,7 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState)))
         return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
 
-    return managed ? managed->previewAlpha : fallback;
+    return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
 }
 
 PHLMONITOR OverviewController::focusMonitorForWindow(const PHLWINDOW& window) const {
@@ -8978,6 +8994,8 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     } else {
         current = workspaceTransitionRectForWindow(window).value_or(currentPreviewRect(*managed));
     }
+    if (m_niriDragSession.active && m_niriDragSession.window.lock() == window)
+        current = directNiriDraggedPreviewRect();
     const Rect   actual = surfaceRenderGlobalRectForWindow(window);
     const double actualWidth = std::max(1.0, actual.width);
     const double actualHeight = std::max(1.0, actual.height);
@@ -13139,11 +13157,13 @@ void OverviewController::activateSelection() {
 }
 
 void OverviewController::clearStripWindowDragState() {
+    cancelDirectNiriWindowDrag();
     m_pressedStripIndex.reset();
     m_pressedWindowIndex.reset();
     m_draggedWindowIndex.reset();
     m_pressedWindowPointer = {};
     m_draggedWindowPointerOffset = {};
+    m_niriDragSession = {};
 }
 
 void OverviewController::applyWorkspaceStripCursorShape() const {
@@ -13571,7 +13591,7 @@ void OverviewController::renderSelectionChrome() const {
         renderFocusedWindowBorder(m_state, borderProgress, false);
     }
 
-    if (m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
+    if (!m_niriDragSession.active && m_draggedWindowIndex && *m_draggedWindowIndex < m_state.windows.size() && m_state.windows[*m_draggedWindowIndex].targetMonitor == renderMonitor) {
         const auto& window = m_state.windows[*m_draggedWindowIndex];
         const Rect  preview = currentPreviewRect(window);
         const auto  pointer = g_pInputManager->getMouseCoordsInternal();

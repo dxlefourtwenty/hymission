@@ -925,7 +925,7 @@ struct RetainedDirectNiriWorkspaceLane {
 
 std::unordered_map<MONITORID, std::vector<RetainedDirectNiriWorkspaceLane>> g_retainedDirectNiriWorkspaceLanes;
 
-void retainDirectNiriWorkspaceLaneId(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName = {}) {
+void retainDirectNiriWorkspaceLaneId(const PHLMONITOR& monitor, WORKSPACEID workspaceId, std::string workspaceName) {
     if (!monitor || workspaceId == WORKSPACE_INVALID)
         return;
 
@@ -985,6 +985,10 @@ const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
 
 
 } // namespace
+
+void retainDirectNiriWorkspaceLaneForDrag(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace) {
+    retainDirectNiriWorkspaceLane(monitor, workspace);
+}
 
 bool overviewOpenInputBarrierActive() {
     return overviewOpenInputBlockUntil != std::chrono::steady_clock::time_point{} &&
