@@ -550,6 +550,16 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
 
     std::optional<State> crossWorkspaceTransitionSource;
+    SP<Layout::Tiled::SColumnData> crossWorkspaceInColumnTargetColumn;
+    std::size_t crossWorkspaceInColumnTargetTile = 0;
+    if (!target.floating && crossWorkspaceDrop && target.insertion.kind == overview_drag::InsertKind::InColumn && scrollingBeforeMove && scrollingBeforeMove->m_scrollingData) {
+        auto &targetDataBeforeMove = scrollingBeforeMove->m_scrollingData;
+        if (target.insertion.column < targetDataBeforeMove->columns.size()) {
+            crossWorkspaceInColumnTargetColumn = targetDataBeforeMove->columns[target.insertion.column];
+            crossWorkspaceInColumnTargetTile = target.insertion.tile;
+        }
+    }
+
     if (!target.floating && crossWorkspaceDrop && target.monitor && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
         if (m_workspaceTransition.active)
             commitActiveNiriWorkspaceTransitionForRetarget();
@@ -592,6 +602,43 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             g_layoutManager->recalculateMonitor(target.monitor);
         m_applyingWorkspaceTransitionCommit = previousGuard;
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+    }
+
+    bool appliedCrossWorkspaceInColumn = false;
+    if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && crossWorkspaceInColumnTargetColumn) {
+        auto *scrolling = scrollingForWorkspace(workspace);
+        const auto layoutTarget = window->layoutTarget();
+        if (scrolling && scrolling->m_scrollingData && layoutTarget && !layoutTarget->floating()) {
+            auto &data = scrolling->m_scrollingData;
+            const auto destinationStillPresent = std::find(data->columns.begin(), data->columns.end(), crossWorkspaceInColumnTargetColumn) != data->columns.end();
+            const auto targetData = scrolling->dataFor(layoutTarget);
+            const auto sourceColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+            if (destinationStillPresent && sourceColumn) {
+                const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
+                bool sourceTileUsable = true;
+                if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>)
+                    sourceTileUsable = sourceTileIndexRaw >= 0;
+
+                if (sourceTileUsable) {
+                    // Cross-workspace in-column drops are different from same-workspace
+                    // reorders: the insertion target was computed against the target
+                    // column before the moved window existed there.  Let Hyprland own
+                    // the workspace transfer first, then only retile the freshly moved
+                    // target into the already-existing destination column.  This avoids
+                    // SScrollingData::add() while still allowing split/stack drops.
+                    sourceColumn->remove(layoutTarget);
+                    if (sourceColumn != crossWorkspaceInColumnTargetColumn)
+                        eraseColumnIfEmpty(data, sourceColumn);
+
+                    if (std::find(data->columns.begin(), data->columns.end(), crossWorkspaceInColumnTargetColumn) != data->columns.end()) {
+                        const std::size_t tileIndex = std::min(crossWorkspaceInColumnTargetTile, crossWorkspaceInColumnTargetColumn->targetDatas.size());
+                        addLayoutTargetToColumn(crossWorkspaceInColumnTargetColumn, layoutTarget, tileIndex, false);
+                        data->recalculate();
+                        appliedCrossWorkspaceInColumn = true;
+                    }
+                }
+            }
+        }
     }
 
     if (!target.floating && !dropIntoEmptyWorkspace && !crossWorkspaceDrop) {
@@ -696,18 +743,12 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
     } else if (!target.floating && crossWorkspaceDrop) {
-        // Cross-workspace drops must stay native-owned. Niri routes cross-workspace
-        // movement through its interactive move transaction; it does not remove a
-        // live target from one workspace's scrolling data and reinsert it into
-        // another after the move. Doing that here can duplicate target bookkeeping
-        // or leave stale targetDatas that render as ghost columns. Let Hyprland's
-        // moveWindowToWorkspaceSafe() own the target transfer, then rebuild from
-        // the compositor's real window/workspace ownership.
-        // Do not force-recalculate the source scrolling data immediately after a
-        // native cross-workspace transfer. Hyprland can still carry old weak
-        // target entries for a short time; recalculating that source workspace here
-        // can revive those entries as ghost partial columns or crash the next render.
-        if (target.monitor && g_layoutManager)
+        // Cross-workspace drops stay native-owned for workspace transfer.  If the
+        // drop target was an existing column, the narrow post-move retile above
+        // may have stacked the moved window into that column; otherwise Hyprland's
+        // default placement remains intact.  Do not touch the source workspace's
+        // scrolling data here.
+        if (!appliedCrossWorkspaceInColumn && target.monitor && g_layoutManager)
             g_layoutManager->recalculateMonitor(target.monitor);
     } else if (dropIntoEmptyWorkspace) {
         // Empty-workspace drops are the unstable path: Hyprland's normal
