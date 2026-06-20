@@ -15,6 +15,7 @@
 #undef private
 
 #include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
@@ -77,7 +78,7 @@ double rectIntersectionArea(const Rect &lhs, const Rect &rhs) {
 }
 
 template <typename SessionLike, typename TargetLike>
-bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::optional<TargetLike> &target, const Vector2D &releasePoint) {
+bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::optional<TargetLike> &target, const Vector2D &) {
     if (!target || target->floating)
         return false;
 
@@ -85,29 +86,12 @@ bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::op
     if (!sourceWorkspace || target->workspace != sourceWorkspace)
         return false;
 
-    if (target->insertion.kind == overview_drag::InsertKind::InColumn && target->insertion.column == session.sourceColumn &&
-        target->insertion.tile == session.sourceTile)
-        return true;
-
-    if (session.previewRect.width <= 1.0 || session.previewRect.height <= 1.0)
-        return false;
-
-    const Rect droppedPreview{
-        releasePoint.x - session.previewRect.width * session.pointerRatio.x,
-        releasePoint.y - session.previewRect.height * session.pointerRatio.y,
-        session.previewRect.width,
-        session.previewRect.height,
-    };
-
-    const double sourceArea = rectArea(session.previewRect);
-    if (sourceArea <= 1.0)
-        return contains(session.previewRect, releasePoint);
-
-    const double overlapRatio = rectIntersectionArea(session.previewRect, droppedPreview) / sourceArea;
-    if (overlapRatio >= 0.50)
-        return true;
-
-    return contains(session.previewRect, releasePoint);
+    // Only the exact original in-column slot is a no-op.  The previous overlap
+    // based guard treated many real side-column drops from a single-window
+    // column as "back on the original spot", so native movecol never ran and
+    // the window appeared to snap back to its own strip.
+    return target->insertion.kind == overview_drag::InsertKind::InColumn &&
+        target->insertion.column == session.sourceColumn && target->insertion.tile == session.sourceTile;
 }
 
 Rect unionRect(const Rect &lhs, const Rect &rhs) {
@@ -334,6 +318,32 @@ std::size_t nonNegativeIndex(Index index) {
         return index >= 0 ? static_cast<std::size_t>(index) : 0;
     else
         return static_cast<std::size_t>(index);
+}
+
+void focusWindowForDirectNiriNativeMove(const PHLWINDOW &window) {
+    if (!window)
+        return;
+
+    // Native movewindow/movecol operate on Hyprland's focused window/column,
+    // not Hymission's selectedIndex.  The overview can drag an unfocused window,
+    // so make the dragged window the native focus only for the drop transaction;
+    // otherwise the dispatcher may move the previously focused column or no-op,
+    // which is what made side hints land on the wrong side or snap back.
+    Desktop::focusState()->rawWindowFocus(window, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+    if (window->m_workspace)
+        window->m_workspace->m_lastFocusedWindow = window;
+}
+
+std::string oppositeDirectionToken(const std::string &direction) {
+    if (direction == "l")
+        return "r";
+    if (direction == "r")
+        return "l";
+    if (direction == "u")
+        return "d";
+    if (direction == "d")
+        return "u";
+    return direction;
 }
 
 std::optional<std::size_t> scrollingColumnIndexForWindow(Layout::Tiled::CScrollingAlgorithm *scrolling, const PHLWINDOW &window) {
@@ -822,6 +832,8 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     if (sourceWorkspace && sourceWorkspace != workspace)
         niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(sourceWorkspace->m_monitor.lock(), sourceWorkspace);
 
+    focusWindowForDirectNiriNativeMove(window);
+
     if (sourceWorkspace != workspace) {
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
         m_applyingWorkspaceTransitionCommit = true;
@@ -896,11 +908,12 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             return result;
         };
 
+        focusWindowForDirectNiriNativeMove(window);
         selectWindowInState(m_state, window);
         m_state.focusDuringOverview = window;
         workspace->m_lastFocusedWindow = window;
 
-        for (std::size_t attempt = 0; attempt < 12; ++attempt) {
+        for (std::size_t attempt = 0; attempt < 24; ++attempt) {
             auto *afterScrolling = scrollingForWorkspace(workspace);
             if (!afterScrolling || !afterScrolling->m_scrollingData || afterScrolling->m_scrollingData->columns.empty())
                 break;
@@ -917,6 +930,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
 
             const bool moveTowardPrevious = *currentColumnIndex > desiredColumnIndex;
             const std::string columnDirection = horizontal ? (moveTowardPrevious ? "l" : "r") : (moveTowardPrevious ? "u" : "d");
+            focusWindowForDirectNiriNativeMove(window);
             const SDispatchResult columnResult = runNativeColumnMove(columnDirection);
             if (!columnResult.success)
                 break;
@@ -960,6 +974,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
             const std::string moveDirection = horizontal ? (insertBeforeSource ? "l" : "r") : (insertBeforeSource ? "u" : "d");
 
+            focusWindowForDirectNiriNativeMove(window);
             selectWindowInState(m_state, window);
             m_state.focusDuringOverview = window;
 
@@ -992,38 +1007,37 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             };
 
             // If the window is already its own column, do not run movewindow first.
-            // Native movewindow is a split/stack operation, so using it on a
-            // single-tile column can temporarily stack the window into a neighbor
-            // and then the follow-up movecol only moves that accidental edge
-            // result.  For an existing single-column window, the Niri-style move
-            // grab is simply a column move to the hinted gap.
+            // Native movewindow is a split/stack operation.  For a single-tile
+            // column, the desired operation is just movecol to the hinted gap.
             if (!sourceColumnWasSingleTile) {
-                SDispatchResult result = runNativeWindowMove(moveDirection);
-                if (!result.success)
-                    return false;
+                bool splitIntoOwnColumn = false;
+                const std::string fallbackDirection = oppositeDirectionToken(moveDirection);
+                for (const std::string &candidateDirection : {moveDirection, fallbackDirection}) {
+                    for (std::size_t attempt = 0; attempt < 4; ++attempt) {
+                        focusWindowForDirectNiriNativeMove(window);
+                        SDispatchResult result = runNativeWindowMove(candidateDirection);
+                        if (!result.success)
+                            break;
 
-                // The hint can be outside the native viewport, but a single native
-                // movewindow only knows "move one step in this direction".  In a
-                // stacked/partial column it can leave the window stacked, and when
-                // it does create a new column it creates it next to the old column,
-                // not necessarily at the hinted off-viewport gap.  Match Niri's
-                // move-grab semantics by treating the hint as the authoritative
-                // placement target: first make sure the dragged window is actually
-                // split into its own column, then move that column to the requested
-                // backend gap with native movecol so Hyprland still owns column
-                // bookkeeping.
-                for (std::size_t attempt = 0; attempt < 3; ++attempt) {
-                    auto *afterScrolling = scrollingForWorkspace(workspace);
-                    if (scrollingWindowColumnIsSingleTile(afterScrolling, window))
-                        break;
-
-                    const SDispatchResult splitResult = runNativeWindowMove(moveDirection);
-                    if (!splitResult.success)
+                        auto *afterScrolling = scrollingForWorkspace(workspace);
+                        if (scrollingWindowColumnIsSingleTile(afterScrolling, window)) {
+                            splitIntoOwnColumn = true;
+                            break;
+                        }
+                    }
+                    if (splitIntoOwnColumn)
                         break;
                 }
+
+                // If native Hyprland did not split the window into an independent
+                // column, stop instead of leaving it stacked in the wrong place.
+                // This keeps the visual hint authoritative: side-column hints must
+                // either become side columns or become no-ops, never vertical stacks.
+                if (!splitIntoOwnColumn)
+                    return false;
             }
 
-            for (std::size_t attempt = 0; attempt < 12; ++attempt) {
+            for (std::size_t attempt = 0; attempt < 24; ++attempt) {
                 auto *afterScrolling = scrollingForWorkspace(workspace);
                 if (!afterScrolling || !afterScrolling->m_scrollingData || afterScrolling->m_scrollingData->columns.empty())
                     break;
@@ -1040,9 +1054,19 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
 
                 const bool moveTowardPrevious = *currentColumnIndex > desiredColumnIndex;
                 const std::string columnDirection = horizontal ? (moveTowardPrevious ? "l" : "r") : (moveTowardPrevious ? "u" : "d");
+                focusWindowForDirectNiriNativeMove(window);
                 const SDispatchResult columnResult = runNativeColumnMove(columnDirection);
                 if (!columnResult.success)
                     break;
+            }
+
+            if (auto *finalScrolling = scrollingForWorkspace(workspace); finalScrolling && finalScrolling->m_scrollingData && !finalScrolling->m_scrollingData->columns.empty()) {
+                const auto finalColumnIndex = scrollingColumnIndexForWindow(finalScrolling, window);
+                const std::size_t finalDesiredColumnIndex = sourceColumnWasSingleTile ?
+                    finalColumnIndexForSameWorkspaceGap(target.insertion.column, finalScrolling->m_scrollingData->columns.size(), sourceColumnIndex, true) :
+                    std::min(target.insertion.column, finalScrolling->m_scrollingData->columns.size() - 1);
+                if (!finalColumnIndex || *finalColumnIndex != finalDesiredColumnIndex)
+                    return false;
             }
 
             workspace->m_lastFocusedWindow = window;
