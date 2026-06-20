@@ -3951,9 +3951,11 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             latchHoverSelectionAnchor(m_pressedWindowPointer);
             if (clickedWindow)
                 (void)syncScrollingWorkspaceSpotOnWindow(
-                    clickedWindow, directNiriSingleWorkspaceScrollClick ? ScrollingSpotTargeting::Center : ScrollingSpotTargeting::Configured);
+                    clickedWindow,
+                    ScrollingSpotTargeting::Configured,
+                    directNiriSingleWorkspaceScrollClick ? ScrollingSpotSyncIntent::FocusChange : ScrollingSpotSyncIntent::PreserveNativeCamera);
             updateSelectedWindowLayout(previousSelectedWindow);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center",
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus",
                                                            directNiriSingleWorkspaceScrollClick ? &previousPreviewRects : nullptr);
             damageOwnedMonitors();
             return true;
@@ -3974,8 +3976,9 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         latchHoverSelectionAnchor(m_pressedWindowPointer);
         updateSelectedWindowLayout(previousSelectedWindow);
         if (directNiriSingleWorkspaceScrollClick) {
-            (void)syncScrollingWorkspaceSpotOnWindow(clickedWindow, ScrollingSpotTargeting::Center);
-            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-center", &previousPreviewRects);
+            (void)syncScrollingWorkspaceSpotOnWindow(
+                clickedWindow, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
+            refreshNiriScrollingOverviewAfterLayoutScroll("niri-click-focus", &previousPreviewRects);
         }
         damageOwnedMonitors();
         return true;

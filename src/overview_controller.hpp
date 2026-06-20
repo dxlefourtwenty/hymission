@@ -274,6 +274,11 @@ class OverviewController {
         Center,
     };
 
+    enum class ScrollingSpotSyncIntent {
+        PreserveNativeCamera,
+        FocusChange,
+    };
+
     struct SurfaceRenderDataSnapshot {
         Vector2D pos;
         Vector2D localPos;
@@ -747,7 +752,8 @@ class OverviewController {
     void                       commitOverviewExitFocus(const PHLWINDOW& window);
     [[nodiscard]] PHLWINDOW    focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(
-        const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured) const;
+        const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured,
+        ScrollingSpotSyncIntent intent = ScrollingSpotSyncIntent::PreserveNativeCamera) const;
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
                                                           const PreviewRectSnapshot* previousPreviewRects = nullptr);

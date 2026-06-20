@@ -1885,7 +1885,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
         if (debugLogsEnabled())
             logSwapColumnFollowupState("focus-refresh-before-spot-sync", focusWorkspace, source, focusTarget);
         if (syncScrollingSpot && !preserveEdgeCamera)
-            (void)syncScrollingWorkspaceSpotOnWindow(focusTarget);
+            (void)syncScrollingWorkspaceSpotOnWindow(
+                focusTarget, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] niri focus refresh spot sync"
@@ -3010,7 +3011,8 @@ const OverviewController::EmptyWorkspacePlaceholder* OverviewController::centere
 
     return best && bestDistance2 <= 4.0 ? best : nullptr;
 }
-bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& window, ScrollingSpotTargeting targeting) const {
+bool OverviewController::syncScrollingWorkspaceSpotOnWindow(
+    const PHLWINDOW& window, ScrollingSpotTargeting targeting, ScrollingSpotSyncIntent intent) const {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return false;
 
@@ -3033,9 +3035,10 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return false;
 
-    const bool allowAnimatedDirectNiriScrollSync = m_applyingWorkspaceTransitionCommit ||
+    const bool focusChange = intent == ScrollingSpotSyncIntent::FocusChange;
+    const bool bypassScrollSyncSuppression = focusChange || m_applyingWorkspaceTransitionCommit ||
         (m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview() && niriOverviewAnimationsEnabled());
-    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling) && !allowAnimatedDirectNiriScrollSync) {
+    if (activeDirectNiriSingleWorkspaceOverview() && scrollingLiveCameraOwnsOverviewGeometry(scrolling) && !bypassScrollSyncSuppression) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (native camera in flight)"
@@ -3050,7 +3053,7 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
     // state becomes stale, causing jitter.
     constexpr std::chrono::milliseconds scrollSyncDebounce{50};
     const auto now = std::chrono::steady_clock::now();
-    if (!allowAnimatedDirectNiriScrollSync && now - m_lastScrollSyncTime < scrollSyncDebounce) {
+    if (!bypassScrollSyncSuppression && now - m_lastScrollSyncTime < scrollSyncDebounce) {
         if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] sync scrolling workspace spot skipped (debounce)"
@@ -3082,7 +3085,8 @@ bool OverviewController::syncScrollingWorkspaceSpotOnWindow(const PHLWINDOW& win
             << " live=" << rectToString(liveGlobalRectForWindow(window))
             << " goal=" << rectToString(goalGlobalRectForWindow(window))
             << " col=" << columnIndex
-            << " offsetBefore=" << offsetBefore;
+            << " offsetBefore=" << offsetBefore
+            << " focusChange=" << (focusChange ? 1 : 0);
         debugLog(out.str());
         logScrollingWorkspaceSpotState("before explicit focus offset", window->m_workspace, window);
     }
@@ -3182,7 +3186,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
 
     if (!shouldSyncRealFocusDuringOverview()) {
         if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
-            (void)syncScrollingWorkspaceSpotOnWindow(window);
+            (void)syncScrollingWorkspaceSpotOnWindow(
+                window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
         if (debugLogsEnabled()) {
             debugLog("[hymission] sync real focus early return reason=real-focus-disabled");
             logSwapColumnFollowupState("sync-real-focus-disabled", workspace, "focus-sync", window);
@@ -3192,7 +3197,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
 
     if (Desktop::focusState()->window() == window) {
         if (syncScrollingSpot && !suppressSwapColumnFollowupScroll)
-            (void)syncScrollingWorkspaceSpotOnWindow(window);
+            (void)syncScrollingWorkspaceSpotOnWindow(
+                window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
         if (debugLogsEnabled()) {
             debugLog("[hymission] sync real focus early return reason=already-focused");
             logSwapColumnFollowupState("sync-real-focus-already-focused", workspace, "focus-sync", window);
@@ -3236,7 +3242,8 @@ void OverviewController::syncRealFocusDuringOverview(const PHLWINDOW& window, bo
     if (debugLogsEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace))
         logScrollingWorkspaceSpotState("after focus before explicit spot sync", window->m_workspace, window);
     if (syncOverviewScrollingSpot)
-        (void)syncScrollingWorkspaceSpotOnWindow(window);
+        (void)syncScrollingWorkspaceSpotOnWindow(
+            window, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
     if (g_pAnimationManager)
         g_pAnimationManager->frameTick();
     if (syncOverviewScrollingSpot)
@@ -4368,7 +4375,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 // dispatcher own the layout motion, then rebuild the overview from
                 // the captured preview origins just like movecol.
                 if (isMoveFocusDispatcher)
-                    (void)syncScrollingWorkspaceSpotOnWindow(preferred);
+                    (void)syncScrollingWorkspaceSpotOnWindow(
+                        preferred, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
                 refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             }
 
