@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <string>
 #include <type_traits>
 
 #define private public
@@ -115,25 +116,6 @@ bool scrollingDataHasUsableColumnOtherThan(Layout::Tiled::CScrollingAlgorithm *s
 }
 
 
-float safeColumnWidth(float width) {
-    if (!std::isfinite(static_cast<double>(width)) || width <= 0.01F)
-        return 1.0F;
-
-    return std::clamp(width, 0.05F, 10.0F);
-}
-
-template <typename ScrollingDataPtr>
-SP<Layout::Tiled::SColumnData> appendColumnAt(ScrollingDataPtr &data, std::size_t requestedIndex, float width) {
-    if (!data)
-        return {};
-
-    // Hyprland's SScrollingData::add contract is (index, optional width).
-    // Calling add(width) accidentally treats a partial column width such as 0.5
-    // or 1.0 as the insertion index, which corrupts column ordering and can
-    // crash inside SScrollingData::add when dragging stacked/partial columns.
-    const std::size_t clampedIndex = std::min(requestedIndex, data->columns.size());
-    return data->add(static_cast<int>(clampedIndex), std::optional<float>{safeColumnWidth(width)});
-}
 
 template <typename ScrollingDataPtr>
 bool eraseColumnIfEmpty(ScrollingDataPtr &data, const SP<Layout::Tiled::SColumnData> &column) {
@@ -222,6 +204,7 @@ void addLayoutTargetToColumn(const SP<Layout::Tiled::SColumnData> &column, const
 }
 
 void restoreDetachedDragSource(const PHLWINDOW &window, const PHLWORKSPACE &workspace, std::size_t sourceColumn, std::size_t sourceTile, float sourceColumnWidth) {
+    (void)sourceColumnWidth;
     if (!window || !workspace)
         return;
 
@@ -233,8 +216,10 @@ void restoreDetachedDragSource(const PHLWINDOW &window, const PHLWORKSPACE &work
     auto &data = scrolling->m_scrollingData;
     const std::size_t columnIndex = std::min(sourceColumn, data->columns.size());
     if (columnIndex == data->columns.size()) {
-        auto column = appendColumnAt(data, data->columns.size(), sourceColumnWidth);
-        addLayoutTargetToColumn(column, layoutTarget, 0, true);
+        // Do not create scrolling columns from the plugin during drag recovery.
+        // The live Hyprland layout owns column creation; creating one here can
+        // reintroduce the same SScrollingData::add crash path as failed drops.
+        return;
     } else {
         auto column = data->columns[columnIndex];
         if (!column)
@@ -602,13 +587,64 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             return false;
         const auto targetData = scrolling->dataFor(layoutTarget);
         const auto sourceColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-        const float sourceWidth = safeColumnWidth(sourceColumn ? sourceColumn->getColumnWidth() : 1.0F);
 
-        // Do not reuse targetData after remove(). Hyprland's scrolling column owns
-        // that bookkeeping object, and re-adding a removed targetData can poison
-        // the next render pass. Reinsert the stable layout target instead.
+        // New side-column drops are the path that kept crashing: the coredumps
+        // consistently enter Hyprland's SScrollingData::add() from our manual
+        // appendColumnAt(). Do not manufacture scrolling columns from the plugin.
+        // Route this case through Hyprland's normal movewindow dispatcher, which
+        // owns all target/column bookkeeping for stacked and partial-width columns.
+        if (target.insertion.kind == overview_drag::InsertKind::NewColumn) {
+            if (!sourceColumn)
+                return false;
+
+            auto &data = scrolling->m_scrollingData;
+            if (!data)
+                return false;
+
+            const auto sourceColumnIndexRaw = data->idx(sourceColumn);
+            if constexpr (std::is_signed_v<decltype(sourceColumnIndexRaw)>) {
+                if (sourceColumnIndexRaw < 0)
+                    return false;
+            }
+            const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
+
+            const bool insertBeforeSource = std::min(target.insertion.column, data->columns.size()) <= sourceColumnIndex;
+            const auto direction = scrollingLayoutDirection();
+            const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
+            const std::string moveDirection = horizontal ? (insertBeforeSource ? "l" : "r") : (insertBeforeSource ? "u" : "d");
+
+            selectWindowInState(m_state, window);
+            m_state.focusDuringOverview = window;
+
+            SDispatchResult result{};
+            for (const char *dispatcherName : {"window.move", "movewindow", "movewindoworgroup"}) {
+                auto original = m_overviewEditingDispatchersOriginal.find(dispatcherName);
+                if (original == m_overviewEditingDispatchersOriginal.end())
+                    continue;
+
+                result = runOverviewEditingDispatcher(dispatcherName, &original->second, moveDirection);
+                if (result.success)
+                    break;
+            }
+
+            if (!result.success)
+                return false;
+
+            workspace->m_lastFocusedWindow = window;
+            refreshWorkspaceLayoutSnapshot(workspace);
+            selectWindowInState(m_state, window);
+            rebuildVisibleState(window, true);
+            if (!previousPreviewRects.empty())
+                refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop-native-movewindow");
+            return true;
+        }
+
+        // In-column reordering does not create a new SScrollingData column, so it
+        // can keep using the existing column target list.  Keep this narrow and
+        // never fall through to data->add() if the layout unexpectedly has no
+        // destination column.
         auto &data = scrolling->m_scrollingData;
-        if (!data || !sourceColumn)
+        if (!data || data->columns.empty() || !sourceColumn)
             return false;
 
         const auto sourceColumnIndexRaw = data->idx(sourceColumn);
@@ -627,33 +663,23 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         sourceColumn->remove(layoutTarget);
 
         const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
+        if (data->columns.empty())
+            return false;
 
-        if (target.insertion.kind == overview_drag::InsertKind::NewColumn || data->columns.empty()) {
-            std::size_t index = data->columns.empty() ? 0 : std::min(target.insertion.column, data->columns.size());
-            if (erasedSourceColumn && sourceColumnIndex < index)
-                --index;
-            index = std::min(index, data->columns.size());
+        std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
+        if (erasedSourceColumn && sourceColumnIndex < columnIndex)
+            --columnIndex;
+        columnIndex = std::min(columnIndex, data->columns.size() - 1);
 
-            auto column = appendColumnAt(data, index, sourceWidth);
-            if (!column)
-                return false;
-            column->add(layoutTarget);
-        } else {
-            std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
-            if (erasedSourceColumn && sourceColumnIndex < columnIndex)
-                --columnIndex;
-            columnIndex = std::min(columnIndex, data->columns.size() - 1);
+        auto column = data->columns[columnIndex];
+        if (!column)
+            return false;
 
-            auto column = data->columns[columnIndex];
-            if (!column)
-                return false;
-
-            std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
-            if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
-                --tileIndex;
-            tileIndex = std::min(tileIndex, column->targetDatas.size());
-            addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
-        }
+        std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
+        if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
+            --tileIndex;
+        tileIndex = std::min(tileIndex, column->targetDatas.size());
+        addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
     } else if (!target.floating && crossWorkspaceDrop) {
         // Cross-workspace drops must stay native-owned. Niri routes cross-workspace
