@@ -78,21 +78,13 @@ double rectIntersectionArea(const Rect &lhs, const Rect &rhs) {
 }
 
 template <typename SessionLike, typename TargetLike>
-bool directNiriDropReturnsToSourceSlot(const SessionLike &session, const std::optional<TargetLike> &target, const Vector2D &) {
-    if (!target || target->floating)
-        return false;
-
-    const auto sourceWorkspace = session.sourceWorkspace.lock();
-    if (!sourceWorkspace || target->workspace != sourceWorkspace)
-        return false;
-
-    // Only the exact original in-column slot is a no-op.  The previous overlap
-    // based guard treated many real side-column drops from a single-window
-    // column as "back on the original spot", so native movecol never ran and
-    // the window appeared to snap back to its own strip.
-    return target->insertion.kind == overview_drag::InsertKind::InColumn &&
-        target->insertion.column == session.sourceColumn &&
-        (target->insertion.tile == session.sourceTile || target->insertion.tile == session.sourceTile + 1);
+bool directNiriDropReturnsToSourceSlot(const SessionLike &, const std::optional<TargetLike> &, const Vector2D &) {
+    // Do not short-circuit same-workspace drops here.  The target resolver omits
+    // the dragged window while computing insert gaps, so a broad “source slot”
+    // check can mistake real same-workspace moves for cancel/no-op.  Let the
+    // apply path perform the exact remove/reinsert; dropping on the true original
+    // slot naturally re-adds the target at the same index.
+    return false;
 }
 
 Rect unionRect(const Rect &lhs, const Rect &rhs) {
@@ -213,6 +205,37 @@ std::size_t finalColumnIndexForSameWorkspaceGap(std::size_t backendGapIndex,
         --desired;
 
     return std::min(desired, currentColumnCount - 1);
+}
+
+
+template <typename ScrollingDataPtr>
+bool moveExistingColumnToBackendGap(ScrollingDataPtr &data,
+                                    const SP<Layout::Tiled::SColumnData> &column,
+                                    std::size_t backendGapIndex) {
+    if (!data || !column || data->columns.size() < 2)
+        return false;
+
+    const auto sourceIt = std::find(data->columns.begin(), data->columns.end(), column);
+    if (sourceIt == data->columns.end())
+        return false;
+
+    // backendGapIndex is expressed in the original backend column coordinates,
+    // with the dragged column omitted from the visual hit-test.  Convert it to
+    // an insertion index in the vector after the source column is erased.
+    std::size_t desiredIndex = 0;
+    for (std::size_t index = 0; index < data->columns.size(); ++index) {
+        if (data->columns[index] == column)
+            continue;
+        if (index < backendGapIndex)
+            ++desiredIndex;
+    }
+
+    auto movedColumn = column;
+    data->columns.erase(sourceIt);
+    desiredIndex = std::min(desiredIndex, data->columns.size());
+    data->columns.insert(data->columns.begin() + static_cast<std::ptrdiff_t>(desiredIndex), movedColumn);
+    data->recalculate();
+    return true;
 }
 
 std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overview_drag::Rect &workspace,
@@ -991,9 +1014,25 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
             const bool sourceColumnWasSingleTile = scrollingWindowColumnIsSingleTile(scrolling, window);
 
-            const std::size_t normalizedTargetColumn = sourceColumnWasSingleTile ?
-                finalColumnIndexForSameWorkspaceGap(target.insertion.column, data->columns.size(), sourceColumnIndex, true) :
-                std::min(target.insertion.column, data->columns.size());
+            if (sourceColumnWasSingleTile) {
+                // For a window that is already its own column, the operation is
+                // just a column reorder.  Do it by moving the existing column SP
+                // inside SScrollingData instead of going through native movecol,
+                // which can no-op in overview because the live focused/visible
+                // column does not always match the drag hint.
+                if (!moveExistingColumnToBackendGap(data, sourceColumn, target.insertion.column))
+                    return false;
+
+                workspace->m_lastFocusedWindow = window;
+                refreshWorkspaceLayoutSnapshot(workspace);
+                selectWindowInState(m_state, window);
+                rebuildVisibleState(window, true);
+                if (!previousPreviewRects.empty())
+                    refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop-direct-column-reorder");
+                return true;
+            }
+
+            const std::size_t normalizedTargetColumn = std::min(target.insertion.column, data->columns.size());
             const bool insertBeforeSource = normalizedTargetColumn <= sourceColumnIndex;
             const auto direction = scrollingLayoutDirection();
             const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
@@ -1123,7 +1162,6 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             if (sourceTileIndexRaw < 0)
                 return false;
         }
-        const std::size_t sourceTileIndex = nonNegativeIndex(sourceTileIndexRaw);
         sourceColumn->remove(layoutTarget);
 
         const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
@@ -1139,10 +1177,11 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         if (!column)
             return false;
 
-        std::size_t tileIndex = target.insertion.tile;
-        if (!erasedSourceColumn && column == sourceColumn && sourceTileIndex < tileIndex)
-            --tileIndex;
-        tileIndex = std::min(tileIndex, column->targetDatas.size());
+        // target.insertion.tile is already computed from the preview order with
+        // the dragged window omitted, matching the column after sourceColumn->remove().
+        // Do not decrement it again for same-column moves; that turns every
+        // “between/after” hint into the original slot.
+        std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
     } else if (!target.floating && crossWorkspaceDrop) {
