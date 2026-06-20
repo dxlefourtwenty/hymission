@@ -1992,7 +1992,8 @@ Rect unionOverviewRect(const Rect& lhs, const Rect& rhs) {
     return makeRect(x1, y1, x2 - x1, y2 - y1);
 }
 
-std::optional<Rect> stripWindowPreviewRectForHitTest(const OverviewController::WorkspaceStripEntry& entry, const Rect& stripRect, const PHLWINDOW& window) {
+template <typename WorkspaceStripEntryLike>
+std::optional<Rect> stripWindowPreviewRectForHitTest(const WorkspaceStripEntryLike& entry, const Rect& stripRect, const PHLWINDOW& window) {
     if (!window || !usableOverviewRect(stripRect))
         return std::nullopt;
 

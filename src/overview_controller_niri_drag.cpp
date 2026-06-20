@@ -76,8 +76,16 @@ bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
 }
 
+template <typename Index>
+std::size_t nonNegativeIndex(Index index) {
+    if constexpr (std::is_signed_v<Index>)
+        return index >= 0 ? static_cast<std::size_t>(index) : 0;
+    else
+        return static_cast<std::size_t>(index);
+}
 
-std::optional<Rect> stripWindowPreviewRect(const OverviewController::WorkspaceStripEntry &entry, const Rect &stripRect, const PHLWINDOW &window) {
+template <typename WorkspaceStripEntryLike>
+std::optional<Rect> stripWindowPreviewRect(const WorkspaceStripEntryLike &entry, const Rect &stripRect, const PHLWINDOW &window) {
     if (!window || !usableRect(stripRect))
         return std::nullopt;
 
@@ -211,11 +219,7 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
                 const auto columnIndex = scrolling->m_scrollingData->idx(sourceColumn);
                 if (sourceColumn && columnIndex >= 0) {
                     sourceColumnIndex = static_cast<std::size_t>(columnIndex);
-                    const auto tileIndex = sourceColumn->idx(layoutTarget);
-                    if constexpr (std::is_signed_v<decltype(tileIndex)>)
-                        sourceTileIndex = tileIndex >= 0 ? static_cast<std::size_t>(tileIndex) : 0;
-                    else
-                        sourceTileIndex = static_cast<std::size_t>(tileIndex);
+                    sourceTileIndex = nonNegativeIndex(sourceColumn->idx(layoutTarget));
                     sourceTileIndex = std::min(sourceTileIndex, sourceColumn->targetDatas.size());
                     sourceColumnWidth = sourceColumn->getColumnWidth();
                 }
