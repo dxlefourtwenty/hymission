@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 #define private public
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
@@ -13,6 +14,7 @@
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 
 namespace hymission {
@@ -67,6 +69,52 @@ Rect unionRect(const Rect &lhs, const Rect &rhs) {
     return {x1, y1, x2 - x1, y2 - y1};
 }
 
+bool g_directNiriDragEdgeScrollScheduled = false;
+bool g_directNiriDragFinishScheduled = false;
+
+bool usableRect(const Rect &rect) {
+    return rect.width > 1.0 && rect.height > 1.0;
+}
+
+template <typename LayoutTargetPtr>
+void addLayoutTargetToColumn(const SP<Layout::Tiled::SColumnData> &column, const LayoutTargetPtr &layoutTarget,
+                             std::size_t tileIndex = 0, bool append = false) {
+    if (!column || !layoutTarget)
+        return;
+
+    if (append) {
+        column->add(layoutTarget);
+        return;
+    }
+
+    const int beforeIndex = static_cast<int>(std::min(tileIndex, column->targetDatas.size())) - 1;
+    column->add(layoutTarget, beforeIndex);
+}
+
+void restoreDetachedDragSource(const PHLWINDOW &window, const PHLWORKSPACE &workspace, std::size_t sourceColumn, std::size_t sourceTile, float sourceColumnWidth) {
+    if (!window || !workspace)
+        return;
+
+    auto *scrolling = scrollingForWorkspace(workspace);
+    const auto layoutTarget = window->layoutTarget();
+    if (!scrolling || !scrolling->m_scrollingData || !layoutTarget || scrolling->dataFor(layoutTarget))
+        return;
+
+    auto &data = scrolling->m_scrollingData;
+    const std::size_t columnIndex = std::min(sourceColumn, data->columns.size());
+    if (columnIndex == data->columns.size()) {
+        auto column = data->add(sourceColumnWidth);
+        addLayoutTargetToColumn(column, layoutTarget, 0, true);
+    } else {
+        auto column = data->columns[columnIndex];
+        if (!column)
+            return;
+        const std::size_t tileIndex = std::min(sourceTile, column->targetDatas.size());
+        addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
+    }
+    data->recalculate();
+}
+
 } // namespace
 
 bool OverviewController::canDragWindowInDirectNiriOverview(const PHLWINDOW &window) const {
@@ -88,11 +136,9 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
     if (preview.width <= 1.0 || preview.height <= 1.0)
         return;
 
-    const auto previousRects = captureCurrentPreviewRects();
     std::size_t sourceColumnIndex = 0;
     std::size_t sourceTileIndex = 0;
     float sourceColumnWidth = 1.0F;
-    bool detached = false;
     const auto sourceWorkspace = managed.window->m_workspace;
     const auto layoutTarget = managed.window->layoutTarget();
     if (layoutTarget && !layoutTarget->floating()) {
@@ -102,11 +148,13 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
                 const auto columnIndex = scrolling->m_scrollingData->idx(sourceColumn);
                 if (sourceColumn && columnIndex >= 0) {
                     sourceColumnIndex = static_cast<std::size_t>(columnIndex);
-                    sourceTileIndex = sourceColumn->idx(layoutTarget);
+                    const auto tileIndex = sourceColumn->idx(layoutTarget);
+                    if constexpr (std::is_signed_v<decltype(tileIndex)>)
+                        sourceTileIndex = tileIndex >= 0 ? static_cast<std::size_t>(tileIndex) : 0;
+                    else
+                        sourceTileIndex = static_cast<std::size_t>(tileIndex);
+                    sourceTileIndex = std::min(sourceTileIndex, sourceColumn->targetDatas.size());
                     sourceColumnWidth = sourceColumn->getColumnWidth();
-                    sourceColumn->remove(layoutTarget);
-                    scrolling->m_scrollingData->recalculate();
-                    detached = true;
                 }
             }
         }
@@ -126,13 +174,9 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
         .sourceColumn = sourceColumnIndex,
         .sourceTile = sourceTileIndex,
         .sourceColumnWidth = sourceColumnWidth,
-        .detached = detached,
+        .detached = false,
         .lastEdgeTick = std::chrono::steady_clock::now(),
     };
-    if (detached) {
-        refreshWorkspaceLayoutSnapshot(sourceWorkspace);
-        refreshVisibleStateMetadata(managed.window, &previousRects, "drag-begin");
-    }
     updateDirectNiriWindowDrag(pointer);
 }
 
@@ -167,7 +211,7 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         if (!placeholder.backingOnly || !placeholder.monitor)
             continue;
         const Rect current = currentEmptyWorkspacePlaceholderRect(placeholder);
-        if (!contains(current, pointer))
+        if (!usableRect(current) || !contains(current, pointer))
             continue;
         lane = &placeholder;
         laneRect = current;
@@ -204,13 +248,15 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
                 if (!managed)
                     continue;
                 const Rect preview = currentPreviewRect(*managed);
+                if (!usableRect(preview))
+                    continue;
                 columnRect = unionRect(columnRect, preview);
                 dragColumn.tiles.push_back({destinationTileIndex++, dragRect(preview)});
             }
-            if (dragColumn.tiles.empty())
-                continue;
-            dragColumn.rect = dragRect(columnRect);
-            columns.push_back(std::move(dragColumn));
+            if (!dragColumn.tiles.empty()) {
+                dragColumn.rect = dragRect(columnRect);
+                columns.push_back(std::move(dragColumn));
+            }
             ++destinationColumnIndex;
         }
     }
@@ -282,6 +328,21 @@ void OverviewController::tickDirectNiriWindowDragEdgeScroll() {
     if (!m_niriDragSession.active || !m_niriDragSession.target || std::abs(m_niriDragSession.edgeVelocity) <= 0.001)
         return;
 
+    if (insideRenderLifecycle()) {
+        if (!g_pEventLoopManager || g_directNiriDragEdgeScrollScheduled)
+            return;
+
+        g_directNiriDragEdgeScrollScheduled = true;
+        g_pEventLoopManager->doLater([this] {
+            g_directNiriDragEdgeScrollScheduled = false;
+            if (!m_niriDragSession.active)
+                return;
+            tickDirectNiriWindowDragEdgeScroll();
+        });
+        damageOwnedMonitors();
+        return;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     const auto delay = std::chrono::milliseconds(std::max(0L, configInt("plugin:hymission:niri_drag_edge_scroll_delay_ms", 100)));
     if (m_niriDragSession.edgeEnteredAt == std::chrono::steady_clock::time_point{} || now - m_niriDragSession.edgeEnteredAt < delay) {
@@ -291,6 +352,8 @@ void OverviewController::tickDirectNiriWindowDragEdgeScroll() {
     }
 
     const double elapsed = std::clamp(std::chrono::duration<double>(now - m_niriDragSession.lastEdgeTick).count(), 0.0, 0.05);
+    if (elapsed <= 0.0001)
+        return;
     m_niriDragSession.lastEdgeTick = now;
     auto workspace = m_niriDragSession.target->workspace;
     if (!workspace)
@@ -376,9 +439,11 @@ bool OverviewController::finishDirectNiriWindowDrag() {
     if (!m_niriDragSession.active)
         return false;
 
-    const auto window = m_niriDragSession.window.lock();
-    const auto target = m_niriDragSession.target;
+    const NiriDragSession session = m_niriDragSession;
+    const auto window = session.window.lock();
+    const auto target = session.target;
     const auto previousRects = captureCurrentPreviewRects();
+
     m_niriDragSession.active = false;
     m_draggedWindowIndex.reset();
 
@@ -388,30 +453,49 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         return true;
     }
 
-    if (!target && m_niriDragSession.detached) {
-        const auto sourceWorkspace = m_niriDragSession.sourceWorkspace.lock();
-        auto *scrolling = scrollingForWorkspace(sourceWorkspace);
-        const auto layoutTarget = window->layoutTarget();
-        if (scrolling && scrolling->m_scrollingData && layoutTarget) {
-            auto &data = scrolling->m_scrollingData;
-            const std::size_t columnIndex = std::min(m_niriDragSession.sourceColumn, data->columns.size());
-            if (columnIndex == data->columns.size()) {
-                auto column = data->add(m_niriDragSession.sourceColumnWidth);
-                column->add(layoutTarget);
-            } else {
-                auto column = data->columns[columnIndex];
-                const std::size_t tileIndex = std::min(m_niriDragSession.sourceTile, column->targetDatas.size());
-                column->add(layoutTarget, static_cast<int>(tileIndex) - 1);
-            }
-            data->recalculate();
+    const auto finishCommit = [this, session, window, target, previousRects] {
+        const NiriDragSession previousSession = m_niriDragSession;
+        m_niriDragSession = session;
+        m_niriDragSession.active = false;
+
+        if (target) {
+            (void)applyDirectNiriDragTarget(window, *target, previousRects);
+        } else if (session.detached) {
+            const auto sourceWorkspace = session.sourceWorkspace.lock();
+            restoreDetachedDragSource(window, sourceWorkspace, session.sourceColumn, session.sourceTile, session.sourceColumnWidth);
             refreshWorkspaceLayoutSnapshot(sourceWorkspace);
+            rebuildVisibleState(window, true);
+        } else {
+            rebuildVisibleState(window, true);
         }
+
+        m_niriDragSession = previousSession.active ? previousSession : NiriDragSession{};
+        damageOwnedMonitors();
+    };
+
+    if (insideRenderLifecycle() && g_pEventLoopManager) {
+        if (!g_directNiriDragFinishScheduled) {
+            g_directNiriDragFinishScheduled = true;
+            g_pEventLoopManager->doLater([this, finishCommit] {
+                g_directNiriDragFinishScheduled = false;
+                if (insideRenderLifecycle() && g_pEventLoopManager) {
+                    g_directNiriDragFinishScheduled = true;
+                    g_pEventLoopManager->doLater([finishCommit] {
+                        g_directNiriDragFinishScheduled = false;
+                        finishCommit();
+                    });
+                    return;
+                }
+                finishCommit();
+            });
+        }
+        m_niriDragSession = {};
+        m_draggedWindowIndex.reset();
+        damageOwnedMonitors();
+        return true;
     }
 
-    if (target)
-        (void)applyDirectNiriDragTarget(window, *target, previousRects);
-    else
-        rebuildVisibleState(window, true);
+    finishCommit();
     m_niriDragSession = {};
     m_draggedWindowIndex.reset();
     damageOwnedMonitors();
@@ -425,22 +509,9 @@ void OverviewController::cancelDirectNiriWindowDrag() {
     const auto window = m_niriDragSession.window.lock();
     const auto sourceWorkspace = m_niriDragSession.sourceWorkspace.lock();
     if (window && sourceWorkspace && m_niriDragSession.detached) {
-        auto *scrolling = scrollingForWorkspace(sourceWorkspace);
-        const auto layoutTarget = window->layoutTarget();
-        if (scrolling && scrolling->m_scrollingData && layoutTarget && !scrolling->dataFor(layoutTarget)) {
-            auto &data = scrolling->m_scrollingData;
-            const std::size_t columnIndex = std::min(m_niriDragSession.sourceColumn, data->columns.size());
-            if (columnIndex == data->columns.size()) {
-                auto column = data->add(m_niriDragSession.sourceColumnWidth);
-                column->add(layoutTarget);
-            } else {
-                auto column = data->columns[columnIndex];
-                const std::size_t tileIndex = std::min(m_niriDragSession.sourceTile, column->targetDatas.size());
-                column->add(layoutTarget, static_cast<int>(tileIndex) - 1);
-            }
-            data->recalculate();
-            refreshWorkspaceLayoutSnapshot(sourceWorkspace);
-        }
+        restoreDetachedDragSource(window, sourceWorkspace, m_niriDragSession.sourceColumn, m_niriDragSession.sourceTile,
+                                  m_niriDragSession.sourceColumnWidth);
+        refreshWorkspaceLayoutSnapshot(sourceWorkspace);
     }
 
     m_niriDragSession = {};
