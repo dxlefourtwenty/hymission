@@ -3605,6 +3605,8 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
+        if (directNiriHandoff && m_deactivatePending)
+            armDirectNiriNativeHandoffGuard();
         if (directNiriHandoff && directNiriNativeHandoffActive()) {
             // The native wallpaper/layer pass is already back in Hyprland's hands
             // for this frame. Do not draw the overview wallpaper viewport pass
@@ -4690,12 +4692,10 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
         if (directNiriHandoff && m_deactivatePending) {
-            // Do not hand the wallpaper/layer surface back while Hymission is still
-            // visible.  The final native-geometry overview frames already draw the
-            // wallpaper proxy at the desktop rect; rendering Hyprland's native layer
-            // in the same frame creates a one-frame flash.  Keep it hidden until
-            // deactivate() unhooks Hymission, then Hyprland renders the native layer
-            // alone on the next damaged frame.
+            // Keep native wallpaper/layout layers hidden until deactivate() fully
+            // unhooks the overview.  The final native-geometry overview frames
+            // already draw the proxy at desktop size; letting Hyprland draw the
+            // real layer in the same handoff frame creates a visible flash.
             return;
         }
         if (m_deactivatePending && !isNiriWallpaperLayer(layer, monitor) && !isRetainedNiriWallpaperLayoutLayer(layer, monitor)) {
@@ -11726,12 +11726,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     const bool directNiriWallpaperClose = niriWallpaperZoomAppliesToState(m_state) && niriModeAppliesToState(m_state) &&
         m_state.collectionPolicy.onlyActiveWorkspace;
     if (directNiriWallpaperClose) {
-        // Match the stable no-window close path even when the workspace has
-        // windows.  The wallpaper/layout layer is a workspace viewport, not a
-        // normal hide-bar effect; clearing its proxy at close hands rendering
-        // back to the real full-size layer during the last few percent of zoom-in,
-        // which is the visible flash/snap.  Keep only the Niri wallpaper-layout
-        // proxies alive until deactivate(), then native Hyprland takes over alone.
+        // Use the same proxy lifetime as the stable no-window path.  Window-backed
+        // workspaces still have a wallpaper viewport; clearing its layout-layer
+        // proxy at close exposes the real full-size layer while the viewport is
+        // still zooming, which reads as a final 5–10% snap.
         syncNiriWallpaperLayoutLayerProxies();
         std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return !proxy.niriWallpaperLayoutLayer; });
         if (debugLogsEnabled()) {

@@ -2866,11 +2866,70 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
             return lerpRect(placeholder.relayoutFromGlobal, placeholder.targetGlobal, relayoutVisualProgress());
         return placeholder.targetGlobal;
     };
-    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-        const Rect preview = currentPlaceholderRect(placeholder);
-        placeholder.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
-                                          selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
-                                          preview.width * scaleX, preview.height * scaleY);
+
+    // Window-backed direct-Niri workspaces use backing placeholders for the
+    // wallpaper viewport.  Driving those placeholders from the selected window's
+    // client rect can leave the wallpaper at a slightly non-native rect near the
+    // end of close, then the real wallpaper snaps to full size at handoff.
+    // Empty workspaces do not snap because their close camera is anchored on the
+    // workspace viewport itself.  Use that same viewport camera for wallpaper
+    // placeholders while keeping the window exit camera above unchanged.
+    const EmptyWorkspacePlaceholder* selectedPlaceholder = nullptr;
+    for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
+            continue;
+        if (placeholder.workspace != window->m_workspace && placeholder.workspaceId != window->m_workspace->m_id)
+            continue;
+
+        if (placeholder.backingOnly) {
+            selectedPlaceholder = &placeholder;
+            break;
+        }
+
+        if (!selectedPlaceholder)
+            selectedPlaceholder = &placeholder;
+    }
+
+    bool appliedPlaceholderViewportCamera = false;
+    if (selectedPlaceholder) {
+        const Rect selectedPlaceholderPreview = currentPlaceholderRect(*selectedPlaceholder);
+        const Rect selectedPlaceholderExit = selectedPlaceholder->naturalGlobal;
+        if (selectedPlaceholderPreview.width > 1.0 && selectedPlaceholderPreview.height > 1.0 &&
+            selectedPlaceholderExit.width > 1.0 && selectedPlaceholderExit.height > 1.0) {
+            const double placeholderScaleX = selectedPlaceholderExit.width / selectedPlaceholderPreview.width;
+            const double placeholderScaleY = selectedPlaceholderExit.height / selectedPlaceholderPreview.height;
+            if (std::isfinite(placeholderScaleX) && std::isfinite(placeholderScaleY) && placeholderScaleX > 0.0 && placeholderScaleY > 0.0) {
+                for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+                    const Rect preview = currentPlaceholderRect(placeholder);
+                    placeholder.exitGlobal = makeRect(selectedPlaceholderExit.centerX() +
+                                                          (preview.centerX() - selectedPlaceholderPreview.centerX()) * placeholderScaleX -
+                                                          preview.width * placeholderScaleX * 0.5,
+                                                      selectedPlaceholderExit.centerY() +
+                                                          (preview.centerY() - selectedPlaceholderPreview.centerY()) * placeholderScaleY -
+                                                          preview.height * placeholderScaleY * 0.5,
+                                                      preview.width * placeholderScaleX, preview.height * placeholderScaleY);
+                }
+                appliedPlaceholderViewportCamera = true;
+
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] niri scrolling wallpaper viewport exit camera workspace=" << debugWorkspaceLabel(window->m_workspace)
+                        << " selectedPreview=" << rectToString(selectedPlaceholderPreview)
+                        << " selectedExit=" << rectToString(selectedPlaceholderExit)
+                        << " scale=(" << placeholderScaleX << "," << placeholderScaleY << ")";
+                    debugLog(out.str());
+                }
+            }
+        }
+    }
+
+    if (!appliedPlaceholderViewportCamera) {
+        for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+            const Rect preview = currentPlaceholderRect(placeholder);
+            placeholder.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
+                                              selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
+                                              preview.width * scaleX, preview.height * scaleY);
+        }
     }
 
     if (debugLogsEnabled()) {
@@ -6182,23 +6241,16 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
-    const auto stableExitRect = [&]() {
-        if (placeholder.exitGlobal.width > 1.0 && placeholder.exitGlobal.height > 1.0)
-            return placeholder.exitGlobal;
-
-        return placeholder.naturalGlobal;
-    };
-
     if (m_gestureSession.active)
         return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
-                                          lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
+                                          lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
 
     switch (m_state.phase) {
         case Phase::Opening:
             return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
         case Phase::ClosingSettle:
         case Phase::Closing:
-            return lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
+            return lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
         case Phase::Inactive:
             return placeholder.naturalGlobal;
         case Phase::Active:
