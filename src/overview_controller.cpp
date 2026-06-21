@@ -82,7 +82,6 @@ extern std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 extern std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 extern bool workspaceSwitchDispatcherBlockRelayout;
 bool directNiriWorkspaceTransferRenderGuardActive(const PHLWINDOW& window);
-bool directNiriDraggedWorkspaceTransferRenderGuardActive(const PHLWINDOW& window);
 }
 
 class OverviewOverlayPassElement final : public IPassElement {
@@ -4605,6 +4604,32 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
     }
 
     if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
+        if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+            m_state.collectionPolicy.onlyActiveWorkspace &&
+            window->m_workspace && !window->m_workspace->isVisible() &&
+            niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window)) {
+            // A window that has just been moved into an inactive/unvisited
+            // scrolling workspace can have native Hyprland surface geometry that
+            // still belongs to the old workspace.  If we force the normal
+            // Hyprland window pass for that transient frame, browsers can render
+            // oversized/off-lane.  Do not skip the overview preview entirely:
+            // renderSelectionChrome() still paints the clipped live main-surface
+            // overlay for inactive workspaces, which keeps the window visible
+            // while avoiding the stale native-geometry pass.
+            static std::size_t s_transferNativePassLogBudget = 96;
+            if (debugLogsEnabled() && s_transferNativePassLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] suppress native pass for workspace-transfer preview"
+                    << " window=" << debugWindowLabel(window)
+                    << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                    << " monitor=" << monitor->m_name
+                    << " wsVisible=" << (window->m_workspace->isVisible() ? 1 : 0);
+                debugLog(out.str());
+                --s_transferNativePassLogBudget;
+            }
+            return false;
+        }
+
         static std::size_t s_shouldRenderOverrideLogBudget = 24;
         if (debugLogsEnabled() && s_shouldRenderOverrideLogBudget > 0) {
             std::ostringstream out;
@@ -13879,28 +13904,6 @@ void OverviewController::renderSelectionChrome() const {
             // buffers over the preview for a couple seconds.
             if (window->m_workspace->isVisible()) {
                 ++skipped;
-                continue;
-            }
-
-            // A window that was just dragged to another workspace can briefly
-            // expose a browser/client main-surface buffer whose viewport/commit
-            // state still corresponds to the old workspace. The normal Hyprland
-            // surface pass is clipped and transformed per-subsurface, but this
-            // raw fallback paints only the main texture. Skip the fallback during
-            // the transfer guard so browsers do not momentarily render oversized
-            // or cropped on unvisited destination lanes.
-            if (niri_scrolling_detail::directNiriDraggedWorkspaceTransferRenderGuardActive(window)) {
-                ++skipped;
-                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
-                    std::ostringstream out;
-                    out << "[hymission] direct niri live surface overlay skipped-transfer-guard"
-                        << " window=" << debugWindowLabel(window)
-                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
-                        << " target=" << rectToString(currentPreviewRect(managed))
-                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0);
-                    debugLog(out.str());
-                    --s_directNiriSurfaceOverlayLogBudget;
-                }
                 continue;
             }
 
