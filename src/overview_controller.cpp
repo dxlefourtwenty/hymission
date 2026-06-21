@@ -9818,11 +9818,171 @@ bool OverviewController::shouldRenderHiddenStripLayerProxy(const PHLLS& layer, c
 }
 
 void OverviewController::renderHiddenStripLayerProxies() const {
-    if (m_hiddenStripLayerProxies.empty() || !g_pHyprOpenGL || !hideBarAnimationEffectsEnabled())
+    if (!g_pHyprOpenGL || !g_pHyprRenderer)
         return;
 
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor)
+        return;
+
+    const auto renderDirectNiriInactiveWorkspaceWindows = [&]() {
+        if (!isVisible() || m_stripPreviewContext.active || m_deactivatePending || directNiriNativeHandoffActive())
+            return;
+
+        if (!m_state.collectionPolicy.onlyActiveWorkspace || !(usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)))
+            return;
+
+        using RenderWindowFn = void (*)(Render::IHyprRenderer*, PHLWINDOW, PHLMONITOR, const Time::steady_tp&, bool, Render::eRenderPassMode, bool, bool);
+        static RenderWindowFn renderWindowFn = nullptr;
+        static bool           renderWindowResolved = false;
+        if (!renderWindowResolved) {
+            renderWindowResolved = true;
+            renderWindowFn = reinterpret_cast<RenderWindowFn>(findFunction("renderWindow", "IHyprRenderer::renderWindow"));
+            if (!renderWindowFn)
+                debugLog("[hymission] failed to resolve IHyprRenderer::renderWindow for direct niri inactive workspace previews");
+        }
+        if (!renderWindowFn)
+            return;
+
+        const auto activeWorkspace = renderMonitor->m_activeWorkspace;
+        std::vector<PHLWINDOW> tiledWindows;
+        std::vector<PHLWINDOW> floatingWindows;
+        const auto collectManagedWindow = [&](const ManagedWindow& managed) {
+            const auto& window = managed.window;
+            if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace())
+                return;
+            if (!managed.targetMonitor || managed.targetMonitor != renderMonitor)
+                return;
+            if (!window->m_workspace || window->m_workspace == activeWorkspace)
+                return;
+            if (window->m_workspace->m_monitor.lock() != renderMonitor)
+                return;
+            if (!windowMatchesOverviewScope(window, m_state, false))
+                return;
+
+            auto& bucket = managed.isFloating ? floatingWindows : tiledWindows;
+            if (std::ranges::find(bucket, window) == bucket.end())
+                bucket.push_back(window);
+        };
+
+        for (const auto& managed : m_state.windows)
+            collectManagedWindow(managed);
+
+        if (m_workspaceTransition.active) {
+            for (const auto& managed : m_workspaceTransition.sourceState.windows)
+                collectManagedWindow(managed);
+            for (const auto& managed : m_workspaceTransition.targetState.windows)
+                collectManagedWindow(managed);
+        }
+
+        if (tiledWindows.empty() && floatingWindows.empty())
+            return;
+
+        struct WorkspaceRenderState {
+            PHLWORKSPACE workspace;
+            bool         visible = false;
+            bool         forceRendering = false;
+            Vector2D     renderOffsetValue;
+            Vector2D     renderOffsetGoal;
+            float        alphaValue = 1.0F;
+            float        alphaGoal = 1.0F;
+        };
+
+        const auto captureWorkspaceRenderState = [](const PHLWORKSPACE& workspace) -> std::optional<WorkspaceRenderState> {
+            if (!workspace)
+                return std::nullopt;
+            return WorkspaceRenderState{
+                .workspace = workspace,
+                .visible = workspace->m_visible,
+                .forceRendering = workspace->m_forceRendering,
+                .renderOffsetValue = workspace->m_renderOffset->value(),
+                .renderOffsetGoal = workspace->m_renderOffset->goal(),
+                .alphaValue = workspace->m_alpha->value(),
+                .alphaGoal = workspace->m_alpha->goal(),
+            };
+        };
+
+        const auto restoreWorkspaceRenderState = [](const std::optional<WorkspaceRenderState>& state) {
+            if (!state || !state->workspace)
+                return;
+
+            state->workspace->m_visible = state->visible;
+            state->workspace->m_forceRendering = state->forceRendering;
+            state->workspace->m_renderOffset->setValueAndWarp(state->renderOffsetValue);
+            if (state->renderOffsetGoal != state->renderOffsetValue)
+                *state->workspace->m_renderOffset = state->renderOffsetGoal;
+            state->workspace->m_alpha->setValueAndWarp(state->alphaValue);
+            if (std::abs(state->alphaGoal - state->alphaValue) > 0.0001F)
+                *state->workspace->m_alpha = state->alphaGoal;
+        };
+
+        const auto previousWorkspace = renderMonitor->m_activeWorkspace;
+        const auto previousSpecialWorkspace = renderMonitor->m_activeSpecialWorkspace;
+        const bool previousBlockSurfaceFeedback = g_pHyprRenderer->m_bBlockSurfaceFeedback;
+        const bool previousRenderingSnapshot = g_pHyprRenderer->m_bRenderingSnapshot;
+        const auto now = Time::steadyNow();
+
+        std::size_t rendered = 0;
+        const auto renderBucket = [&](const std::vector<PHLWINDOW>& windows, const char* bucketName) {
+            for (const auto& window : windows) {
+                if (!window || !window->m_workspace)
+                    continue;
+
+                const auto workspace = window->m_workspace;
+                const auto workspaceState = captureWorkspaceRenderState(workspace);
+
+                renderMonitor->m_activeWorkspace = workspace;
+                renderMonitor->m_activeSpecialWorkspace.reset();
+                workspace->m_visible = true;
+                workspace->m_forceRendering = true;
+                workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+                *workspace->m_renderOffset = Vector2D{};
+                workspace->m_alpha->setValueAndWarp(1.F);
+                *workspace->m_alpha = 1.F;
+                g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
+                g_pHyprRenderer->m_bRenderingSnapshot = false;
+
+                if (const auto target = window->layoutTarget(); target && !target->floating()) {
+                    target->recalc();
+                    target->warpPositionSize();
+                    window->updateWindowDecos();
+                }
+
+                renderWindowFn(g_pHyprRenderer.get(), window, renderMonitor, now, false, Render::RENDER_PASS_ALL, false, true);
+                ++rendered;
+
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri manual inactive render window=" << debugWindowLabel(window)
+                        << " workspace=" << debugWorkspaceLabel(workspace)
+                        << " bucket=" << (bucketName ? bucketName : "?")
+                        << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspace);
+                    debugLog(out.str());
+                }
+
+                restoreWorkspaceRenderState(workspaceState);
+            }
+        };
+
+        renderBucket(tiledWindows, "tiled");
+        renderBucket(floatingWindows, "floating");
+
+        renderMonitor->m_activeSpecialWorkspace = previousSpecialWorkspace;
+        renderMonitor->m_activeWorkspace = previousWorkspace;
+        g_pHyprRenderer->m_bRenderingSnapshot = previousRenderingSnapshot;
+        g_pHyprRenderer->m_bBlockSurfaceFeedback = previousBlockSurfaceFeedback;
+
+        if (rendered > 0 && debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] direct niri manual inactive render count=" << rendered
+                << " monitor=" << renderMonitor->m_name;
+            debugLog(out.str());
+        }
+    };
+
+    renderDirectNiriInactiveWorkspaceWindows();
+
+    if (m_hiddenStripLayerProxies.empty() || !hideBarAnimationEffectsEnabled())
         return;
 
     for (const auto& proxy : m_hiddenStripLayerProxies) {
