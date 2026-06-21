@@ -246,7 +246,7 @@ constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard,rofi";
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 constexpr double DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON = 0.004;
-constexpr double DIRECT_NIRI_WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON = 0.08;
+constexpr double DIRECT_NIRI_WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON = DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
 constexpr auto   DIRECT_NIRI_NATIVE_HANDOFF_GUARD_DURATION = std::chrono::milliseconds(120);
 OverviewController* g_controller = nullptr;
 std::chrono::steady_clock::time_point g_directNiriNativeHandoffUntil;
@@ -3585,13 +3585,11 @@ void OverviewController::renderStage(eRenderStage stage) {
         if (directNiriHandoff && (m_deactivatePending || closingAtNativeGeometry))
             armDirectNiriNativeHandoffGuard();
         if (directNiriHandoff && (directNiriNativeHandoffActive() || wallpaperAtNativeGeometry)) {
-            // The native wallpaper/layer pass is already back in Hyprland's hands
-            // for this frame. Do not draw the overview wallpaper viewport pass
-            // behind transparent native windows during the handoff.  Use a wider
-            // wallpaper-only threshold than the window/chrome handoff so spammed
-            // close/open retargets cannot leave a tiny overview-scaled wallpaper
-            // viewport visible on the desktop after the window previews have
-            // returned to native geometry.
+            // Wallpaper must hand off on the same visual frame as the direct-Niri
+            // window previews.  Handing it off earlier leaves the wallpaper still
+            // overview-scaled for the last few percent of close, which is visible
+            // as a late snap when toggle/open-close input is spammed.  Only skip
+            // the overview wallpaper pass at the true native handoff point.
             if (m_deactivatePending)
                 scheduleDeactivate();
             return;
@@ -4693,12 +4691,10 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
             (isNiriWallpaperLayer(layer, monitor) || isRetainedNiriWallpaperLayoutLayer(layer, monitor));
         if (directNiriHandoff && (m_deactivatePending || closingAnimationAtNativeGeometry || closingWallpaperLayerAtNativeGeometry)) {
             // Final direct-Niri close handoff: return the real wallpaper/layer pass
-            // to Hyprland only when the overview zoom is visually at native
-            // geometry.  Wallpaper/layout layers hand off slightly earlier than
-            // window chrome so interrupted close/open spam cannot leave a small
-            // zoomed wallpaper viewport underneath native windows.  Do not arm
-            // the global native-window handoff for the wider wallpaper threshold;
-            // window previews should keep animating until their tighter epsilon.
+            // to Hyprland on the same native-geometry frame as window previews.
+            // A separate earlier wallpaper threshold made close spam end with the
+            // wallpaper still overview-sized, then snap full-size under native
+            // windows. Keep both handoffs synchronized.
             if (m_deactivatePending || closingAnimationAtNativeGeometry)
                 armDirectNiriNativeHandoffGuard();
             m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
