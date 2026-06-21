@@ -885,9 +885,9 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const auto preservedOwnerActiveWorkspace = preservedOwnerMonitor ? preservedOwnerMonitor->m_activeWorkspace : PHLWORKSPACE{};
     const auto preservedNativeFocus = Desktop::focusState()->window();
     const auto preservedOverviewFocus = selectedWindow() ? selectedWindow() : (m_state.focusDuringOverview ? m_state.focusDuringOverview : preservedNativeFocus);
-    const auto preservedSourceLastFocus = sourceWorkspace ? sourceWorkspace->m_lastFocusedWindow : PHLWINDOW{};
-    const auto preservedTargetLastFocus = workspace ? workspace->m_lastFocusedWindow : PHLWINDOW{};
-    const auto preservedOwnerLastFocus = preservedOwnerWorkspace ? preservedOwnerWorkspace->m_lastFocusedWindow : PHLWINDOW{};
+    const PHLWINDOW preservedSourceLastFocus = sourceWorkspace ? sourceWorkspace->getLastFocusedWindow() : PHLWINDOW{};
+    const PHLWINDOW preservedTargetLastFocus = workspace ? workspace->getLastFocusedWindow() : PHLWINDOW{};
+    const PHLWINDOW preservedOwnerLastFocus = preservedOwnerWorkspace ? preservedOwnerWorkspace->getLastFocusedWindow() : PHLWINDOW{};
 
     const auto validPreservedFocus = [&](const PHLWINDOW &candidate) {
         return candidate && candidate->m_isMapped && !candidate->m_fadingOut && !candidate->m_pinned && !candidate->onSpecialWorkspace() &&
@@ -1040,7 +1040,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             if (sourceColumn) {
                 const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
                 bool sourceTileUsable = true;
-                if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>)
+                if constexpr (std::is_signed_v<std::remove_cvref_t<decltype(sourceTileIndexRaw)>>)
                     sourceTileUsable = sourceTileIndexRaw >= 0;
 
                 if (sourceTileUsable) {
@@ -1259,7 +1259,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
 
         const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
-        if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>) {
+        if constexpr (std::is_signed_v<std::remove_cvref_t<decltype(sourceTileIndexRaw)>>) {
             if (sourceTileIndexRaw < 0)
                 return abortMouseEdit();
         }
