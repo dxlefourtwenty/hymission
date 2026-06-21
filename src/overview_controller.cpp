@@ -4578,10 +4578,14 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
     }
 
     if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
-        if (debugLogsEnabled()) {
+        static std::size_t s_shouldRenderOverrideLogBudget = 24;
+        if (debugLogsEnabled() && s_shouldRenderOverrideLogBudget > 0) {
             std::ostringstream out;
             out << "[hymission] shouldRenderWindow override " << debugWindowLabel(window) << " monitor=" << monitor->m_name;
             debugLog(out.str());
+            --s_shouldRenderOverrideLogBudget;
+            if (s_shouldRenderOverrideLogBudget == 0)
+                debugLog("[hymission] shouldRenderWindow override logs muted to preserve strip snapshot diagnostics");
         }
         return true;
     }
@@ -14297,6 +14301,100 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         return true;
     };
 
+    static std::size_t s_stripSnapshotProbeLogBudget = 260;
+    const auto logStripSnapshotProbe = [&](const char* phase) {
+        if (!debugLogsEnabled() || !targetWorkspace || !directNiriStripSnapshot || s_stripSnapshotProbeLogBudget == 0)
+            return;
+
+        const auto activeWorkspace = monitor ? monitor->m_activeWorkspace : PHLWORKSPACE{};
+        {
+            std::ostringstream out;
+            out << "[hymission] strip snapshot probe phase=" << (phase ? phase : "?")
+                << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                << " activeWorkspace=" << debugWorkspaceLabel(activeWorkspace)
+                << " targetVisible=" << (targetWorkspace->isVisible() ? 1 : 0)
+                << " targetRawVisible=" << (targetWorkspace->m_visible ? 1 : 0)
+                << " targetForceRendering=" << (targetWorkspace->m_forceRendering ? 1 : 0)
+                << " entryWindows=" << entry.windows.size()
+                << " previewWindows=" << previewState.windows.size()
+                << " renderWorkspaceContents=" << (renderWorkspaceContents ? 1 : 0)
+                << " snapshotFeedbackFrames=" << m_stripSnapshotSurfaceFeedbackFrames;
+            debugLog(out.str());
+            --s_stripSnapshotProbeLogBudget;
+            if (s_stripSnapshotProbeLogBudget == 0)
+                return;
+        }
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(targetWorkspace);
+        if (scrolling && scrolling->m_scrollingData && s_stripSnapshotProbeLogBudget > 0) {
+            std::ostringstream out;
+            out << "[hymission] strip snapshot probe scrolling phase=" << (phase ? phase : "?")
+                << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                << " columns=" << scrolling->m_scrollingData->columns.size()
+                << " offset=" << (scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->getOffset() : 0.0);
+            for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size() && columnIndex < 8; ++columnIndex) {
+                const auto& column = scrolling->m_scrollingData->columns[columnIndex];
+                out << " | col#" << columnIndex;
+                if (!column) {
+                    out << "=<null>";
+                    continue;
+                }
+                out << " width=" << column->getColumnWidth() << " targets=" << column->targetDatas.size();
+                for (std::size_t targetIndex = 0; targetIndex < column->targetDatas.size() && targetIndex < 4; ++targetIndex) {
+                    const auto& targetData = column->targetDatas[targetIndex];
+                    const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
+                    const auto window = target ? target->window() : PHLWINDOW{};
+                    const CBox pos = target ? target->position() : CBox{};
+                    const CBox layout = targetData ? targetData->layoutBox : CBox{};
+                    out << " [" << targetIndex << "]" << debugWindowLabel(window)
+                        << " pos=" << boxToString(pos)
+                        << " layout=" << boxToString(layout);
+                }
+            }
+            debugLog(out.str());
+            --s_stripSnapshotProbeLogBudget;
+            if (s_stripSnapshotProbeLogBudget == 0)
+                return;
+        }
+
+        std::size_t loggedWindows = 0;
+        for (const auto& window : g_pCompositor->m_windows) {
+            if (!window || window->m_workspace != targetWorkspace || !window->m_isMapped || window->m_fadingOut)
+                continue;
+            if (loggedWindows >= 10 || s_stripSnapshotProbeLogBudget == 0)
+                break;
+
+            const auto target = window->layoutTarget();
+            auto* const scrollingForWindow = scrollingAlgorithmForWorkspace(window->m_workspace);
+            const auto targetData = scrollingForWindow && target ? scrollingForWindow->dataFor(target) : nullptr;
+            const auto surface = window->wlSurface();
+            const auto resource = surface ? surface->resource() : nullptr;
+            const bool hasTexture = resource && static_cast<bool>(resource->m_current.texture);
+            const Rect live = stateSnapshotGlobalRectForWindow(window, false);
+            const Rect goal = stateSnapshotGlobalRectForWindow(window, true);
+            std::ostringstream out;
+            out << "[hymission] strip snapshot probe window phase=" << (phase ? phase : "?")
+                << " window=" << debugWindowLabel(window)
+                << " hidden=" << (window->isHidden() ? 1 : 0)
+                << " mapped=" << (window->m_isMapped ? 1 : 0)
+                << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
+                << " alpha=" << window->alphaTotal()
+                << " live=" << rectToString(live)
+                << " goal=" << rectToString(goal)
+                << " targetPos=" << (target ? boxToString(target->position()) : std::string{"<null>"})
+                << " layoutBox=" << (targetData ? boxToString(targetData->layoutBox) : std::string{"<null>"})
+                << " texture=" << (hasTexture ? 1 : 0);
+            if (resource)
+                out << " surfSize=" << vectorToString(resource->m_current.size)
+                    << " buffer=" << vectorToString(resource->m_current.bufferSize);
+            else
+                out << " surface=<null>";
+            debugLog(out.str());
+            --s_stripSnapshotProbeLogBudget;
+            ++loggedWindows;
+        }
+    };
+
     struct WindowRenderGeometryBackup {
         PHLWINDOW window;
         Vector2D  positionValue;
@@ -14380,6 +14478,8 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             }
         }
     };
+
+    logStripSnapshotProbe("before-render");
 
     ++m_stripSnapshotRenderDepth;
     g_pHyprOpenGL->makeEGLCurrent();
@@ -14577,7 +14677,8 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
                                   makeRect(0.0, 0.0, snapshot->framebuffer->m_size.x, snapshot->framebuffer->m_size.y));
         }
     }
-    restoreWindowRenderGeometry();
+    logStripSnapshotProbe("after-render");
+        restoreWindowRenderGeometry();
 
     if (renderWorkspaceContents) {
         applyFullscreenOverrideForState(m_stripPreviewContext.state, false);
