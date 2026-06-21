@@ -6182,16 +6182,23 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
+    const auto stableExitRect = [&]() {
+        if (placeholder.exitGlobal.width > 1.0 && placeholder.exitGlobal.height > 1.0)
+            return placeholder.exitGlobal;
+
+        return placeholder.naturalGlobal;
+    };
+
     if (m_gestureSession.active)
         return m_gestureSession.opening ? lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress()) :
-                                          lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+                                          lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
 
     switch (m_state.phase) {
         case Phase::Opening:
             return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
         case Phase::ClosingSettle:
         case Phase::Closing:
-            return lerpRect(placeholder.exitGlobal, placeholder.targetGlobal, visualProgress());
+            return lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
         case Phase::Inactive:
             return placeholder.naturalGlobal;
         case Phase::Active:

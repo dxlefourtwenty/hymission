@@ -246,6 +246,7 @@ constexpr auto   MISSION_CONTROL_HIDDEN_WORKSPACE_PREFIX = "__hymission_hidden__
 constexpr auto   DEFAULT_HIDE_BAR_NAMESPACES = "hypr-dock,waybar,chromack,wardnc,wardbnc,dashboard,rofi";
 constexpr auto   DEFAULT_HIDE_OVERVIEW_LAYER_NAMESPACES = "chromack,wardnc,wardbnc,dashboard,rofi";
 constexpr double DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON = 0.004;
+constexpr double DIRECT_NIRI_WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON = 0.08;
 constexpr auto   DIRECT_NIRI_NATIVE_HANDOFF_GUARD_DURATION = std::chrono::milliseconds(120);
 OverviewController* g_controller = nullptr;
 std::chrono::steady_clock::time_point g_directNiriNativeHandoffUntil;
@@ -265,6 +266,10 @@ void armDirectNiriNativeHandoffGuard() {
     const auto until = std::chrono::steady_clock::now() + DIRECT_NIRI_NATIVE_HANDOFF_GUARD_DURATION;
     if (until > g_directNiriNativeHandoffUntil)
         g_directNiriNativeHandoffUntil = until;
+}
+
+void clearDirectNiriNativeHandoffGuard() {
+    g_directNiriNativeHandoffUntil = {};
 }
 std::unordered_map<std::string, std::function<SDispatchResult(std::string)>> g_openingDispatcherGateOriginals;
 
@@ -3572,14 +3577,21 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
+        const double currentVisualProgress = visualProgress();
         const bool closingAtNativeGeometry =
-            m_state.phase == Phase::Closing && visualProgress() <= DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
+            m_state.phase == Phase::Closing && currentVisualProgress <= DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
+        const bool wallpaperAtNativeGeometry =
+            m_state.phase == Phase::Closing && currentVisualProgress <= DIRECT_NIRI_WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON;
         if (directNiriHandoff && (m_deactivatePending || closingAtNativeGeometry))
             armDirectNiriNativeHandoffGuard();
-        if (directNiriHandoff && directNiriNativeHandoffActive()) {
+        if (directNiriHandoff && (directNiriNativeHandoffActive() || wallpaperAtNativeGeometry)) {
             // The native wallpaper/layer pass is already back in Hyprland's hands
             // for this frame. Do not draw the overview wallpaper viewport pass
-            // behind transparent native windows during the handoff.
+            // behind transparent native windows during the handoff.  Use a wider
+            // wallpaper-only threshold than the window/chrome handoff so spammed
+            // close/open retargets cannot leave a tiny overview-scaled wallpaper
+            // viewport visible on the desktop after the window previews have
+            // returned to native geometry.
             if (m_deactivatePending)
                 scheduleDeactivate();
             return;
@@ -4673,15 +4685,22 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
 
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
+        const double currentVisualProgress = visualProgress();
         const bool closingAnimationAtNativeGeometry =
-            m_state.phase == Phase::Closing && visualProgress() <= DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
-        if (directNiriHandoff && (m_deactivatePending || closingAnimationAtNativeGeometry)) {
+            m_state.phase == Phase::Closing && currentVisualProgress <= DIRECT_NIRI_NATIVE_HANDOFF_VISUAL_EPSILON;
+        const bool closingWallpaperLayerAtNativeGeometry =
+            m_state.phase == Phase::Closing && currentVisualProgress <= DIRECT_NIRI_WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON &&
+            (isNiriWallpaperLayer(layer, monitor) || isRetainedNiriWallpaperLayoutLayer(layer, monitor));
+        if (directNiriHandoff && (m_deactivatePending || closingAnimationAtNativeGeometry || closingWallpaperLayerAtNativeGeometry)) {
             // Final direct-Niri close handoff: return the real wallpaper/layer pass
             // to Hyprland only when the overview zoom is visually at native
-            // geometry. The old time-based early handoff could happen while
-            // transparent windows were still using overview blur/preview state,
-            // causing a one-frame white-box flash.
-            armDirectNiriNativeHandoffGuard();
+            // geometry.  Wallpaper/layout layers hand off slightly earlier than
+            // window chrome so interrupted close/open spam cannot leave a small
+            // zoomed wallpaper viewport underneath native windows.  Do not arm
+            // the global native-window handoff for the wider wallpaper threshold;
+            // window previews should keep animating until their tighter epsilon.
+            if (m_deactivatePending || closingAnimationAtNativeGeometry)
+                armDirectNiriNativeHandoffGuard();
             m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
             return;
         }
@@ -11414,6 +11433,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     setAnimationsEnabledOverride(false);
     const bool freshOpen = !isVisible();
     const double fromVisual = freshOpen ? 0.0 : visualProgress();
+    clearDirectNiriNativeHandoffGuard();
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
@@ -11632,14 +11652,16 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     }
 
     const double fromVisual = fromVisualOverride.value_or(visualProgress());
+    const bool interruptedDirectNiriOpenClose = mode != CloseMode::Abort && m_state.phase == Phase::Opening &&
+        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
-    if (mode != CloseMode::Abort)
+    if (mode != CloseMode::Abort && !interruptedDirectNiriOpenClose)
         enforceDirectNiriExitFocusGuard();
-    if (mode != CloseMode::Abort)
+    if (mode != CloseMode::Abort && !interruptedDirectNiriOpenClose)
         reconcileNiriCenteredSelectionForExit();
-    if (mode != CloseMode::Abort)
+    if (mode != CloseMode::Abort && !interruptedDirectNiriOpenClose)
         freezeDirectNiriTwoColumnExitPreviewTargets();
 
     clearPendingWindowGeometryRetry();
@@ -11709,12 +11731,13 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     clearNiriWallpaperLayoutLayerRefresh();
     const bool emptyDirectNiriClose = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() &&
         centeredEmptyWorkspacePlaceholder(m_state);
-    if (emptyDirectNiriClose) {
-        // Keep the delayed-captured Waybar/hypr-dock Niri layout proxies alive
-        // for the close animation.  Clearing them here makes shouldHideLayerSurface()
-        // hand rendering back to the real layer immediately, so the layer snaps
-        // full-size while the wallpaper viewport zooms in.  The proxies are still
-        // cleared in deactivate(), after the close animation has completed.
+    if (emptyDirectNiriClose || (interruptedDirectNiriOpenClose && niriWallpaperZoomAppliesToState(m_state))) {
+        // Niri treats a toggle during the overview-open animation as the same
+        // overview progress animation running back to zero: the workspace
+        // background/layer surfaces stay in the same render path and are not
+        // re-captured in a new close camera.  Mirror that no-window path here
+        // even when windows exist, otherwise the real wallpaper/layer stack can
+        // re-enter halfway through the reverse animation and then snap native.
         std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return !proxy.niriWallpaperLayoutLayer; });
     } else {
         clearHiddenStripLayerProxies();
@@ -11772,7 +11795,8 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             out << " focusBeforeOpenWorkspace=" << debugWorkspaceLabel(m_state.focusBeforeOpen->m_workspace);
         else
             out << " focusBeforeOpenWorkspace=<null>";
-        out << " ownerWorkspace=" << debugWorkspaceLabel(m_state.ownerWorkspace);
+        out << " ownerWorkspace=" << debugWorkspaceLabel(m_state.ownerWorkspace)
+            << " interruptedOpenClose=" << (interruptedDirectNiriOpenClose ? 1 : 0);
         debugLog(out.str());
     }
 
@@ -11812,25 +11836,9 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         debugLog(out.str());
     }
     const bool preferGoalGeometry = shouldPreferGoalExitGeometry(m_state.pendingExitFocus);
-    const bool interruptedDirectNiriOpenClose = m_state.phase == Phase::Opening && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state));
-    const bool settleOnlyForGoalGeometry = preferGoalGeometry && !clearedFullscreen && !m_state.exitFullscreenReapplied &&
-        !m_state.deferredFullscreenWorkspaceClear && !m_state.deferredHiddenFullscreenReapply;
-    const bool skipGoalSettleForInterruptedDirectNiriOpen = interruptedDirectNiriOpenClose && settleOnlyForGoalGeometry;
-    const bool shouldSettle = mode != CloseMode::Abort && m_state.pendingExitFocus &&
+    const bool shouldSettle = !interruptedDirectNiriOpenClose && mode != CloseMode::Abort && m_state.pendingExitFocus &&
         (preferGoalGeometry || clearedFullscreen || m_state.exitFullscreenReapplied || m_state.deferredFullscreenWorkspaceClear ||
-         m_state.deferredHiddenFullscreenReapply) &&
-        !skipGoalSettleForInterruptedDirectNiriOpen;
-    if (debugLogsEnabled() && skipGoalSettleForInterruptedDirectNiriOpen) {
-        std::ostringstream out;
-        out << "[hymission] beginClose interrupted direct niri open uses immediate no-window close path"
-            << " fromVisual=" << fromVisual << " pendingExitFocus=";
-        if (m_state.pendingExitFocus)
-            out << debugWindowLabel(m_state.pendingExitFocus);
-        else
-            out << "<null>";
-        debugLog(out.str());
-    }
+         m_state.deferredHiddenFullscreenReapply);
     if (debugLogsEnabled() && m_state.pendingExitFocus) {
         std::ostringstream out;
         out << "[hymission] beginClose geometry preferGoal=" << (preferGoalGeometry ? 1 : 0) << " shouldSettle=" << (shouldSettle ? 1 : 0)
@@ -11880,8 +11888,10 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
             debugLog("[hymission] beginClose settle start");
     } else {
         bool appliedPlaceholderCameraExit = false;
-        if (auto* placeholder = pendingExitWorkspacePlaceholder())
-            appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
+        if (!interruptedDirectNiriOpenClose) {
+            if (auto* placeholder = pendingExitWorkspacePlaceholder())
+                appliedPlaceholderCameraExit = applyNiriScrollingCameraExitGeometry(*placeholder);
+        }
 
         if (mode != CloseMode::Abort) {
             if (m_state.pendingExitWorkspace)
@@ -11894,7 +11904,18 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         m_state.animationFromVisual = fromVisual;
         m_state.animationToVisual = 0.0;
         m_state.animationStart = {};
-        if (!appliedPlaceholderCameraExit) {
+        if (interruptedDirectNiriOpenClose) {
+            for (auto& managed : m_state.windows) {
+                if (managed.exitGlobal.width <= 1.0 || managed.exitGlobal.height <= 1.0)
+                    managed.exitGlobal = managed.naturalGlobal;
+            }
+            for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+                if (placeholder.exitGlobal.width <= 1.0 || placeholder.exitGlobal.height <= 1.0)
+                    placeholder.exitGlobal = placeholder.naturalGlobal;
+            }
+            if (debugLogsEnabled())
+                debugLog("[hymission] beginClose interrupted direct niri open: preserve opening camera and reverse overview progress");
+        } else if (!appliedPlaceholderCameraExit) {
             for (auto& managed : m_state.windows)
                 managed.exitGlobal = liveGlobalRectForWindow(managed.window);
         }
