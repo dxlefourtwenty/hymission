@@ -5324,32 +5324,140 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
     if (!shouldRefresh)
         return;
 
+    const auto workspaceMonitor = workspace->m_monitor.lock();
+    const auto previousActiveWorkspace = workspaceMonitor ? workspaceMonitor->m_activeWorkspace : PHLWORKSPACE{};
+    const auto previousActiveSpecialWorkspace = workspaceMonitor ? workspaceMonitor->m_activeSpecialWorkspace : PHLWORKSPACE{};
+    const bool previousVisible = workspace->m_visible;
+    const bool previousForceRendering = workspace->m_forceRendering;
+    const Vector2D previousRenderOffsetValue = workspace->m_renderOffset ? workspace->m_renderOffset->value() : Vector2D{};
+    const Vector2D previousRenderOffsetGoal = workspace->m_renderOffset ? workspace->m_renderOffset->goal() : Vector2D{};
+    const float previousAlphaValue = workspace->m_alpha ? workspace->m_alpha->value() : 1.0F;
+    const float previousAlphaGoal = workspace->m_alpha ? workspace->m_alpha->goal() : 1.0F;
+
+    auto* const scrolling = isScrollingWorkspace(workspace) ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+    const bool inactiveScrollingWorkspace = scrolling && scrolling->m_scrollingData && workspaceMonitor && previousActiveWorkspace != workspace;
+
+    const auto logScrollingGeometry = [&](const char* phase) {
+        if (!debugLogsEnabled() || !scrolling || !scrolling->m_scrollingData)
+            return;
+
+        std::size_t totalTargets = 0;
+        std::size_t zeroTargets = 0;
+        std::ostringstream columns;
+        columns << "[hymission] refresh workspace layout snapshot geometry phase=" << (phase ? phase : "?")
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " active=" << debugWorkspaceLabel(workspaceMonitor ? workspaceMonitor->m_activeWorkspace : PHLWORKSPACE{})
+                << " visible=" << (workspace->isVisible() ? 1 : 0)
+                << " forceRendering=" << (workspace->m_forceRendering ? 1 : 0)
+                << " columns=" << scrolling->m_scrollingData->columns.size()
+                << " offset=" << (scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->getOffset() : 0.0);
+
+        for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size(); ++columnIndex) {
+            const auto& column = scrolling->m_scrollingData->columns[columnIndex];
+            if (!column) {
+                columns << " | col#" << columnIndex << " <null>";
+                continue;
+            }
+
+            columns << " | col#" << columnIndex << " width=" << column->getColumnWidth() << " targets=" << column->targetDatas.size();
+            for (std::size_t targetIndex = 0; targetIndex < column->targetDatas.size(); ++targetIndex) {
+                const auto& targetData = column->targetDatas[targetIndex];
+                const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
+                const auto window = target ? target->window() : PHLWINDOW{};
+                const CBox targetBox = target ? target->position() : CBox{};
+                const CBox layoutBox = targetData ? targetData->layoutBox : CBox{};
+                const bool zero = targetBox.width <= 1.0 || targetBox.height <= 1.0 || layoutBox.width <= 1.0 || layoutBox.height <= 1.0;
+                ++totalTargets;
+                if (zero)
+                    ++zeroTargets;
+
+                columns << " [" << targetIndex << "]" << debugWindowLabel(window)
+                        << " pos=" << boxToString(targetBox)
+                        << " layout=" << boxToString(layoutBox)
+                        << " zero=" << (zero ? 1 : 0);
+            }
+        }
+
+        columns << " totalTargets=" << totalTargets << " zeroTargets=" << zeroTargets;
+        debugLog(columns.str());
+    };
+
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] refresh workspace layout snapshot workspace=" << debugWorkspaceLabel(workspace) << " visible=" << (workspace->isVisible() ? 1 : 0)
-            << " scrolling=" << (isScrollingWorkspace(workspace) ? 1 : 0);
+        out << "[hymission] refresh workspace layout snapshot workspace=" << debugWorkspaceLabel(workspace)
+            << " visible=" << (workspace->isVisible() ? 1 : 0)
+            << " scrolling=" << (isScrollingWorkspace(workspace) ? 1 : 0)
+            << " inactiveScrolling=" << (inactiveScrollingWorkspace ? 1 : 0)
+            << " monitorActiveBefore=" << debugWorkspaceLabel(previousActiveWorkspace);
         debugLog(out.str());
+    }
+
+    logScrollingGeometry("before");
+
+    if (inactiveScrollingWorkspace) {
+        // Niri computes overview rows from layout state, not from the currently
+        // visible compositor workspace.  Hyprland's scrolling algorithm only
+        // reliably refreshes some target boxes after its workspace becomes the
+        // monitor active workspace.  For strip snapshots, briefly borrow that
+        // active-workspace context, run the normal scrolling recalculation, then
+        // restore the user's real focus/active workspace immediately.
+        workspaceMonitor->m_activeWorkspace = workspace;
+        workspaceMonitor->m_activeSpecialWorkspace.reset();
+        workspace->m_visible = true;
+        workspace->m_forceRendering = true;
+        if (workspace->m_renderOffset)
+            workspace->m_renderOffset->setValueAndWarp(Vector2D{});
+        if (workspace->m_alpha)
+            workspace->m_alpha->setValueAndWarp(1.F);
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] refresh workspace layout snapshot borrowed active workspace=" << debugWorkspaceLabel(workspace)
+                << " previousActive=" << debugWorkspaceLabel(previousActiveWorkspace);
+            debugLog(out.str());
+        }
     }
 
     // Preserve the current scrolling offset when snapshotting overview geometry.
     // CScrollingAlgorithm::recalculate() may hard-fit the focused column back
     // into view; update target boxes directly so overview layout scrolling can
     // travel across the whole tape instead of snapping around the focused window.
-    if (isScrollingWorkspace(workspace)) {
-        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-        if (scrolling && scrolling->m_scrollingData) {
-            if (scrollingDataHasStaleWorkspaceTargets(scrolling, workspace)) {
-                if (debugLogsEnabled())
-                    debugLog("[hymission] skip stale scrolling snapshot workspace=" + debugWorkspaceLabel(workspace));
-                return;
-            }
+    if (scrolling && scrolling->m_scrollingData) {
+        const bool staleTargets = scrollingDataHasStaleWorkspaceTargets(scrolling, workspace);
+        if (debugLogsEnabled() && staleTargets)
+            debugLog("[hymission] refresh workspace layout snapshot stale targets; forcing active-context recalc workspace=" + debugWorkspaceLabel(workspace));
 
-            scrolling->m_scrollingData->recalculate(true);
-            return;
-        }
+        if (staleTargets)
+            workspace->m_space->recalculate();
+
+        scrolling->m_scrollingData->recalculate(true);
+        workspace->updateWindows();
+    } else {
+        workspace->m_space->recalculate();
+        workspace->updateWindows();
     }
 
-    workspace->m_space->recalculate();
+    logScrollingGeometry("after");
+
+    if (inactiveScrollingWorkspace) {
+        workspaceMonitor->m_activeWorkspace = previousActiveWorkspace;
+        workspaceMonitor->m_activeSpecialWorkspace = previousActiveSpecialWorkspace;
+        workspace->m_visible = previousVisible;
+        workspace->m_forceRendering = previousForceRendering;
+        if (workspace->m_renderOffset) {
+            workspace->m_renderOffset->setValueAndWarp(previousRenderOffsetValue);
+            if (previousRenderOffsetGoal != previousRenderOffsetValue)
+                *workspace->m_renderOffset = previousRenderOffsetGoal;
+        }
+        if (workspace->m_alpha) {
+            workspace->m_alpha->setValueAndWarp(previousAlphaValue);
+            if (std::abs(previousAlphaGoal - previousAlphaValue) > 0.0001F)
+                *workspace->m_alpha = previousAlphaGoal;
+        }
+
+        if (previousActiveWorkspace)
+            previousActiveWorkspace->updateWindows();
+    }
 }
 
 std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const ManagedWindow& window) const {
