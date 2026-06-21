@@ -6182,7 +6182,6 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
-    constexpr double WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON = 0.004;
     const auto stableExitRect = [&]() {
         if (placeholder.naturalGlobal.width > 1.0 && placeholder.naturalGlobal.height > 1.0 &&
             (placeholder.exitGlobal.width <= 1.0 || placeholder.exitGlobal.height <= 1.0 ||
@@ -6200,14 +6199,12 @@ Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspa
         case Phase::Opening:
             return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
         case Phase::ClosingSettle:
-        case Phase::Closing: {
-            const double progress = visualProgress();
-            if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && progress <= WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON &&
-                placeholder.naturalGlobal.width > 1.0 && placeholder.naturalGlobal.height > 1.0)
-                return placeholder.naturalGlobal;
-
-            return lerpRect(stableExitRect(), placeholder.targetGlobal, progress);
-        }
+        case Phase::Closing:
+            // Keep wallpaper viewport interpolation on the exact same visual
+            // progress as window previews until the final native handoff.  An
+            // early wallpaper-only snap to naturalGlobal makes the last 5-10% of
+            // zoom-in visibly jump when overview open/close is spammed.
+            return lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
         case Phase::Inactive:
             return placeholder.naturalGlobal;
         case Phase::Active:
