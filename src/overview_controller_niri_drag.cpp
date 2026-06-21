@@ -880,7 +880,98 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool crossWorkspaceDrop = sourceWorkspace && sourceWorkspace != workspace;
     const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
 
-    std::optional<State> crossWorkspaceTransitionSource;
+    const auto preservedOwnerWorkspace = m_state.ownerWorkspace;
+    const auto preservedOwnerMonitor = m_state.ownerMonitor;
+    const auto preservedOwnerActiveWorkspace = preservedOwnerMonitor ? preservedOwnerMonitor->m_activeWorkspace : PHLWORKSPACE{};
+    const auto preservedNativeFocus = Desktop::focusState()->window();
+    const auto preservedOverviewFocus = selectedWindow() ? selectedWindow() : (m_state.focusDuringOverview ? m_state.focusDuringOverview : preservedNativeFocus);
+    const auto preservedSourceLastFocus = sourceWorkspace ? sourceWorkspace->m_lastFocusedWindow : PHLWINDOW{};
+    const auto preservedTargetLastFocus = workspace ? workspace->m_lastFocusedWindow : PHLWINDOW{};
+    const auto preservedOwnerLastFocus = preservedOwnerWorkspace ? preservedOwnerWorkspace->m_lastFocusedWindow : PHLWINDOW{};
+
+    const auto validPreservedFocus = [&](const PHLWINDOW &candidate) {
+        return candidate && candidate->m_isMapped && !candidate->m_fadingOut && !candidate->m_pinned && !candidate->onSpecialWorkspace() &&
+            candidate->m_workspace == preservedOwnerWorkspace;
+    };
+
+    const auto focusFallbackForPreservedOwner = [&]() -> PHLWINDOW {
+        if (validPreservedFocus(preservedOverviewFocus))
+            return preservedOverviewFocus;
+        if (validPreservedFocus(preservedNativeFocus))
+            return preservedNativeFocus;
+        if (validPreservedFocus(preservedOwnerLastFocus))
+            return preservedOwnerLastFocus;
+
+        for (const auto &managed : m_state.windows) {
+            const auto candidate = managed.window;
+            if (validPreservedFocus(candidate) && candidate != window)
+                return candidate;
+        }
+
+        for (const auto &candidate : g_pCompositor->m_windows) {
+            if (!validPreservedFocus(candidate) || candidate == window)
+                continue;
+
+            const auto layoutTarget = candidate->layoutTarget();
+            if (layoutTarget && !layoutTarget->floating())
+                return candidate;
+        }
+
+        return {};
+    };
+
+    const auto restoreFocusForMouseEdit = [&]() -> PHLWINDOW {
+        if (sourceWorkspace)
+            sourceWorkspace->m_lastFocusedWindow = preservedSourceLastFocus;
+        if (workspace && workspace != sourceWorkspace)
+            workspace->m_lastFocusedWindow = preservedTargetLastFocus;
+        if (preservedOwnerWorkspace)
+            preservedOwnerWorkspace->m_lastFocusedWindow = preservedOwnerLastFocus;
+
+        if (preservedOwnerMonitor && preservedOwnerWorkspace) {
+            if (preservedOwnerActiveWorkspace == preservedOwnerWorkspace && preservedOwnerMonitor->m_activeWorkspace != preservedOwnerWorkspace) {
+                const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+                m_applyingWorkspaceTransitionCommit = true;
+                preservedOwnerMonitor->changeWorkspace(preservedOwnerWorkspace, true, true, true);
+                preservedOwnerWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+                preservedOwnerWorkspace->m_alpha->setValueAndWarp(1.F);
+                m_applyingWorkspaceTransitionCommit = previousGuard;
+                m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+            }
+
+            m_state.ownerMonitor = preservedOwnerMonitor;
+            m_state.ownerWorkspace = preservedOwnerWorkspace;
+        }
+
+        const auto focus = focusFallbackForPreservedOwner();
+        if (focus) {
+            if (Desktop::focusState()->window() != focus)
+                Desktop::focusState()->rawWindowFocus(focus, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (focus->m_workspace)
+                focus->m_workspace->m_lastFocusedWindow = focus;
+            selectWindowInState(m_state, focus);
+            m_state.focusDuringOverview = focus;
+        } else {
+            if (preservedNativeFocus && preservedNativeFocus->m_isMapped && Desktop::focusState()->window() != preservedNativeFocus)
+                Desktop::focusState()->rawWindowFocus(preservedNativeFocus, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            m_state.selectedIndex.reset();
+            m_state.focusDuringOverview = {};
+        }
+
+        return focus;
+    };
+
+    const auto refreshAfterMouseEdit = [&](const char *reason) {
+        const auto focus = restoreFocusForMouseEdit();
+        refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
+        return true;
+    };
+
+    const auto abortMouseEdit = [&]() {
+        (void)restoreFocusForMouseEdit();
+        return false;
+    };
+
     SP<Layout::Tiled::SColumnData> crossWorkspaceInColumnTargetColumn;
     std::size_t crossWorkspaceInColumnTargetColumnIndex = 0;
     std::size_t crossWorkspaceInColumnTargetTile = 0;
@@ -908,28 +999,15 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         if (m_workspaceTransition.active)
             commitActiveNiriWorkspaceTransitionForRetarget();
 
-        State sourceState = captureOverviewWorkspaceTransitionSourceState();
-        if (!previousPreviewRects.empty()) {
-            for (auto &managed : sourceState.windows) {
-                const auto rectIt = std::find_if(previousPreviewRects.begin(), previousPreviewRects.end(), [&](const auto &entry) {
-                    return entry.first == managed.window;
-                });
-                if (rectIt == previousPreviewRects.end())
-                    continue;
-
-                managed.targetGlobal = rectIt->second;
-                managed.relayoutFromGlobal = rectIt->second;
-            }
-        }
-        selectWindowInState(sourceState, window);
-        sourceState.focusDuringOverview = window;
-        crossWorkspaceTransitionSource = std::move(sourceState);
+        // A mouse drag is a layout edit, not a workspace activation.  Keep the
+        // current strip as the overview owner; only explicit workspace dispatchers
+        // or click-without-drag are allowed to move the focused workspace.
     }
 
-    if (sourceWorkspace && sourceWorkspace != workspace)
+    if (sourceWorkspace && sourceWorkspace != workspace) {
         niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(sourceWorkspace->m_monitor.lock(), sourceWorkspace);
-
-    focusWindowForDirectNiriNativeMove(window);
+        niri_scrolling_detail::retainDirectNiriWorkspaceLaneForDrag(target.monitor, workspace);
+    }
 
     if (sourceWorkspace != workspace) {
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
@@ -1024,7 +1102,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (!scrolling || !scrolling->m_scrollingData || !layoutTarget)
-            return false;
+            return abortMouseEdit();
         const auto targetData = scrolling->dataFor(layoutTarget);
         const auto sourceColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
 
@@ -1035,16 +1113,16 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // owns all target/column bookkeeping for stacked and partial-width columns.
         if (target.insertion.kind == overview_drag::InsertKind::NewColumn) {
             if (!sourceColumn)
-                return false;
+                return abortMouseEdit();
 
             auto &data = scrolling->m_scrollingData;
             if (!data)
-                return false;
+                return abortMouseEdit();
 
             const auto sourceColumnIndexRaw = data->idx(sourceColumn);
             if constexpr (std::is_signed_v<decltype(sourceColumnIndexRaw)>) {
                 if (sourceColumnIndexRaw < 0)
-                    return false;
+                    return abortMouseEdit();
             }
             const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
             const bool sourceColumnWasSingleTile = scrollingWindowColumnIsSingleTile(scrolling, window);
@@ -1056,15 +1134,10 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                 // which can no-op in overview because the live focused/visible
                 // column does not always match the drag hint.
                 if (!moveExistingColumnToBackendGap(data, sourceColumn, target.insertion.column))
-                    return false;
+                    return abortMouseEdit();
 
-                workspace->m_lastFocusedWindow = window;
                 refreshWorkspaceLayoutSnapshot(workspace);
-                selectWindowInState(m_state, window);
-                rebuildVisibleState(window, true);
-                if (!previousPreviewRects.empty())
-                    refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop-direct-column-reorder");
-                return true;
+                return refreshAfterMouseEdit("drag-drop-direct-column-reorder");
             }
 
             const std::size_t normalizedTargetColumn = std::min(target.insertion.column, data->columns.size());
@@ -1074,8 +1147,6 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             const std::string moveDirection = horizontal ? (insertBeforeSource ? "l" : "r") : (insertBeforeSource ? "u" : "d");
 
             focusWindowForDirectNiriNativeMove(window);
-            selectWindowInState(m_state, window);
-            m_state.focusDuringOverview = window;
 
             const auto runNativeWindowMove = [&](const std::string &args) {
                 SDispatchResult result{};
@@ -1133,7 +1204,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                 // This keeps the visual hint authoritative: side-column hints must
                 // either become side columns or become no-ops, never vertical stacks.
                 if (!splitIntoOwnColumn)
-                    return false;
+                    return abortMouseEdit();
             }
 
             for (std::size_t attempt = 0; attempt < 24; ++attempt) {
@@ -1165,16 +1236,11 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
                     finalColumnIndexForSameWorkspaceGap(target.insertion.column, finalScrolling->m_scrollingData->columns.size(), sourceColumnIndex, true) :
                     std::min(target.insertion.column, finalScrolling->m_scrollingData->columns.size() - 1);
                 if (!finalColumnIndex || *finalColumnIndex != finalDesiredColumnIndex)
-                    return false;
+                    return abortMouseEdit();
             }
 
-            workspace->m_lastFocusedWindow = window;
             refreshWorkspaceLayoutSnapshot(workspace);
-            selectWindowInState(m_state, window);
-            rebuildVisibleState(window, true);
-            if (!previousPreviewRects.empty())
-                refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop-native-positioned-movewindow");
-            return true;
+            return refreshAfterMouseEdit("drag-drop-native-positioned-movewindow");
         }
 
         // In-column reordering does not create a new SScrollingData column, so it
@@ -1183,25 +1249,25 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // destination column.
         auto &data = scrolling->m_scrollingData;
         if (!data || data->columns.empty() || !sourceColumn)
-            return false;
+            return abortMouseEdit();
 
         const auto sourceColumnIndexRaw = data->idx(sourceColumn);
         if constexpr (std::is_signed_v<decltype(sourceColumnIndexRaw)>) {
             if (sourceColumnIndexRaw < 0)
-                return false;
+                return abortMouseEdit();
         }
         const std::size_t sourceColumnIndex = nonNegativeIndex(sourceColumnIndexRaw);
 
         const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
         if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>) {
             if (sourceTileIndexRaw < 0)
-                return false;
+                return abortMouseEdit();
         }
         sourceColumn->remove(layoutTarget);
 
         const bool erasedSourceColumn = eraseColumnIfEmpty(data, sourceColumn);
         if (data->columns.empty())
-            return false;
+            return abortMouseEdit();
 
         std::size_t columnIndex = std::min(target.insertion.column, data->columns.size() - 1);
         if (erasedSourceColumn && sourceColumnIndex < columnIndex)
@@ -1210,7 +1276,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
 
         auto column = data->columns[columnIndex];
         if (!column)
-            return false;
+            return abortMouseEdit();
 
         // target.insertion.tile is already computed from the preview order with
         // the dragged window omitted, matching the column after sourceColumn->remove().
@@ -1242,47 +1308,10 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             g_layoutManager->recalculateMonitor(target.monitor);
     }
 
-    workspace->m_lastFocusedWindow = window;
-
-    if (crossWorkspaceTransitionSource && target.monitor) {
-        selectWindowInState(m_state, window);
-        m_state.focusDuringOverview = window;
-
-        const std::string targetName = workspace->m_name.empty() ? std::to_string(workspace->m_id) : workspace->m_name;
-        const bool startedTransition = beginOverviewWorkspaceTransition(
-            target.monitor,
-            workspace->m_id,
-            targetName,
-            workspace,
-            false,
-            WorkspaceTransitionMode::TimedCommit,
-            std::move(crossWorkspaceTransitionSource),
-            window);
-        if (startedTransition) {
-            damageOwnedMonitors();
-            return true;
-        }
-    }
-
-    // Dropping into another Niri single-workspace viewport is a workspace-focus
-    // handoff. Keep the overview's authoritative owner on the drop workspace
-    // before rebuilding, otherwise buildState() can keep the old source viewport
-    // centered while the moved window is already on the target workspace. That
-    // mismatch is what produced duplicated/ghost wallpaper viewports after
-    // dragging into an empty workspace.
-    if (m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
-        m_state.ownerWorkspace = workspace;
-        m_state.ownerMonitor = target.monitor;
-    }
-
     if (sourceWorkspace && !crossWorkspaceDrop)
         refreshWorkspaceLayoutSnapshot(sourceWorkspace);
     refreshWorkspaceLayoutSnapshot(workspace);
-    selectWindowInState(m_state, window);
-    rebuildVisibleState(window, true);
-    if (!previousPreviewRects.empty() && !dropIntoEmptyWorkspace && !crossWorkspaceDrop)
-        refreshVisibleStateMetadata(window, &previousPreviewRects, "drag-drop");
-    return true;
+    return refreshAfterMouseEdit("drag-drop");
 }
 
 bool OverviewController::finishDirectNiriWindowDrag() {
@@ -1312,8 +1341,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         if (target && directNiriDropReturnsToSourceSlot(session, target, releasePoint)) {
             const auto sourceWorkspace = session.sourceWorkspace.lock();
             refreshWorkspaceLayoutSnapshot(sourceWorkspace);
-            selectWindowInState(m_state, window);
-            rebuildVisibleState(window, true);
+            refreshVisibleStateMetadata(selectedWindow(), previousRects.empty() ? nullptr : &previousRects, "drag-drop-cancel");
         } else if (target) {
             (void)applyDirectNiriDragTarget(window, *target, previousRects);
         } else if (session.detached) {
