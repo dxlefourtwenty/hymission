@@ -1119,7 +1119,13 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         const auto focus = restoreFocusForMouseEdit();
         refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
         armMouseEditSnapshotRefresh();
-        armInactiveWorkspaceActivationPulse();
+        // Do not briefly activate the drop workspace after a mouse edit.  The
+        // old activation pulse was only a workaround for blank inactive-strip
+        // snapshots, but direct Niri now renders inactive client contents through
+        // the clipped live-surface fallback.  Pulsing the destination workspace
+        // active while the overview still owns the source lane makes newly moved
+        // clients render once using native/full-workspace geometry, which shows
+        // up as oversized or offset client contents after drag/drop.
         damageOwnedMonitors();
         return true;
     };
