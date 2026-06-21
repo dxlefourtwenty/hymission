@@ -9303,8 +9303,15 @@ bool OverviewController::transformSurfaceRenderDataForWindow(const PHLWINDOW& wi
         renderData.dontRound = renderData.rounding <= 0;
     }
 
-    // Keep overview previews independent from normal-layout monitor clipping.
-    renderData.clipBox = {};
+    // Keep overview previews independent from the normal-layout monitor clip,
+    // but still clip every transformed surface to Hymission's preview rect.
+    // When a newly-mapped or recently-resized client is between configure/commit
+    // sizes, Hyprland can render a surface whose buffer/viewport is temporarily
+    // larger than the overview preview.  Clearing the clip lets that transient
+    // buffer leak across adjacent workspace lanes for a few seconds.  Clipping to
+    // the overview target preserves off-screen workspace previews without letting
+    // unstable client buffers bleed outside their card.
+    renderData.clipBox = toBox(transform->targetGlobal);
 
     return true;
 }
@@ -13861,6 +13868,18 @@ void OverviewController::renderSelectionChrome() const {
                 continue;
             }
 
+            // The live texture overlay is only a fallback for inactive/unvisited
+            // workspaces whose normal fake-render path can temporarily produce
+            // blank client contents.  For the currently visible workspace, the
+            // transformed Hyprland surface pass is the authoritative renderer;
+            // overlaying the raw main-surface texture during a spawn/resize races
+            // the client's configure/commit size and can stretch or offset stale
+            // buffers over the preview for a couple seconds.
+            if (window->m_workspace->isVisible()) {
+                ++skipped;
+                continue;
+            }
+
             const auto surface = window->wlSurface();
             const auto resource = surface ? surface->resource() : nullptr;
             const auto texture = resource ? resource->m_current.texture : nullptr;
@@ -15040,7 +15059,7 @@ void OverviewController::renderWorkspaceStrip() const {
         // frame.  Mirror that here by overlaying the current wl_surface texture
         // for every managed window that belongs to this strip entry.
         if (!entry.newWorkspaceSlot && entry.workspace && niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
-            isScrollingWorkspace(entry.workspace) && g_pHyprOpenGL) {
+            isScrollingWorkspace(entry.workspace) && !entry.workspace->isVisible() && g_pHyprOpenGL) {
             std::size_t liveSurfaceRendered = 0;
             std::size_t liveSurfaceMissing = 0;
             static std::size_t s_liveStripSurfaceLogBudget = 240;
