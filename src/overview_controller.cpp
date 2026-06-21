@@ -3605,14 +3605,18 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
-        if (directNiriHandoff && m_deactivatePending)
-            armDirectNiriNativeHandoffGuard();
-        if (directNiriHandoff && directNiriNativeHandoffActive()) {
-            // The native wallpaper/layer pass is already back in Hyprland's hands
-            // for this frame. Do not draw the overview wallpaper viewport pass
-            // behind transparent native windows during the handoff.
-            if (m_deactivatePending)
-                scheduleDeactivate();
+        if (directNiriHandoff && m_deactivatePending) {
+            // Final direct-Niri close frame: keep drawing Hymission's native-size
+            // wallpaper/layout proxy until deactivate() has actually unhooked us.
+            // The populated-workspace path otherwise hides the native layer here
+            // while also skipping the overview wallpaper pass, producing a black
+            // handoff flash.  Native windows are allowed to render normally below
+            // via shouldRenderWindowHook/prepareSurfaceRenderData guards.
+            g_directNiriNativeHandoffUntil = {};
+        } else if (directNiriHandoff && directNiriNativeHandoffActive()) {
+            // Non-deactivation native handoff guard.  During the actual final close
+            // frame we intentionally do not take this path: the overview wallpaper
+            // proxy must cover the hidden native wallpaper until deactivate().
             return;
         }
         g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewWallpaperPassElement>(this, monitor));
@@ -4587,11 +4591,14 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
         return false;
 
     if (isVisible() && window && monitor && ownsMonitor(monitor) &&
-        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
-        // During the final direct-Niri handoff, Hyprland owns native desktop
+        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_deactivatePending || directNiriNativeHandoffActive())) {
+        // During the final direct-Niri handoff, Hyprland owns native window
         // composition again. Do not keep the overview's forced render override
         // alive here, or windows from non-active workspaces can be drawn into
-        // the current monitor for one frame behind transparent windows.
+        // the current monitor for one frame.  The overview still draws the
+        // wallpaper proxy until deactivate(), which avoids the black wallpaper
+        // gap without forcing extra window rendering.
         return m_shouldRenderWindowOriginal(g_pHyprRenderer.get(), window, monitor);
     }
 
@@ -5181,7 +5188,8 @@ std::vector<UP<IPassElement>> OverviewController::surfaceDrawHook(void* surfaceP
         return m_surfaceDrawOriginal(surfacePassThisptr);
     }
 
-    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
+    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_deactivatePending || directNiriNativeHandoffActive())) {
         if (auto* handoffRenderData = surfaceRenderDataMutable(surfacePassThisptr); handoffRenderData && handoffRenderData->pWindow) {
             const auto handoffMonitor = handoffRenderData->pMonitor.lock();
             if (handoffMonitor && ownsMonitor(handoffMonitor) && renderableManagedWindowFor(handoffRenderData->pWindow, handoffMonitor)) {
@@ -5224,9 +5232,9 @@ bool OverviewController::surfaceNeedsLiveBlurHook(void* surfacePassThisptr) {
         !renderableManagedWindowFor(renderData->pWindow, monitor))
         return m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
 
-    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
-        renderData->blur = false;
-        return false;
+    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_deactivatePending || directNiriNativeHandoffActive())) {
+        return m_surfaceNeedsLiveBlurOriginal(surfacePassThisptr);
     }
 
     const float savedAlpha = renderData->alpha;
@@ -5249,9 +5257,9 @@ bool OverviewController::surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr
         !renderableManagedWindowFor(renderData->pWindow, monitor))
         return m_surfaceNeedsPrecomputeBlurOriginal(surfacePassThisptr);
 
-    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive()) {
-        renderData->blur = false;
-        return false;
+    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_deactivatePending || directNiriNativeHandoffActive())) {
+        return m_surfaceNeedsPrecomputeBlurOriginal(surfacePassThisptr);
     }
 
     const float savedAlpha = renderData->alpha;
@@ -9938,7 +9946,8 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
     if (!monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(renderData->pWindow, monitor))
         return false;
 
-    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) && directNiriNativeHandoffActive())
+    if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+        (m_deactivatePending || directNiriNativeHandoffActive()))
         return false;
 
     snapshot = {
