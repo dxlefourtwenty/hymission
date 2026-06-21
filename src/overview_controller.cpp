@@ -14480,6 +14480,91 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             };
             renderPreviewWindows(false);
             renderPreviewWindows(true);
+
+            // Hyprland's normal window render path can draw decos/borders for an
+            // inactive scrolling workspace while still producing an empty client
+            // surface when that workspace has never been made visible.  Niri does
+            // not depend on hidden-workspace compositor visibility for overview:
+            // it renders from the window/layout state.  For direct-Niri strip
+            // snapshots, mirror that by drawing the current main surface texture
+            // into the preview rect directly as a fallback layer.
+            if (directNiriStripSnapshot && g_pHyprOpenGL) {
+                std::size_t directSurfaceRendered = 0;
+                std::size_t directSurfaceMissing = 0;
+                static std::size_t s_directSurfaceLogBudget = 180;
+
+                for (const auto& managed : m_stripPreviewContext.state.windows) {
+                    if (!managed.window || !windowMatchesOverviewScope(managed.window, m_stripPreviewContext.state, false))
+                        continue;
+
+                    const auto surface = managed.window->wlSurface();
+                    const auto resource = surface ? surface->resource() : nullptr;
+                    const auto texture = resource ? resource->m_current.texture : nullptr;
+
+                    const Rect targetGlobal = snapRectToRenderPixelGrid(managed.targetGlobal, monitor);
+                    const Rect targetLocal = rectToMonitorRenderLocal(targetGlobal, monitor);
+                    const bool usableTarget = targetLocal.width > 1.0 && targetLocal.height > 1.0;
+
+                    if (!texture || !usableTarget) {
+                        ++directSurfaceMissing;
+                        if (debugLogsEnabled() && s_directSurfaceLogBudget > 0) {
+                            std::ostringstream out;
+                            out << "[hymission] strip snapshot direct surface missing"
+                                << " window=" << debugWindowLabel(managed.window)
+                                << " workspace=" << debugWorkspaceLabel(managed.window->m_workspace)
+                                << " texture=" << (texture ? 1 : 0)
+                                << " target=" << rectToString(targetGlobal)
+                                << " targetLocal=" << rectToString(targetLocal)
+                                << " hidden=" << (managed.window->isHidden() ? 1 : 0)
+                                << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
+                                << " fading=" << (managed.window->m_fadingOut ? 1 : 0);
+                            if (resource)
+                                out << " surfSize=" << vectorToString(resource->m_current.size)
+                                    << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                            else
+                                out << " surface=<null>";
+                            debugLog(out.str());
+                            --s_directSurfaceLogBudget;
+                        }
+                        continue;
+                    }
+
+                    const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F);
+                    g_pHyprOpenGL->renderTexture(texture, toBox(targetLocal), {.a = alpha});
+                    ++directSurfaceRendered;
+
+                    if (debugLogsEnabled() && s_directSurfaceLogBudget > 0) {
+                        std::ostringstream out;
+                        out << "[hymission] strip snapshot direct surface render"
+                            << " window=" << debugWindowLabel(managed.window)
+                            << " workspace=" << debugWorkspaceLabel(managed.window->m_workspace)
+                            << " target=" << rectToString(targetGlobal)
+                            << " targetLocal=" << rectToString(targetLocal)
+                            << " alpha=" << alpha
+                            << " hidden=" << (managed.window->isHidden() ? 1 : 0)
+                            << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
+                            << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
+                        if (resource)
+                            out << " surfSize=" << vectorToString(resource->m_current.size)
+                                << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                        debugLog(out.str());
+                        --s_directSurfaceLogBudget;
+                    }
+                }
+
+                if (debugLogsEnabled() && s_directSurfaceLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] strip snapshot direct surface summary"
+                        << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                        << " rendered=" << directSurfaceRendered
+                        << " missing=" << directSurfaceMissing
+                        << " activeWorkspace=" << debugWorkspaceLabel(previousWorkspace)
+                        << " targetWasVisible=" << (targetWorkspaceRenderState && targetWorkspaceRenderState->visible ? 1 : 0);
+                    debugLog(out.str());
+                    --s_directSurfaceLogBudget;
+                }
+            }
+
             renderInactiveWindowBorders(m_stripPreviewContext.state, 1.0, true);
             renderFocusedWindowBorder(m_stripPreviewContext.state, 1.0, true);
         }
