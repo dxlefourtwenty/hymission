@@ -14855,6 +14855,108 @@ void OverviewController::renderWorkspaceStrip() const {
             g_pHyprOpenGL->renderTexture(entry.snapshot->framebuffer->getTexture(), toBox(thumbRender), {.a = static_cast<float>(std::clamp(progress, 0.0, 1.0))});
         }
 
+        // Direct-Niri strip thumbnails cannot rely exclusively on cached fake-render
+        // snapshots.  Inactive scrolling workspaces can have correct Hyprland
+        // layout boxes while the snapshot render path still returns a stale/blank
+        // client surface until a real workspace switch.  Niri avoids this by
+        // rendering overview windows from its current layout/window state each
+        // frame.  Mirror that here by overlaying the current wl_surface texture
+        // for every managed window that belongs to this strip entry.
+        if (!entry.newWorkspaceSlot && entry.workspace && niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
+            isScrollingWorkspace(entry.workspace) && g_pHyprOpenGL) {
+            std::size_t liveSurfaceRendered = 0;
+            std::size_t liveSurfaceMissing = 0;
+            static std::size_t s_liveStripSurfaceLogBudget = 240;
+
+            for (const auto& managed : m_state.windows) {
+                if (!managed.window || managed.window->m_workspace != entry.workspace || !windowMatchesOverviewScope(managed.window, m_state, false))
+                    continue;
+
+                const auto surface = managed.window->wlSurface();
+                const auto resource = surface ? surface->resource() : nullptr;
+                const auto texture = resource ? resource->m_current.texture : nullptr;
+
+                Rect windowGlobal = currentPreviewRect(managed);
+                if (hasWorkspaceTransition) {
+                    if (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical)
+                        windowGlobal = translateRect(windowGlobal, 0.0, workspaceTransitionOffset);
+                    else
+                        windowGlobal = translateRect(windowGlobal, workspaceTransitionOffset, 0.0);
+                }
+
+                // Keep this fallback clipped to the strip card.  The direct
+                // renderer intentionally only covers the client/content region;
+                // the cached snapshot below/normal border pass still provide the
+                // card, decorations and workspace label.
+                if (!rectsOverlap(windowGlobal, outerGlobal))
+                    continue;
+
+                const Rect targetGlobal = snapRectToRenderPixelGrid(windowGlobal, renderMonitor);
+                const Rect targetRender = rectToMonitorRenderLocal(targetGlobal, renderMonitor);
+                const bool usableTarget = targetRender.width > 1.0 && targetRender.height > 1.0;
+
+                if (!texture || !usableTarget) {
+                    ++liveSurfaceMissing;
+                    if (debugLogsEnabled() && s_liveStripSurfaceLogBudget > 0) {
+                        std::ostringstream out;
+                        out << "[hymission] strip live surface missing"
+                            << " window=" << debugWindowLabel(managed.window)
+                            << " workspace=" << debugWorkspaceLabel(entry.workspace)
+                            << " texture=" << (texture ? 1 : 0)
+                            << " target=" << rectToString(targetGlobal)
+                            << " targetRender=" << rectToString(targetRender)
+                            << " hidden=" << (managed.window->isHidden() ? 1 : 0)
+                            << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
+                            << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
+                        if (resource)
+                            out << " surfSize=" << vectorToString(resource->m_current.size)
+                                << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                        else
+                            out << " surface=<null>";
+                        debugLog(out.str());
+                        --s_liveStripSurfaceLogBudget;
+                    }
+                    continue;
+                }
+
+                const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F) *
+                    static_cast<float>(std::clamp(progress, 0.0, 1.0));
+                g_pHyprOpenGL->renderTexture(texture, toBox(targetRender), {.a = alpha});
+                ++liveSurfaceRendered;
+
+                if (debugLogsEnabled() && s_liveStripSurfaceLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] strip live surface render"
+                        << " window=" << debugWindowLabel(managed.window)
+                        << " workspace=" << debugWorkspaceLabel(entry.workspace)
+                        << " target=" << rectToString(targetGlobal)
+                        << " targetRender=" << rectToString(targetRender)
+                        << " alpha=" << alpha
+                        << " hidden=" << (managed.window->isHidden() ? 1 : 0)
+                        << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
+                        << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
+                    if (resource)
+                        out << " surfSize=" << vectorToString(resource->m_current.size)
+                            << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                    debugLog(out.str());
+                    --s_liveStripSurfaceLogBudget;
+                }
+            }
+
+            if (debugLogsEnabled() && s_liveStripSurfaceLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] strip live surface summary"
+                    << " workspace=" << debugWorkspaceLabel(entry.workspace)
+                    << " rendered=" << liveSurfaceRendered
+                    << " missing=" << liveSurfaceMissing
+                    << " entryActive=" << (entry.active ? 1 : 0)
+                    << " snapshot=" << (entry.snapshot && entry.snapshot->framebuffer && entry.snapshot->framebuffer->isAllocated() ? 1 : 0)
+                    << " windows=" << m_state.windows.size();
+                debugLog(out.str());
+                --s_liveStripSurfaceLogBudget;
+            }
+        }
+
         if (stateOverlayColor.a > 0.0) {
             g_pHyprOpenGL->renderRect(toBox(thumbRender), stateOverlayColor, {});
         }
