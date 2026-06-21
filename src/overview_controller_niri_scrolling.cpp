@@ -204,6 +204,96 @@ bool scrollingDataHasStaleWorkspaceTargets(Layout::Tiled::CScrollingAlgorithm* s
     return false;
 }
 
+
+
+struct HydrateScrollingSnapshotResult {
+    std::size_t columnsBefore = 0;
+    std::size_t columnsAfter = 0;
+    std::size_t spaceTargetRefs = 0;
+    std::size_t acceptedSpaceTargets = 0;
+    std::size_t acceptedWindowTargets = 0;
+    std::size_t alreadyPresent = 0;
+    std::size_t added = 0;
+};
+
+HydrateScrollingSnapshotResult hydrateScrollingDataFromWorkspaceTargets(Layout::Tiled::CScrollingAlgorithm* scrolling, const PHLWORKSPACE& workspace) {
+    HydrateScrollingSnapshotResult result;
+    if (!scrolling || !scrolling->m_scrollingData || !workspace || !workspace->m_space)
+        return result;
+
+    result.columnsBefore = scrolling->m_scrollingData->columns.size();
+
+    std::vector<SP<Layout::ITarget>> targets;
+
+    const auto alreadyQueued = [&](const SP<Layout::ITarget>& target) {
+        return std::ranges::find(targets, target) != targets.end();
+    };
+
+    const auto acceptTarget = [&](const SP<Layout::ITarget>& target, bool fromSpaceTargetList) {
+        if (!target || alreadyQueued(target))
+            return false;
+
+        if (target->floating())
+            return false;
+
+        const auto window = target->window();
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace)
+            return false;
+
+        const auto liveTarget = window->layoutTarget();
+        if (!liveTarget || liveTarget != target)
+            return false;
+
+        if (target->space() && target->space() != workspace->m_space)
+            return false;
+
+        targets.push_back(target);
+        if (fromSpaceTargetList)
+            ++result.acceptedSpaceTargets;
+        else
+            ++result.acceptedWindowTargets;
+        return true;
+    };
+
+    for (const auto& targetRef : workspace->m_space->targets()) {
+        ++result.spaceTargetRefs;
+        acceptTarget(targetRef.lock(), true);
+    }
+
+    // Some inactive/unvisited workspaces can have mapped windows whose layout
+    // targets are already assigned to the workspace but whose scrolling columns
+    // were never materialized yet.  Fall back to the compositor window list so
+    // the overview can seed the scrolling snapshot without a real workspace switch.
+    for (const auto& window : g_pCompositor->m_windows) {
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace)
+            continue;
+
+        const auto target = window->layoutTarget();
+        if (!target)
+            continue;
+
+        acceptTarget(target, false);
+    }
+
+    for (const auto& target : targets) {
+        if (scrolling->dataFor(target)) {
+            ++result.alreadyPresent;
+            continue;
+        }
+
+        const auto column = scrolling->m_scrollingData->add(std::nullopt);
+        if (!column)
+            continue;
+
+        column->add(target);
+        ++result.added;
+    }
+
+    result.columnsAfter = scrolling->m_scrollingData->columns.size();
+    return result;
+}
+
+
 std::string vectorToString(const Vector2D& value) {
     std::ostringstream out;
     out << value.x << ',' << value.y;
@@ -5429,6 +5519,22 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
 
         if (staleTargets)
             workspace->m_space->recalculate();
+
+        const auto hydrated = hydrateScrollingDataFromWorkspaceTargets(scrolling, workspace);
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] hydrate scrolling snapshot workspace=" << debugWorkspaceLabel(workspace)
+                << " columnsBefore=" << hydrated.columnsBefore
+                << " columnsAfter=" << hydrated.columnsAfter
+                << " spaceTargetRefs=" << hydrated.spaceTargetRefs
+                << " acceptedSpaceTargets=" << hydrated.acceptedSpaceTargets
+                << " acceptedWindowTargets=" << hydrated.acceptedWindowTargets
+                << " alreadyPresent=" << hydrated.alreadyPresent
+                << " added=" << hydrated.added;
+            debugLog(out.str());
+            if (hydrated.added > 0)
+                debugLog("[hymission] refresh workspace layout snapshot hydrated missing scrolling columns workspace=" + debugWorkspaceLabel(workspace));
+        }
 
         scrolling->m_scrollingData->recalculate(true);
         workspace->updateWindows();
