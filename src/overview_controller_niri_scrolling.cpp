@@ -572,6 +572,51 @@ bool scrollingLiveCameraOwnsOverviewGeometry(Layout::Tiled::CScrollingAlgorithm*
     return scrollingEdgeCameraActive(scrolling) || scrollingNativeGeometryInFlight(scrolling);
 }
 
+
+constexpr auto DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION = std::chrono::milliseconds(2200);
+
+struct DirectNiriWorkspaceTransferGuardState {
+    bool        active = false;
+    bool        armed = false;
+    WORKSPACEID previousWorkspaceId = WORKSPACE_INVALID;
+    WORKSPACEID currentWorkspaceId = WORKSPACE_INVALID;
+};
+
+DirectNiriWorkspaceTransferGuardState updateDirectNiriWorkspaceTransferRenderGuard(const PHLWINDOW& window) {
+    DirectNiriWorkspaceTransferGuardState state;
+    if (!window || !window->m_workspace)
+        return state;
+
+    const void* const key = window.get();
+    if (!key)
+        return state;
+
+    const auto now = std::chrono::steady_clock::now();
+    const WORKSPACEID currentWorkspaceId = window->m_workspace->m_id;
+    state.currentWorkspaceId = currentWorkspaceId;
+
+    static std::unordered_map<const void*, WORKSPACEID> seenWorkspaceIds;
+    static std::unordered_map<const void*, std::chrono::steady_clock::time_point> guardedUntil;
+
+    if (const auto it = guardedUntil.find(key); it != guardedUntil.end()) {
+        if (now < it->second)
+            state.active = true;
+        else
+            guardedUntil.erase(it);
+    }
+
+    const auto seenIt = seenWorkspaceIds.find(key);
+    if (seenIt != seenWorkspaceIds.end() && seenIt->second != currentWorkspaceId) {
+        state.previousWorkspaceId = seenIt->second;
+        state.armed = true;
+        state.active = true;
+        guardedUntil[key] = now + DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION;
+    }
+
+    seenWorkspaceIds[key] = currentWorkspaceId;
+    return state;
+}
+
 double clampUnit(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
@@ -5721,6 +5766,28 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const auto workspace = window.window->m_workspace;
         if (!workspace || !isScrollingWorkspace(workspace))
             return std::nullopt;
+
+        const auto transferGuard = updateDirectNiriWorkspaceTransferRenderGuard(window.window);
+        if (transferGuard.active) {
+            static std::size_t s_transferGuardLogBudget = 96;
+            const Rect stableRect = activeBaseRect();
+            if (debugLogsEnabled() && s_transferGuardLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] direct niri workspace-transfer render guard"
+                    << " window=" << debugWindowLabel(window.window)
+                    << " workspace=" << debugWorkspaceLabel(workspace)
+                    << " armed=" << (transferGuard.armed ? 1 : 0)
+                    << " previousWorkspace=" << transferGuard.previousWorkspaceId
+                    << " currentWorkspace=" << transferGuard.currentWorkspaceId
+                    << " stable=" << rectToString(stableRect)
+                    << " target=" << rectToString(window.targetGlobal)
+                    << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
+                    << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+                debugLog(out.str());
+                --s_transferGuardLogBudget;
+            }
+            return stableRect;
+        }
 
         const auto target = window.window->layoutTarget();
         if (!target || target->floating())
