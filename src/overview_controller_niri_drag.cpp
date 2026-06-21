@@ -238,6 +238,42 @@ bool moveExistingColumnToBackendGap(ScrollingDataPtr &data,
     return true;
 }
 
+
+template <typename ScrollingDataPtr>
+bool moveExistingColumnToNeighborGap(ScrollingDataPtr &data,
+                                     const SP<Layout::Tiled::SColumnData> &column,
+                                     const SP<Layout::Tiled::SColumnData> &leftNeighbor,
+                                     const SP<Layout::Tiled::SColumnData> &rightNeighbor,
+                                     std::size_t fallbackGapIndex) {
+    if (!data || !column || data->columns.size() < 2)
+        return false;
+
+    const auto sourceIt = std::find(data->columns.begin(), data->columns.end(), column);
+    if (sourceIt == data->columns.end())
+        return false;
+
+    auto movedColumn = column;
+    data->columns.erase(sourceIt);
+
+    std::size_t desiredIndex = data->columns.size();
+    if (rightNeighbor) {
+        const auto rightIt = std::find(data->columns.begin(), data->columns.end(), rightNeighbor);
+        if (rightIt != data->columns.end())
+            desiredIndex = static_cast<std::size_t>(std::distance(data->columns.begin(), rightIt));
+    }
+    if (desiredIndex == data->columns.size() && leftNeighbor) {
+        const auto leftIt = std::find(data->columns.begin(), data->columns.end(), leftNeighbor);
+        if (leftIt != data->columns.end())
+            desiredIndex = static_cast<std::size_t>(std::distance(data->columns.begin(), leftIt)) + 1;
+    }
+    if (desiredIndex == data->columns.size())
+        desiredIndex = std::min(fallbackGapIndex, data->columns.size());
+
+    data->columns.insert(data->columns.begin() + static_cast<std::ptrdiff_t>(desiredIndex), movedColumn);
+    data->recalculate();
+    return true;
+}
+
 std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overview_drag::Rect &workspace,
                                                                     const std::vector<overview_drag::Column> &columns,
                                                                     const Vector2D &pointer, overview_drag::Axis axis,
@@ -846,12 +882,25 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
 
     std::optional<State> crossWorkspaceTransitionSource;
     SP<Layout::Tiled::SColumnData> crossWorkspaceInColumnTargetColumn;
+    std::size_t crossWorkspaceInColumnTargetColumnIndex = 0;
     std::size_t crossWorkspaceInColumnTargetTile = 0;
-    if (!target.floating && crossWorkspaceDrop && target.insertion.kind == overview_drag::InsertKind::InColumn && scrollingBeforeMove && scrollingBeforeMove->m_scrollingData) {
+    SP<Layout::Tiled::SColumnData> crossWorkspaceNewColumnLeftNeighbor;
+    SP<Layout::Tiled::SColumnData> crossWorkspaceNewColumnRightNeighbor;
+    std::size_t crossWorkspaceNewColumnTargetGap = 0;
+    if (!target.floating && crossWorkspaceDrop && scrollingBeforeMove && scrollingBeforeMove->m_scrollingData) {
         auto &targetDataBeforeMove = scrollingBeforeMove->m_scrollingData;
-        if (target.insertion.column < targetDataBeforeMove->columns.size()) {
-            crossWorkspaceInColumnTargetColumn = targetDataBeforeMove->columns[target.insertion.column];
-            crossWorkspaceInColumnTargetTile = target.insertion.tile;
+        if (target.insertion.kind == overview_drag::InsertKind::InColumn) {
+            crossWorkspaceInColumnTargetColumnIndex = std::min(target.insertion.column, targetDataBeforeMove->columns.size());
+            if (crossWorkspaceInColumnTargetColumnIndex < targetDataBeforeMove->columns.size()) {
+                crossWorkspaceInColumnTargetColumn = targetDataBeforeMove->columns[crossWorkspaceInColumnTargetColumnIndex];
+                crossWorkspaceInColumnTargetTile = target.insertion.tile;
+            }
+        } else if (target.insertion.kind == overview_drag::InsertKind::NewColumn) {
+            crossWorkspaceNewColumnTargetGap = std::min(target.insertion.column, targetDataBeforeMove->columns.size());
+            if (crossWorkspaceNewColumnTargetGap > 0)
+                crossWorkspaceNewColumnLeftNeighbor = targetDataBeforeMove->columns[crossWorkspaceNewColumnTargetGap - 1];
+            if (crossWorkspaceNewColumnTargetGap < targetDataBeforeMove->columns.size())
+                crossWorkspaceNewColumnRightNeighbor = targetDataBeforeMove->columns[crossWorkspaceNewColumnTargetGap];
         }
     }
 
@@ -903,34 +952,41 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
 
     bool appliedCrossWorkspaceInColumn = false;
     bool appliedCrossWorkspaceNewColumnPosition = false;
-    if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && crossWorkspaceInColumnTargetColumn) {
+    if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::InColumn) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (scrolling && scrolling->m_scrollingData && layoutTarget && !layoutTarget->floating()) {
             auto &data = scrolling->m_scrollingData;
-            const auto destinationStillPresent = std::find(data->columns.begin(), data->columns.end(), crossWorkspaceInColumnTargetColumn) != data->columns.end();
             const auto targetData = scrolling->dataFor(layoutTarget);
             const auto sourceColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-            if (destinationStillPresent && sourceColumn) {
+            if (sourceColumn) {
                 const auto sourceTileIndexRaw = sourceColumn->idx(layoutTarget);
                 bool sourceTileUsable = true;
                 if constexpr (std::is_signed_v<decltype(sourceTileIndexRaw)>)
                     sourceTileUsable = sourceTileIndexRaw >= 0;
 
                 if (sourceTileUsable) {
-                    // Cross-workspace in-column drops are different from same-workspace
-                    // reorders: the insertion target was computed against the target
-                    // column before the moved window existed there.  Let Hyprland own
-                    // the workspace transfer first, then only retile the freshly moved
-                    // target into the already-existing destination column.  This avoids
-                    // SScrollingData::add() while still allowing split/stack drops.
+                    // Cross-workspace in-column drops need the same exact backend
+                    // insertion that same-workspace reorders use, but the workspace
+                    // transfer must happen first so Hyprland owns column creation.
+                    // After the move, remove only the freshly moved target from its
+                    // temporary/default destination and insert it into the hinted
+                    // existing column.  If Hyprland rebuilt the target column object
+                    // while moving the window, fall back to the pre-move backend
+                    // column index after the temporary source column has been erased.
                     sourceColumn->remove(layoutTarget);
                     if (sourceColumn != crossWorkspaceInColumnTargetColumn)
                         eraseColumnIfEmpty(data, sourceColumn);
 
-                    if (std::find(data->columns.begin(), data->columns.end(), crossWorkspaceInColumnTargetColumn) != data->columns.end()) {
-                        const std::size_t tileIndex = std::min(crossWorkspaceInColumnTargetTile, crossWorkspaceInColumnTargetColumn->targetDatas.size());
-                        addLayoutTargetToColumn(crossWorkspaceInColumnTargetColumn, layoutTarget, tileIndex, false);
+                    SP<Layout::Tiled::SColumnData> destinationColumn;
+                    if (crossWorkspaceInColumnTargetColumn && std::find(data->columns.begin(), data->columns.end(), crossWorkspaceInColumnTargetColumn) != data->columns.end())
+                        destinationColumn = crossWorkspaceInColumnTargetColumn;
+                    else if (crossWorkspaceInColumnTargetColumnIndex < data->columns.size())
+                        destinationColumn = data->columns[crossWorkspaceInColumnTargetColumnIndex];
+
+                    if (destinationColumn) {
+                        const std::size_t tileIndex = std::min(crossWorkspaceInColumnTargetTile, destinationColumn->targetDatas.size());
+                        addLayoutTargetToColumn(destinationColumn, layoutTarget, tileIndex, false);
                         data->recalculate();
                         appliedCrossWorkspaceInColumn = true;
                     }
@@ -940,48 +996,27 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     }
 
     if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::NewColumn) {
-        const auto direction = scrollingLayoutDirection();
-        const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
-        const auto runNativeColumnMove = [&](const std::string &args) {
-            SDispatchResult result{};
-            for (const char *dispatcherName : {"movecol", "movecolumn"}) {
-                auto original = m_overviewEditingDispatchersOriginal.find(dispatcherName);
-                if (original == m_overviewEditingDispatchersOriginal.end())
-                    continue;
+        auto *scrolling = scrollingForWorkspace(workspace);
+        const auto layoutTarget = window->layoutTarget();
+        if (scrolling && scrolling->m_scrollingData && layoutTarget && !layoutTarget->floating()) {
+            const auto targetData = scrolling->dataFor(layoutTarget);
+            const auto movedColumn = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
 
-                result = runOverviewEditingDispatcher(dispatcherName, &original->second, args);
-                if (result.success)
-                    break;
-            }
-            return result;
-        };
-
-        focusWindowForDirectNiriNativeMove(window);
-        selectWindowInState(m_state, window);
-        m_state.focusDuringOverview = window;
-        workspace->m_lastFocusedWindow = window;
-
-        for (std::size_t attempt = 0; attempt < 24; ++attempt) {
-            auto *afterScrolling = scrollingForWorkspace(workspace);
-            if (!afterScrolling || !afterScrolling->m_scrollingData || afterScrolling->m_scrollingData->columns.empty())
-                break;
-
-            const auto currentColumnIndex = scrollingColumnIndexForWindow(afterScrolling, window);
-            if (!currentColumnIndex)
-                break;
-
-            const std::size_t desiredColumnIndex = std::min(target.insertion.column, afterScrolling->m_scrollingData->columns.size() - 1);
-            if (*currentColumnIndex == desiredColumnIndex) {
+            // The previous cross-workspace path used native movecol after the
+            // workspace transfer.  On inactive/overview workspaces that dispatcher
+            // can move relative to Hyprland's current scroll viewport/focus rather
+            // than the visible drag hint, so between-column drops often landed on
+            // either end of the strip.  Treat the hint's destination gap as
+            // authoritative: move the freshly-created column pointer between the
+            // same neighbor columns that surrounded the hint before the transfer.
+            if (movedColumn && scrollingWindowColumnIsSingleTile(scrolling, window) &&
+                moveExistingColumnToNeighborGap(scrolling->m_scrollingData,
+                                                movedColumn,
+                                                crossWorkspaceNewColumnLeftNeighbor,
+                                                crossWorkspaceNewColumnRightNeighbor,
+                                                crossWorkspaceNewColumnTargetGap)) {
                 appliedCrossWorkspaceNewColumnPosition = true;
-                break;
             }
-
-            const bool moveTowardPrevious = *currentColumnIndex > desiredColumnIndex;
-            const std::string columnDirection = horizontal ? (moveTowardPrevious ? "l" : "r") : (moveTowardPrevious ? "u" : "d");
-            focusWindowForDirectNiriNativeMove(window);
-            const SDispatchResult columnResult = runNativeColumnMove(columnDirection);
-            if (!columnResult.success)
-                break;
         }
     }
 
