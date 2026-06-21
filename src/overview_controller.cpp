@@ -3605,8 +3605,6 @@ void OverviewController::renderStage(eRenderStage stage) {
         flushQueuedSelectionRetargetDuringOverview();
         flushQueuedRealFocusDuringOverview();
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
-        if (directNiriHandoff && m_deactivatePending)
-            armDirectNiriNativeHandoffGuard();
         if (directNiriHandoff && directNiriNativeHandoffActive()) {
             // The native wallpaper/layer pass is already back in Hyprland's hands
             // for this frame. Do not draw the overview wallpaper viewport pass
@@ -3640,19 +3638,6 @@ void OverviewController::renderStage(eRenderStage stage) {
         }
 
         if (m_deactivatePending) {
-            if (directNiriHandoff) {
-                // Closing finished after the layer phase in this frame. Keep the
-                // selection chrome alive for the handoff frame, damage again,
-                // then let the next frame render native layers first before
-                // deactivation. If no hidden layer is rendered on that monitor,
-                // this guard is the fallback that still lets the native handoff
-                // complete.
-                armDirectNiriNativeHandoffGuard();
-                g_pHyprRenderer->m_renderPass.add(makeUnique<OverviewOverlayPassElement>(this, monitor, true));
-                damageOwnedMonitors();
-                return;
-            }
-
             if (debugLogsEnabled())
                 debugLog("[hymission] post-windows queue deferred deactivate");
             scheduleDeactivate();
@@ -4705,13 +4690,12 @@ void OverviewController::renderLayerHook(void* rendererThisptr, PHLLS layer, PHL
     if (!lockscreen && shouldHideLayerSurface(layer, monitor)) {
         const bool directNiriHandoff = usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state);
         if (directNiriHandoff && m_deactivatePending) {
-            // Final direct-Niri close handoff: return the real wallpaper/layer pass
-            // to Hyprland only after Hymission has rendered at least one final
-            // native-geometry frame. Handing off as soon as visualProgress() hits
-            // zero skips that final frame and makes the wallpaper viewport snap
-            // through the last visible chunk of the zoom-in.
-            armDirectNiriNativeHandoffGuard();
-            m_renderLayerOriginal(rendererThisptr, layer, monitor, now, popups, lockscreen);
+            // Do not hand the wallpaper/layer surface back while Hymission is still
+            // visible.  The final native-geometry overview frames already draw the
+            // wallpaper proxy at the desktop rect; rendering Hyprland's native layer
+            // in the same frame creates a one-frame flash.  Keep it hidden until
+            // deactivate() unhooks Hymission, then Hyprland renders the native layer
+            // alone on the next damaged frame.
             return;
         }
         if (m_deactivatePending && !isNiriWallpaperLayer(layer, monitor) && !isRetainedNiriWallpaperLayoutLayer(layer, monitor)) {
