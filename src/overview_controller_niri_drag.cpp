@@ -980,9 +980,37 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         return focus;
     };
 
+    const auto armMouseEditSnapshotRefresh = [&]() {
+        if (!workspaceStripEnabled(m_state))
+            return;
+
+        // Editing a non-focused strip must not activate that workspace just to
+        // make its thumbnail render.  Newly-created / never-visited workspaces
+        // often have valid layout targets and borders before their clients have
+        // received enough frame feedback to repaint their surfaces.  If we take
+        // only the immediate fake-render snapshot, the strip keeps a wallpaper +
+        // border-only thumbnail.  Keep surface feedback unblocked for a short
+        // run and force delayed strip snapshots so the client contents can land
+        // without stealing the focused workspace.
+        const std::size_t configuredFrames = static_cast<std::size_t>(std::max(1, stripThemeSurfaceFeedbackFrames()));
+        const std::size_t refreshFrames = std::max<std::size_t>(12, std::min<std::size_t>(configuredFrames, 60));
+        armThemeSurfaceFeedback(refreshFrames);
+        m_stripSnapshotSurfaceFeedbackFrames = std::max(m_stripSnapshotSurfaceFeedbackFrames, refreshFrames);
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+
+        if (preservedOwnerMonitor)
+            preservedOwnerMonitor->m_forceFullFrames = std::max(preservedOwnerMonitor->m_forceFullFrames, 3);
+        if (target.monitor)
+            target.monitor->m_forceFullFrames = std::max(target.monitor->m_forceFullFrames, 3);
+    };
+
     const auto refreshAfterMouseEdit = [&](const char *reason) {
+        armMouseEditSnapshotRefresh();
         const auto focus = restoreFocusForMouseEdit();
         refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
+        armMouseEditSnapshotRefresh();
+        damageOwnedMonitors();
         return true;
     };
 
