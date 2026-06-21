@@ -894,6 +894,14 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             candidate->m_workspace == preservedOwnerWorkspace;
     };
 
+    const auto validLastFocusForWorkspace = [](const PHLWORKSPACE &workspace, const PHLWINDOW &candidate) -> PHLWINDOW {
+        if (!workspace || !candidate || !candidate->m_isMapped || candidate->m_fadingOut || candidate->m_pinned || candidate->onSpecialWorkspace() ||
+            candidate->m_workspace != workspace)
+            return {};
+
+        return candidate;
+    };
+
     const auto focusFallbackForPreservedOwner = [&]() -> PHLWINDOW {
         if (validPreservedFocus(preservedOverviewFocus))
             return preservedOverviewFocus;
@@ -920,28 +928,33 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         return {};
     };
 
+    const auto restorePreservedOwnerWorkspace = [&]() {
+        if (!preservedOwnerMonitor || !preservedOwnerWorkspace)
+            return;
+
+        if (preservedOwnerActiveWorkspace == preservedOwnerWorkspace && preservedOwnerMonitor->m_activeWorkspace != preservedOwnerWorkspace) {
+            const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+            m_applyingWorkspaceTransitionCommit = true;
+            preservedOwnerMonitor->changeWorkspace(preservedOwnerWorkspace, true, true, true);
+            preservedOwnerWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+            preservedOwnerWorkspace->m_alpha->setValueAndWarp(1.F);
+            m_applyingWorkspaceTransitionCommit = previousGuard;
+            m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+        }
+
+        m_state.ownerMonitor = preservedOwnerMonitor;
+        m_state.ownerWorkspace = preservedOwnerWorkspace;
+    };
+
     const auto restoreFocusForMouseEdit = [&]() -> PHLWINDOW {
         if (sourceWorkspace)
-            sourceWorkspace->m_lastFocusedWindow = preservedSourceLastFocus;
+            sourceWorkspace->m_lastFocusedWindow = validLastFocusForWorkspace(sourceWorkspace, preservedSourceLastFocus);
         if (workspace && workspace != sourceWorkspace)
-            workspace->m_lastFocusedWindow = preservedTargetLastFocus;
+            workspace->m_lastFocusedWindow = validLastFocusForWorkspace(workspace, preservedTargetLastFocus);
         if (preservedOwnerWorkspace)
-            preservedOwnerWorkspace->m_lastFocusedWindow = preservedOwnerLastFocus;
+            preservedOwnerWorkspace->m_lastFocusedWindow = validLastFocusForWorkspace(preservedOwnerWorkspace, preservedOwnerLastFocus);
 
-        if (preservedOwnerMonitor && preservedOwnerWorkspace) {
-            if (preservedOwnerActiveWorkspace == preservedOwnerWorkspace && preservedOwnerMonitor->m_activeWorkspace != preservedOwnerWorkspace) {
-                const bool previousGuard = m_applyingWorkspaceTransitionCommit;
-                m_applyingWorkspaceTransitionCommit = true;
-                preservedOwnerMonitor->changeWorkspace(preservedOwnerWorkspace, true, true, true);
-                preservedOwnerWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
-                preservedOwnerWorkspace->m_alpha->setValueAndWarp(1.F);
-                m_applyingWorkspaceTransitionCommit = previousGuard;
-                m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
-            }
-
-            m_state.ownerMonitor = preservedOwnerMonitor;
-            m_state.ownerWorkspace = preservedOwnerWorkspace;
-        }
+        restorePreservedOwnerWorkspace();
 
         const auto focus = focusFallbackForPreservedOwner();
         if (focus) {
@@ -952,12 +965,18 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             selectWindowInState(m_state, focus);
             m_state.focusDuringOverview = focus;
         } else {
-            if (preservedNativeFocus && preservedNativeFocus->m_isMapped && Desktop::focusState()->window() != preservedNativeFocus)
-                Desktop::focusState()->rawWindowFocus(preservedNativeFocus, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            // The preserved focus window can be the dragged window itself.  If it
+            // was moved out of the owner workspace and that workspace became
+            // empty, restoring that native focus immediately activates the drop
+            // workspace again.  Clear overview selection instead and keep the
+            // owner workspace as the focused lane/empty placeholder.
+            if (Desktop::focusState()->window())
+                Desktop::focusState()->rawWindowFocus(PHLWINDOW{}, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
             m_state.selectedIndex.reset();
             m_state.focusDuringOverview = {};
         }
 
+        restorePreservedOwnerWorkspace();
         return focus;
     };
 
