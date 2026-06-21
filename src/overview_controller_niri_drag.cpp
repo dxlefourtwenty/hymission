@@ -23,6 +23,9 @@
 #include <hyprland/src/render/OpenGL.hpp>
 
 namespace hymission {
+namespace niri_scrolling_detail {
+void armDirectNiriDraggedWorkspaceTransferRenderGuard(const PHLWINDOW& window, const PHLWORKSPACE& previousWorkspace, const PHLWORKSPACE& currentWorkspace);
+}
 namespace {
 
 long configInt(const char *name, long fallback) {
@@ -1178,6 +1181,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         g_pCompositor->moveWindowToWorkspaceSafe(window, workspace);
         m_applyingWorkspaceTransitionCommit = previousGuard;
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+        niri_scrolling_detail::armDirectNiriDraggedWorkspaceTransferRenderGuard(window, sourceWorkspace, workspace);
     } else if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
         m_applyingWorkspaceTransitionCommit = true;

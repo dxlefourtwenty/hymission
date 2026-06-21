@@ -81,6 +81,8 @@ extern std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil
 extern std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 extern std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 extern bool workspaceSwitchDispatcherBlockRelayout;
+bool directNiriWorkspaceTransferRenderGuardActive(const PHLWINDOW& window);
+bool directNiriDraggedWorkspaceTransferRenderGuardActive(const PHLWINDOW& window);
 }
 
 class OverviewOverlayPassElement final : public IPassElement {
@@ -13877,6 +13879,28 @@ void OverviewController::renderSelectionChrome() const {
             // buffers over the preview for a couple seconds.
             if (window->m_workspace->isVisible()) {
                 ++skipped;
+                continue;
+            }
+
+            // A window that was just dragged to another workspace can briefly
+            // expose a browser/client main-surface buffer whose viewport/commit
+            // state still corresponds to the old workspace. The normal Hyprland
+            // surface pass is clipped and transformed per-subsurface, but this
+            // raw fallback paints only the main texture. Skip the fallback during
+            // the transfer guard so browsers do not momentarily render oversized
+            // or cropped on unvisited destination lanes.
+            if (niri_scrolling_detail::directNiriDraggedWorkspaceTransferRenderGuardActive(window)) {
+                ++skipped;
+                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri live surface overlay skipped-transfer-guard"
+                        << " window=" << debugWindowLabel(window)
+                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                        << " target=" << rectToString(currentPreviewRect(managed))
+                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0);
+                    debugLog(out.str());
+                    --s_directNiriSurfaceOverlayLogBudget;
+                }
                 continue;
             }
 

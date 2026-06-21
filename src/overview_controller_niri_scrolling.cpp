@@ -574,13 +574,75 @@ bool scrollingLiveCameraOwnsOverviewGeometry(Layout::Tiled::CScrollingAlgorithm*
 
 
 constexpr auto DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION = std::chrono::milliseconds(2200);
+constexpr auto DIRECT_NIRI_DRAG_TRANSFER_RENDER_GUARD_DURATION = std::chrono::milliseconds(2800);
 
 struct DirectNiriWorkspaceTransferGuardState {
     bool        active = false;
     bool        armed = false;
+    bool        dragTransfer = false;
     WORKSPACEID previousWorkspaceId = WORKSPACE_INVALID;
     WORKSPACEID currentWorkspaceId = WORKSPACE_INVALID;
 };
+
+struct DirectNiriExplicitWorkspaceTransferGuard {
+    std::chrono::steady_clock::time_point until;
+    WORKSPACEID previousWorkspaceId = WORKSPACE_INVALID;
+    WORKSPACEID currentWorkspaceId = WORKSPACE_INVALID;
+    bool dragged = false;
+};
+
+std::unordered_map<const void*, WORKSPACEID> g_directNiriSeenWorkspaceIds;
+std::unordered_map<const void*, std::chrono::steady_clock::time_point> g_directNiriWorkspaceTransferGuardedUntil;
+std::unordered_map<const void*, DirectNiriExplicitWorkspaceTransferGuard> g_directNiriExplicitWorkspaceTransferGuards;
+
+DirectNiriExplicitWorkspaceTransferGuard* directNiriExplicitTransferGuardFor(const PHLWINDOW& window) {
+    if (!window)
+        return nullptr;
+
+    const void* const key = window.get();
+    if (!key)
+        return nullptr;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto it = g_directNiriExplicitWorkspaceTransferGuards.find(key);
+    if (it == g_directNiriExplicitWorkspaceTransferGuards.end())
+        return nullptr;
+
+    if (now >= it->second.until) {
+        g_directNiriExplicitWorkspaceTransferGuards.erase(it);
+        return nullptr;
+    }
+
+    return &it->second;
+}
+
+bool directNiriAnyWorkspaceTransferGuardActiveLocal(const PHLWINDOW& window) {
+    if (!window)
+        return false;
+
+    const void* const key = window.get();
+    if (!key)
+        return false;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (directNiriExplicitTransferGuardFor(window))
+        return true;
+
+    const auto it = g_directNiriWorkspaceTransferGuardedUntil.find(key);
+    if (it == g_directNiriWorkspaceTransferGuardedUntil.end())
+        return false;
+
+    if (now < it->second)
+        return true;
+
+    g_directNiriWorkspaceTransferGuardedUntil.erase(it);
+    return false;
+}
+
+bool directNiriDraggedWorkspaceTransferGuardActiveLocal(const PHLWINDOW& window) {
+    const auto explicitGuard = directNiriExplicitTransferGuardFor(window);
+    return explicitGuard && explicitGuard->dragged;
+}
 
 DirectNiriWorkspaceTransferGuardState updateDirectNiriWorkspaceTransferRenderGuard(const PHLWINDOW& window) {
     DirectNiriWorkspaceTransferGuardState state;
@@ -595,25 +657,28 @@ DirectNiriWorkspaceTransferGuardState updateDirectNiriWorkspaceTransferRenderGua
     const WORKSPACEID currentWorkspaceId = window->m_workspace->m_id;
     state.currentWorkspaceId = currentWorkspaceId;
 
-    static std::unordered_map<const void*, WORKSPACEID> seenWorkspaceIds;
-    static std::unordered_map<const void*, std::chrono::steady_clock::time_point> guardedUntil;
-
-    if (const auto it = guardedUntil.find(key); it != guardedUntil.end()) {
+    if (const auto explicitGuard = directNiriExplicitTransferGuardFor(window); explicitGuard) {
+        state.active = true;
+        state.armed = explicitGuard->currentWorkspaceId == currentWorkspaceId;
+        state.dragTransfer = explicitGuard->dragged;
+        state.previousWorkspaceId = explicitGuard->previousWorkspaceId;
+        state.currentWorkspaceId = explicitGuard->currentWorkspaceId;
+    } else if (const auto it = g_directNiriWorkspaceTransferGuardedUntil.find(key); it != g_directNiriWorkspaceTransferGuardedUntil.end()) {
         if (now < it->second)
             state.active = true;
         else
-            guardedUntil.erase(it);
+            g_directNiriWorkspaceTransferGuardedUntil.erase(it);
     }
 
-    const auto seenIt = seenWorkspaceIds.find(key);
-    if (seenIt != seenWorkspaceIds.end() && seenIt->second != currentWorkspaceId) {
+    const auto seenIt = g_directNiriSeenWorkspaceIds.find(key);
+    if (seenIt != g_directNiriSeenWorkspaceIds.end() && seenIt->second != currentWorkspaceId) {
         state.previousWorkspaceId = seenIt->second;
         state.armed = true;
         state.active = true;
-        guardedUntil[key] = now + DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION;
+        g_directNiriWorkspaceTransferGuardedUntil[key] = now + DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION;
     }
 
-    seenWorkspaceIds[key] = currentWorkspaceId;
+    g_directNiriSeenWorkspaceIds[key] = currentWorkspaceId;
     return state;
 }
 
@@ -1080,6 +1145,35 @@ std::chrono::steady_clock::time_point workspaceSwitchDispatcherBlockUntil;
 std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 bool workspaceSwitchDispatcherBlockRelayout = false;
+
+void armDirectNiriDraggedWorkspaceTransferRenderGuard(const PHLWINDOW& window, const PHLWORKSPACE& previousWorkspace, const PHLWORKSPACE& currentWorkspace) {
+    if (!window || !currentWorkspace)
+        return;
+
+    const void* const key = window.get();
+    if (!key)
+        return;
+
+    const WORKSPACEID previousId = previousWorkspace ? previousWorkspace->m_id : WORKSPACE_INVALID;
+    const WORKSPACEID currentId = currentWorkspace->m_id;
+    const auto until = std::chrono::steady_clock::now() + DIRECT_NIRI_DRAG_TRANSFER_RENDER_GUARD_DURATION;
+    g_directNiriExplicitWorkspaceTransferGuards[key] = DirectNiriExplicitWorkspaceTransferGuard{
+        .until = until,
+        .previousWorkspaceId = previousId,
+        .currentWorkspaceId = currentId,
+        .dragged = true,
+    };
+    g_directNiriWorkspaceTransferGuardedUntil[key] = until;
+    g_directNiriSeenWorkspaceIds[key] = currentId;
+}
+
+bool directNiriWorkspaceTransferRenderGuardActive(const PHLWINDOW& window) {
+    return directNiriAnyWorkspaceTransferGuardActiveLocal(window);
+}
+
+bool directNiriDraggedWorkspaceTransferRenderGuardActive(const PHLWINDOW& window) {
+    return directNiriDraggedWorkspaceTransferGuardActiveLocal(window);
+}
 
 namespace {
 
@@ -5779,6 +5873,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                     << " armed=" << (transferGuard.armed ? 1 : 0)
                     << " previousWorkspace=" << transferGuard.previousWorkspaceId
                     << " currentWorkspace=" << transferGuard.currentWorkspaceId
+                    << " dragTransfer=" << (transferGuard.dragTransfer ? 1 : 0)
                     << " stable=" << rectToString(stableRect)
                     << " target=" << rectToString(window.targetGlobal)
                     << " relayoutFrom=" << rectToString(window.relayoutFromGlobal)
