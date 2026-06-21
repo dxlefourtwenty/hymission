@@ -14112,7 +14112,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
                 fallbackPreviews.push_back({
                     .window = window,
                     .naturalGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry),
-                    .alpha = std::clamp(window->alphaTotal(), 0.0F, 1.0F),
+                    .alpha = niriStripPreview ? 1.0F : std::clamp(window->alphaTotal(), 0.0F, 1.0F),
                     .focused = window == preferredPreviewFocus,
                 });
             }
@@ -14153,6 +14153,18 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
                         .isPinned = preview.window->m_pinned,
                     });
                 }
+            }
+        }
+
+        if (niriStripPreview && !previewState.windows.empty()) {
+            for (auto& managed : previewState.windows)
+                managed.previewAlpha = 1.0F;
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] strip snapshot force opaque niri preview workspace=" << debugWorkspaceLabel(targetWorkspace)
+                    << " windows=" << previewState.windows.size();
+                debugLog(out.str());
             }
         }
 
@@ -14280,6 +14292,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     ++m_stripSnapshotRenderDepth;
     g_pHyprOpenGL->makeEGLCurrent();
     g_pHyprRenderer->m_bBlockSurfaceFeedback = m_stripSnapshotSurfaceFeedbackFrames == 0;
+    g_pHyprRenderer->m_bRenderingSnapshot = false;
     if (renderWorkspaceContents) {
         m_stripPreviewContext.active = true;
         m_stripPreviewContext.monitor = monitor;
