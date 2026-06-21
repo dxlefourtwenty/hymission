@@ -11723,15 +11723,23 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
     m_cursorShapeResetFrames = 0;
     resetStaleClientCursorShape();
     clearNiriWallpaperLayoutLayerRefresh();
-    const bool emptyDirectNiriClose = niriModeAppliesToState(m_state) && m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() &&
-        centeredEmptyWorkspacePlaceholder(m_state);
-    if (emptyDirectNiriClose) {
-        // Keep the delayed-captured Waybar/hypr-dock Niri layout proxies alive
-        // for the close animation.  Clearing them here makes shouldHideLayerSurface()
-        // hand rendering back to the real layer immediately, so the layer snaps
-        // full-size while the wallpaper viewport zooms in.  The proxies are still
-        // cleared in deactivate(), after the close animation has completed.
+    const bool directNiriWallpaperClose = niriWallpaperZoomAppliesToState(m_state) && niriModeAppliesToState(m_state) &&
+        m_state.collectionPolicy.onlyActiveWorkspace;
+    if (directNiriWallpaperClose) {
+        // Match the stable no-window close path even when the workspace has
+        // windows.  The wallpaper/layout layer is a workspace viewport, not a
+        // normal hide-bar effect; clearing its proxy at close hands rendering
+        // back to the real full-size layer during the last few percent of zoom-in,
+        // which is the visible flash/snap.  Keep only the Niri wallpaper-layout
+        // proxies alive until deactivate(), then native Hyprland takes over alone.
+        syncNiriWallpaperLayoutLayerProxies();
         std::erase_if(m_hiddenStripLayerProxies, [](const HiddenStripLayerProxy& proxy) { return !proxy.niriWallpaperLayoutLayer; });
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] beginClose retain niri wallpaper viewport proxies windows=" << m_state.windows.size()
+                << " proxies=" << m_hiddenStripLayerProxies.size();
+            debugLog(out.str());
+        }
     } else {
         clearHiddenStripLayerProxies();
         syncHiddenStripLayerProxies();
