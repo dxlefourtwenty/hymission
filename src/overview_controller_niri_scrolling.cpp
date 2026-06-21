@@ -2849,6 +2849,15 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
+    const bool interruptedOpeningClose = m_beginCloseInProgress && m_state.phase == Phase::Opening &&
+        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state) &&
+        selectedManaged->naturalGlobal.width > 1.0 && selectedManaged->naturalGlobal.height > 1.0;
+    const Rect selectedWallpaperExit = interruptedOpeningClose ? selectedManaged->naturalGlobal : selectedExit;
+    const double wallpaperScaleX = selectedWallpaperExit.width / selectedPreview.width;
+    const double wallpaperScaleY = selectedWallpaperExit.height / selectedPreview.height;
+    const bool useOpeningCameraForWallpaper = interruptedOpeningClose && std::isfinite(wallpaperScaleX) && std::isfinite(wallpaperScaleY) &&
+        wallpaperScaleX > 0.0 && wallpaperScaleY > 0.0;
+
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
             continue;
@@ -2868,9 +2877,12 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     };
     for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
         const Rect preview = currentPlaceholderRect(placeholder);
-        placeholder.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
-                                          selectedExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * scaleY - preview.height * scaleY * 0.5,
-                                          preview.width * scaleX, preview.height * scaleY);
+        const Rect cameraExit = useOpeningCameraForWallpaper ? selectedWallpaperExit : selectedExit;
+        const double cameraScaleX = useOpeningCameraForWallpaper ? wallpaperScaleX : scaleX;
+        const double cameraScaleY = useOpeningCameraForWallpaper ? wallpaperScaleY : scaleY;
+        placeholder.exitGlobal = makeRect(cameraExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * cameraScaleX - preview.width * cameraScaleX * 0.5,
+                                          cameraExit.centerY() + (preview.centerY() - selectedPreview.centerY()) * cameraScaleY - preview.height * cameraScaleY * 0.5,
+                                          preview.width * cameraScaleX, preview.height * cameraScaleY);
     }
 
     if (debugLogsEnabled()) {
@@ -2878,7 +2890,11 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
         out << "[hymission] niri scrolling camera exit target=" << debugWindowLabel(window)
             << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")";
+            << " scale=(" << scaleX << "," << scaleY << ")"
+            << " wallpaperOpeningCamera=" << (useOpeningCameraForWallpaper ? 1 : 0);
+        if (useOpeningCameraForWallpaper)
+            out << " wallpaperExit=" << rectToString(selectedWallpaperExit)
+                << " wallpaperScale=(" << wallpaperScaleX << "," << wallpaperScaleY << ")";
         debugLog(out.str());
     }
 
@@ -6182,6 +6198,7 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     return makeRect(content.centerX() - cardWidth * 0.5, content.centerY() - cardHeight * 0.5, cardWidth, cardHeight);
 }
 Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspacePlaceholder& placeholder) const {
+    constexpr double WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON = 0.004;
     const auto stableExitRect = [&]() {
         if (placeholder.naturalGlobal.width > 1.0 && placeholder.naturalGlobal.height > 1.0 &&
             (placeholder.exitGlobal.width <= 1.0 || placeholder.exitGlobal.height <= 1.0 ||
@@ -6199,12 +6216,14 @@ Rect OverviewController::currentEmptyWorkspacePlaceholderRect(const EmptyWorkspa
         case Phase::Opening:
             return lerpRect(placeholder.naturalGlobal, placeholder.targetGlobal, visualProgress());
         case Phase::ClosingSettle:
-        case Phase::Closing:
-            // Keep wallpaper viewport interpolation on the exact same visual
-            // progress as window previews until the final native handoff.  An
-            // early wallpaper-only snap to naturalGlobal makes the last 5-10% of
-            // zoom-in visibly jump when overview open/close is spammed.
-            return lerpRect(stableExitRect(), placeholder.targetGlobal, visualProgress());
+        case Phase::Closing: {
+            const double progress = visualProgress();
+            if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && progress <= WALLPAPER_NATIVE_HANDOFF_VISUAL_EPSILON &&
+                placeholder.naturalGlobal.width > 1.0 && placeholder.naturalGlobal.height > 1.0)
+                return placeholder.naturalGlobal;
+
+            return lerpRect(stableExitRect(), placeholder.targetGlobal, progress);
+        }
         case Phase::Inactive:
             return placeholder.naturalGlobal;
         case Phase::Active:
