@@ -13775,6 +13775,124 @@ void OverviewController::renderSelectionChrome() const {
     if (closingTargetsEmptyNiriWorkspaceOnMonitor())
         return;
 
+    // Direct Niri workspace lanes are normal overview window previews, not the
+    // optional top/side workspace-strip thumbnails.  If Hyprland's inactive
+    // workspace render path gives us only the window/deco pass (border visible,
+    // client area blank), overlay the current main-surface texture here, just
+    // before drawing Hymission chrome.  This mirrors Niri's model: overview
+    // renders windows from their current layout/window state instead of waiting
+    // for a workspace switch to make the workspace visible first.
+    if (!directNiriCloseChrome && g_pHyprOpenGL && m_state.collectionPolicy.onlyActiveWorkspace &&
+        (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state))) {
+        std::size_t rendered = 0;
+        std::size_t missing = 0;
+        std::size_t skipped = 0;
+        static std::size_t s_directNiriSurfaceOverlayLogBudget = 320;
+
+        for (const auto& managed : m_state.windows) {
+            const auto window = managed.window;
+            if (!window || managed.targetMonitor != renderMonitor || !windowMatchesOverviewScope(window, m_state, false)) {
+                ++skipped;
+                continue;
+            }
+
+            if (!window->m_workspace || !isScrollingWorkspace(window->m_workspace) || window->m_pinned || managed.isPinned ||
+                managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window)) {
+                ++skipped;
+                continue;
+            }
+
+            const auto surface = window->wlSurface();
+            const auto resource = surface ? surface->resource() : nullptr;
+            const auto texture = resource ? resource->m_current.texture : nullptr;
+            const auto transform = windowTransformFor(window, renderMonitor);
+            const Rect targetGlobal = transform ? transform->targetGlobal : currentPreviewRect(managed);
+            const Rect targetRender = rectToMonitorRenderLocal(targetGlobal, renderMonitor);
+            const bool usableTarget = targetRender.width > 1.0 && targetRender.height > 1.0;
+
+            if (!texture || !usableTarget) {
+                ++missing;
+                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri live surface overlay missing"
+                        << " window=" << debugWindowLabel(window)
+                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                        << " texture=" << (texture ? 1 : 0)
+                        << " target=" << rectToString(targetGlobal)
+                        << " targetRender=" << rectToString(targetRender)
+                        << " hidden=" << (window->isHidden() ? 1 : 0)
+                        << " mapped=" << (window->m_isMapped ? 1 : 0)
+                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
+                        << " wsForceRendering=" << (window->m_workspace && window->m_workspace->m_forceRendering ? 1 : 0)
+                        << " alphaTotal=" << window->alphaTotal();
+                    if (resource)
+                        out << " surfSize=" << vectorToString(resource->m_current.size)
+                            << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                    else
+                        out << " surface=<null>";
+                    debugLog(out.str());
+                    --s_directNiriSurfaceOverlayLogBudget;
+                }
+                continue;
+            }
+
+            const float alpha = std::clamp(managedPreviewAlphaFor(window, managed.previewAlpha), 0.0F, 1.0F) *
+                static_cast<float>(std::clamp(progress, 0.0, 1.0));
+            if (alpha <= 0.001F) {
+                ++missing;
+                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri live surface overlay skipped-alpha"
+                        << " window=" << debugWindowLabel(window)
+                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                        << " alpha=" << alpha
+                        << " previewAlpha=" << managed.previewAlpha
+                        << " alphaTotal=" << window->alphaTotal()
+                        << " hidden=" << (window->isHidden() ? 1 : 0)
+                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0);
+                    debugLog(out.str());
+                    --s_directNiriSurfaceOverlayLogBudget;
+                }
+                continue;
+            }
+
+            g_pHyprOpenGL->renderTexture(texture, toBox(targetRender), {.a = alpha});
+            ++rendered;
+
+            if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] direct niri live surface overlay render"
+                    << " window=" << debugWindowLabel(window)
+                    << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                    << " target=" << rectToString(targetGlobal)
+                    << " targetRender=" << rectToString(targetRender)
+                    << " alpha=" << alpha
+                    << " hidden=" << (window->isHidden() ? 1 : 0)
+                    << " mapped=" << (window->m_isMapped ? 1 : 0)
+                    << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
+                    << " wsForceRendering=" << (window->m_workspace && window->m_workspace->m_forceRendering ? 1 : 0)
+                    << " alphaTotal=" << window->alphaTotal();
+                if (resource)
+                    out << " surfSize=" << vectorToString(resource->m_current.size)
+                        << " buffer=" << vectorToString(resource->m_current.bufferSize);
+                debugLog(out.str());
+                --s_directNiriSurfaceOverlayLogBudget;
+            }
+        }
+
+        if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+            std::ostringstream out;
+            out << "[hymission] direct niri live surface overlay summary"
+                << " monitor=" << renderMonitor->m_name
+                << " rendered=" << rendered
+                << " missing=" << missing
+                << " skipped=" << skipped
+                << " windows=" << m_state.windows.size();
+            debugLog(out.str());
+            --s_directNiriSurfaceOverlayLogBudget;
+        }
+    }
+
     const bool showFocusIndicator = !directNiriCloseChrome && showFocusIndicatorEnabled();
 
     if (showFocusIndicator && m_state.hoveredIndex && *m_state.hoveredIndex < m_state.windows.size() &&
