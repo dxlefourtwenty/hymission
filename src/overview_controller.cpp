@@ -9035,6 +9035,9 @@ PHLWINDOW OverviewController::selectedWindow() const {
 
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
     const auto* managed = managedWindowFor(window);
+    if (m_stripPreviewContext.active && managed)
+        return std::clamp(managed->previewAlpha > 0.0F ? managed->previewAlpha : 1.0F, 0.0F, 1.0F);
+
     if (managed && m_workspaceTransition.active && m_state.collectionPolicy.onlyActiveWorkspace &&
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState)))
         return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
@@ -14185,6 +14188,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     struct WorkspaceRenderState {
         PHLWORKSPACE workspace;
         bool         visible = false;
+        bool         forceRendering = false;
         Vector2D     renderOffsetValue;
         Vector2D     renderOffsetGoal;
         float        alphaValue = 1.0F;
@@ -14196,6 +14200,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         return WorkspaceRenderState{
             .workspace = workspace,
             .visible = workspace->m_visible,
+            .forceRendering = workspace->m_forceRendering,
             .renderOffsetValue = workspace->m_renderOffset->value(),
             .renderOffsetGoal = workspace->m_renderOffset->goal(),
             .alphaValue = workspace->m_alpha->value(),
@@ -14207,6 +14212,7 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             return;
 
         state->workspace->m_visible = state->visible;
+        state->workspace->m_forceRendering = state->forceRendering;
         state->workspace->m_renderOffset->setValueAndWarp(state->renderOffsetValue);
         if (state->renderOffsetGoal != state->renderOffsetValue)
             *state->workspace->m_renderOffset = state->renderOffsetGoal;
@@ -14216,7 +14222,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
     };
     const auto previousWorkspaceRenderState = previousWorkspace != targetWorkspace ? captureWorkspaceRenderState(previousWorkspace) : std::nullopt;
     const auto targetWorkspaceRenderState = targetWorkspace ? captureWorkspaceRenderState(targetWorkspace) : std::nullopt;
-    bool targetVisibilityChanged = false;
 
     const auto applyFullscreenOverrideForState = [](State& state, bool suppress) {
         if (suppress) {
@@ -14320,10 +14325,20 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         monitor->m_activeWorkspace = targetWorkspace;
         if (!targetWorkspace->m_visible) {
             targetWorkspace->m_visible = true;
-            targetVisibilityChanged = true;
         }
+        targetWorkspace->m_forceRendering = true;
         targetWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+        *targetWorkspace->m_renderOffset = Vector2D{};
         targetWorkspace->m_alpha->setValueAndWarp(1.F);
+        *targetWorkspace->m_alpha = 1.F;
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] strip snapshot force workspace render state workspace=" << debugWorkspaceLabel(targetWorkspace)
+                << " visible=" << (targetWorkspaceRenderState ? (targetWorkspaceRenderState->visible ? 1 : 0) : -1)
+                << " forceRendering=" << (targetWorkspaceRenderState ? (targetWorkspaceRenderState->forceRendering ? 1 : 0) : -1)
+                << " alpha=" << (targetWorkspaceRenderState ? targetWorkspaceRenderState->alphaValue : -1.0F);
+            debugLog(out.str());
+        }
     }
 
     const auto renderNow = Time::steadyNow();
@@ -14392,9 +14407,6 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
         m_stripPreviewContext.monitor.reset();
         m_stripPreviewContext.active = false;
     }
-
-    if (targetVisibilityChanged && targetWorkspace)
-        targetWorkspace->m_visible = false;
 
     if (renderWorkspaceContents && targetWorkspace) {
         monitor->m_activeSpecialWorkspace = previousSpecialWorkspace;
