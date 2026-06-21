@@ -1005,11 +1005,121 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             target.monitor->m_forceFullFrames = std::max(target.monitor->m_forceFullFrames, 3);
     };
 
+    const auto workspaceHasMappedSurface = [](const PHLWORKSPACE &candidateWorkspace) {
+        if (!candidateWorkspace || candidateWorkspace->m_isSpecialWorkspace)
+            return false;
+
+        for (const auto &candidate : g_pCompositor->m_windows) {
+            if (!candidate || !candidate->m_isMapped || candidate->m_fadingOut || candidate->m_workspace != candidateWorkspace || candidate->m_pinned ||
+                candidate->onSpecialWorkspace())
+                continue;
+
+            return true;
+        }
+
+        return false;
+    };
+
+    const auto armInactiveWorkspaceActivationPulse = [&]() {
+        if (!g_pEventLoopManager || !workspaceStripEnabled(m_state) || !isVisible() || !target.monitor || !workspace || workspace->m_isSpecialWorkspace)
+            return;
+
+        if (target.monitor->m_activeWorkspace == workspace)
+            return;
+
+        if (!workspaceHasMappedSurface(workspace))
+            return;
+
+        // Some inactive / never-visited workspaces have valid layout boxes and
+        // decorations, but their client buffers do not repaint into a fake strip
+        // snapshot until Hyprland briefly treats that workspace as active.  A real
+        // workspace switch elsewhere fixes it for the same reason.  Pulse the
+        // edited workspace as active under the workspace-change guard, then restore
+        // the original owner lane on the next tick.  This feeds the clients and
+        // strip snapshot renderer without letting the mouse edit become a logical
+        // workspace switch.
+        const auto pulseMonitor = target.monitor;
+        const auto pulseWorkspace = workspace;
+        const auto restoreMonitor = preservedOwnerMonitor ? preservedOwnerMonitor : pulseMonitor;
+        const auto restoreWorkspace = preservedOwnerWorkspace ? preservedOwnerWorkspace : preservedOwnerActiveWorkspace;
+        const auto restoreFocus = focusFallbackForPreservedOwner();
+
+        const auto forceWorkspaceActive = [&](const PHLMONITOR &monitor, const PHLWORKSPACE &activateWorkspace) {
+            if (!monitor || !activateWorkspace || activateWorkspace->m_monitor.lock() != monitor)
+                return;
+
+            const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+            m_applyingWorkspaceTransitionCommit = true;
+            monitor->changeWorkspace(activateWorkspace, true, true, true);
+            activateWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+            activateWorkspace->m_alpha->setValueAndWarp(1.F);
+            if (g_layoutManager)
+                g_layoutManager->recalculateMonitor(monitor);
+            m_applyingWorkspaceTransitionCommit = previousGuard;
+            m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+        };
+
+        forceWorkspaceActive(pulseMonitor, pulseWorkspace);
+        pulseMonitor->m_forceFullFrames = std::max(pulseMonitor->m_forceFullFrames, 3);
+        refreshWorkspaceLayoutSnapshot(pulseWorkspace);
+        armMouseEditSnapshotRefresh();
+
+        // Capture once immediately while the edited workspace is the compositor's
+        // active workspace. The normal scheduled refresh is delayed by surface
+        // feedback timing; if we restore first, unvisited clients can still render
+        // as wallpaper + borders only.
+        m_stripSnapshotsDirty = true;
+        m_stripSnapshotSurfaceFeedbackFrames = std::max<std::size_t>(m_stripSnapshotSurfaceFeedbackFrames, 12);
+        refreshWorkspaceStripSnapshots();
+
+        g_pEventLoopManager->doLater([this, pulseMonitor, pulseWorkspace, restoreMonitor, restoreWorkspace, restoreFocus] {
+            if (!isVisible())
+                return;
+
+            if (restoreMonitor && restoreWorkspace)
+                m_pendingStripWorkspaceChangeTarget = restoreWorkspace;
+            if (restoreMonitor && restoreWorkspace)
+                restoreMonitor->m_forceFullFrames = std::max(restoreMonitor->m_forceFullFrames, 3);
+
+            const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+            m_applyingWorkspaceTransitionCommit = true;
+            if (restoreMonitor && restoreWorkspace && restoreWorkspace->m_monitor.lock() == restoreMonitor) {
+                restoreMonitor->changeWorkspace(restoreWorkspace, true, true, true);
+                restoreWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+                restoreWorkspace->m_alpha->setValueAndWarp(1.F);
+            }
+            m_applyingWorkspaceTransitionCommit = previousGuard;
+            m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+
+            if (restoreFocus && restoreFocus->m_isMapped && !restoreFocus->m_fadingOut && restoreFocus->m_workspace == restoreWorkspace) {
+                if (Desktop::focusState()->window() != restoreFocus)
+                    Desktop::focusState()->rawWindowFocus(restoreFocus, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+                restoreWorkspace->m_lastFocusedWindow = restoreFocus;
+                selectWindowInState(m_state, restoreFocus);
+                m_state.focusDuringOverview = restoreFocus;
+            } else {
+                m_state.selectedIndex.reset();
+                m_state.focusDuringOverview = {};
+            }
+
+            m_state.ownerMonitor = restoreMonitor;
+            m_state.ownerWorkspace = restoreWorkspace;
+            refreshWorkspaceLayoutSnapshot(pulseWorkspace);
+            if (restoreWorkspace && restoreWorkspace != pulseWorkspace)
+                refreshWorkspaceLayoutSnapshot(restoreWorkspace);
+            m_stripSnapshotsDirty = true;
+            m_stripSnapshotSurfaceFeedbackFrames = std::max<std::size_t>(m_stripSnapshotSurfaceFeedbackFrames, 12);
+            scheduleWorkspaceStripSnapshotRefresh();
+            damageOwnedMonitors();
+        });
+    };
+
     const auto refreshAfterMouseEdit = [&](const char *reason) {
         armMouseEditSnapshotRefresh();
         const auto focus = restoreFocusForMouseEdit();
         refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
         armMouseEditSnapshotRefresh();
+        armInactiveWorkspaceActivationPulse();
         damageOwnedMonitors();
         return true;
     };
