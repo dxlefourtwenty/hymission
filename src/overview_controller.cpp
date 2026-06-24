@@ -2355,6 +2355,116 @@ PHLWINDOW centeredScrollingFocusCandidateForWorkspace(const PHLWORKSPACE& worksp
     return best ? best->window : PHLWINDOW{};
 }
 
+PHLWINDOW centeredOverviewStateFocusCandidateForWorkspace(const OverviewController::State& state, const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
+    if (!workspace || !monitor || getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
+        return {};
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return {};
+
+    Rect viewport = makeRect(monitor->m_position.x, monitor->m_position.y, monitor->m_size.x, monitor->m_size.y);
+    for (const auto& placeholder : state.emptyWorkspacePlaceholders) {
+        if (!placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor || placeholder.workspace != workspace ||
+            placeholder.targetGlobal.width <= 1.0 || placeholder.targetGlobal.height <= 1.0)
+            continue;
+
+        // The backing-only placeholder is the exact scaled 1.0 scrolling viewport
+        // used by the direct niri overview.  Using it here matches the visual
+        // focus choice to the workspace strip instead of Hyprland's stale native
+        // last-focus candidate from before the workspace became active.
+        viewport = placeholder.targetGlobal;
+        break;
+    }
+
+    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
+    const double viewportPrimaryCenter = horizontal ? viewport.centerX() : viewport.centerY();
+    const double viewportSecondaryCenter = horizontal ? viewport.centerY() : viewport.centerX();
+    const double viewportPrimaryStart = horizontal ? viewport.x : viewport.y;
+    const double viewportPrimaryEnd = horizontal ? viewport.x + viewport.width : viewport.y + viewport.height;
+
+    const auto rectPrimaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerX() : rect.centerY(); };
+    const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
+    const auto rectPrimaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+    const auto rectPrimaryEnd = [&](const Rect& rect) { return horizontal ? rect.x + rect.width : rect.y + rect.height; };
+
+    struct VisualCenteredCandidate {
+        PHLWINDOW window;
+        double    primaryDistance = std::numeric_limits<double>::infinity();
+        double    secondaryDistance = std::numeric_limits<double>::infinity();
+        double    visiblePrimaryOverlap = 0.0;
+        bool      lastFocused = false;
+        bool      activeFocus = false;
+    };
+
+    const auto liveFocus = Desktop::focusState()->window();
+    std::optional<VisualCenteredCandidate> best;
+
+    const auto better = [](const VisualCenteredCandidate& candidate, const VisualCenteredCandidate& current) {
+        constexpr double DISTANCE_EPSILON = 0.5;
+        constexpr double OVERLAP_EPSILON = 0.5;
+
+        if (candidate.primaryDistance + DISTANCE_EPSILON < current.primaryDistance)
+            return true;
+        if (current.primaryDistance + DISTANCE_EPSILON < candidate.primaryDistance)
+            return false;
+
+        if (candidate.visiblePrimaryOverlap > current.visiblePrimaryOverlap + OVERLAP_EPSILON)
+            return true;
+        if (current.visiblePrimaryOverlap > candidate.visiblePrimaryOverlap + OVERLAP_EPSILON)
+            return false;
+
+        if (candidate.secondaryDistance + DISTANCE_EPSILON < current.secondaryDistance)
+            return true;
+        if (current.secondaryDistance + DISTANCE_EPSILON < candidate.secondaryDistance)
+            return false;
+
+        if (candidate.lastFocused != current.lastFocused)
+            return candidate.lastFocused;
+        if (candidate.activeFocus != current.activeFocus)
+            return candidate.activeFocus;
+
+        return false;
+    };
+
+    for (const auto& managed : state.windows) {
+        const auto& window = managed.window;
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace ||
+            managed.targetGlobal.width <= 1.0 || managed.targetGlobal.height <= 1.0)
+            continue;
+
+        const auto target = window->layoutTarget();
+        if (!target || target->floating())
+            continue;
+
+        if (!rectHasVisibleOverlap(managed.targetGlobal, viewport, 0.5))
+            continue;
+
+        const double visiblePrimaryOverlap = std::max(0.0, std::min(rectPrimaryEnd(managed.targetGlobal), viewportPrimaryEnd) -
+                                                            std::max(rectPrimaryStart(managed.targetGlobal), viewportPrimaryStart));
+        if (visiblePrimaryOverlap <= 0.5)
+            continue;
+
+        const auto targetData = scrolling->dataFor(target);
+        const auto column = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+        const auto lastFocusedTarget = column ? column->lastFocusedTarget.lock() : nullptr;
+
+        VisualCenteredCandidate candidate{
+            .window = window,
+            .primaryDistance = std::abs(rectPrimaryCenter(managed.targetGlobal) - viewportPrimaryCenter),
+            .secondaryDistance = std::abs(rectSecondaryCenter(managed.targetGlobal) - viewportSecondaryCenter),
+            .visiblePrimaryOverlap = visiblePrimaryOverlap,
+            .lastFocused = lastFocusedTarget && targetData == lastFocusedTarget,
+            .activeFocus = window == liveFocus,
+        };
+
+        if (!best || better(candidate, *best))
+            best = candidate;
+    }
+
+    return best ? best->window : PHLWINDOW{};
+}
+
 std::size_t scrollingWorkspaceColumnCount(const PHLWORKSPACE& workspace) {
     if (!workspace)
         return 0;
@@ -7021,13 +7131,26 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
 
     const bool preferCenteredNiriFocus = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && workspace && isScrollingWorkspace(workspace) &&
         getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-    const auto centeredNiriFocus = preferCenteredNiriFocus ? centeredScrollingFocusCandidateForWorkspace(workspace) : PHLWINDOW{};
-    const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
+    PHLWINDOW targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
         preferredTargetFocus :
-        (centeredNiriFocus ? centeredNiriFocus : focusCandidateForWorkspace(workspace));
-    State      target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
+        focusCandidateForWorkspace(workspace);
+    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
     if (target.participatingMonitors.empty())
         return false;
+
+    if (preferCenteredNiriFocus && !preferredTargetFocus) {
+        PHLWINDOW centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(target, workspace, monitor);
+        if (!centeredNiriFocus)
+            centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(workspace);
+
+        if (centeredNiriFocus && centeredNiriFocus != targetFocus) {
+            State centeredTarget = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, centeredNiriFocus);
+            if (!centeredTarget.participatingMonitors.empty()) {
+                targetFocus = centeredNiriFocus;
+                target = std::move(centeredTarget);
+            }
+        }
+    }
 
     if (workspace)
         target.ownerWorkspace = workspace;
@@ -7479,12 +7602,16 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         targetFocus = m_workspaceTransition.targetState.focusDuringOverview;
     const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
         (m_workspaceTransition.targetWorkspaceSyntheticEmpty || m_workspaceTransition.targetState.windows.empty());
+    const bool preferCenteredNiriFocus = !targetIsEmptyNiriWorkspace && !preserveTargetEdgeCamera &&
+        m_workspaceTransition.targetState.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_workspaceTransition.targetState) && targetWorkspace &&
+        isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+    if (preferCenteredNiriFocus) {
+        if (const auto centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(m_workspaceTransition.targetState, targetWorkspace, transitionMonitor))
+            targetFocus = centeredNiriFocus;
+    }
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
     else if (!preserveTargetEdgeCamera && !targetFocus) {
-        const bool preferCenteredNiriFocus = m_workspaceTransition.targetState.collectionPolicy.onlyActiveWorkspace &&
-            niriModeAppliesToState(m_workspaceTransition.targetState) && targetWorkspace && isScrollingWorkspace(targetWorkspace) &&
-            getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
         if (preferCenteredNiriFocus)
             targetFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
         if (!targetFocus)
@@ -7650,6 +7777,13 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         if (!preserveTargetEdgeCamera && next.focusDuringOverview && next.focusDuringOverview->m_isMapped &&
             next.focusDuringOverview->m_workspace == targetWorkspace)
             intendedTargetFocus = next.focusDuringOverview;
+
+        const bool preferCenteredNiriFocus = !preserveTargetEdgeCamera && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && targetWorkspace &&
+            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+        if (preferCenteredNiriFocus) {
+            if (const auto centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, targetWorkspace, transitionMonitor))
+                intendedTargetFocus = centeredNiriFocus;
+        }
 
         const bool preserveDirectNiriFocus =
             intendedTargetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
