@@ -2355,7 +2355,8 @@ PHLWINDOW centeredScrollingFocusCandidateForWorkspace(const PHLWORKSPACE& worksp
     return best ? best->window : PHLWINDOW{};
 }
 
-PHLWINDOW centeredOverviewStateFocusCandidateForWorkspace(const OverviewController::State& state, const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
+template <typename OverviewStateLike>
+PHLWINDOW centeredOverviewStateFocusCandidateForWorkspace(const OverviewStateLike& state, const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
     if (!workspace || !monitor || getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
         return {};
 
