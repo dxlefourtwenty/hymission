@@ -128,6 +128,18 @@ double dragPointerSecondary(const Vector2D &point, overview_drag::Axis axis) {
     return axis == overview_drag::Axis::Horizontal ? point.y : point.x;
 }
 
+double dragPrimaryEnd(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return dragPrimaryStart(rect, axis) + dragPrimarySize(rect, axis);
+}
+
+double dragPrimaryCenter(const overview_drag::Rect &rect, overview_drag::Axis axis) {
+    return dragPrimaryStart(rect, axis) + dragPrimarySize(rect, axis) * 0.5;
+}
+
+Vector2D dragPointFromAxes(double primary, double secondary, overview_drag::Axis axis) {
+    return axis == overview_drag::Axis::Horizontal ? Vector2D{primary, secondary} : Vector2D{secondary, primary};
+}
+
 overview_drag::Rect dragRectFromAxes(double primary, double secondary, double primaryLength, double secondaryLength, overview_drag::Axis axis) {
     return axis == overview_drag::Axis::Horizontal ? overview_drag::Rect{primary, secondary, primaryLength, secondaryLength} :
                                                     overview_drag::Rect{secondary, primary, secondaryLength, primaryLength};
@@ -289,6 +301,10 @@ std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overv
     const double draggedP = dragPrimarySize(draggedPreview, axis);
     const double draggedS = dragSecondarySize(draggedPreview, axis);
 
+    const double secondaryLaneMargin = std::clamp(workspaceSLength * 0.18, 36.0, 180.0);
+    if (pointerS < workspaceS - secondaryLaneMargin || pointerS > workspaceS + workspaceSLength + secondaryLaneMargin)
+        return std::nullopt;
+
     const auto makeTarget = [&](std::size_t visualGapIndex, double gapPosition) {
         const double hintP = clampedDragHintLength(draggedP, workspacePLength * 0.28);
         const double hintS = std::min(std::max(24.0, draggedS), workspaceSLength * 0.9);
@@ -300,11 +316,31 @@ std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overv
     };
 
     const double firstStart = dragPrimaryStart(columns.front().rect, axis);
-    const double lastEnd = dragPrimaryStart(columns.back().rect, axis) + dragPrimarySize(columns.back().rect, axis);
-    if (pointerP < firstStart)
+    const double lastEnd = dragPrimaryEnd(columns.back().rect, axis);
+    const double edgeTolerance = std::clamp(std::max(16.0, draggedP * 0.22), 16.0, 128.0);
+    if (pointerP < firstStart + edgeTolerance * 0.35)
         return makeTarget(0, firstStart);
-    if (pointerP > lastEnd)
+    if (pointerP > lastEnd - edgeTolerance * 0.35)
         return makeTarget(columns.size(), lastEnd);
+
+    // Real niri move grabs resolve column placement from the moving preview's
+    // placement, not only from the raw cursor point.  In Hymission the cursor can
+    // stay on the titlebar/edge of a large or partial-width preview while the
+    // preview itself is visually between columns.  Treat the inter-column bands as
+    // first-class drop zones so partial (<1.0) columns do not fall through to the
+    // in-column/tile heuristic or lose the hint entirely.
+    for (std::size_t visualIndex = 1; visualIndex < columns.size(); ++visualIndex) {
+        const double previousEnd = dragPrimaryEnd(columns[visualIndex - 1].rect, axis);
+        const double nextStart = dragPrimaryStart(columns[visualIndex].rect, axis);
+        const double gapStart = std::min(previousEnd, nextStart);
+        const double gapEnd = std::max(previousEnd, nextStart);
+        const double gapCenter = (previousEnd + nextStart) * 0.5;
+        const double gapWidth = std::max(0.0, gapEnd - gapStart);
+        const double hitBand = std::clamp(std::max(std::max(18.0, draggedP * 0.24), gapWidth * 0.5 + 12.0), 18.0, 128.0);
+
+        if (pointerP >= gapStart - hitBand && pointerP <= gapEnd + hitBand)
+            return makeTarget(visualIndex, gapCenter);
+    }
 
     for (std::size_t visualIndex = 0; visualIndex < columns.size(); ++visualIndex) {
         const auto &column = columns[visualIndex];
@@ -315,18 +351,17 @@ std::optional<overview_drag::InsertTarget> sideColumnInsertionTarget(const overv
         if (columnPLength <= 1.0 || columnSLength <= 1.0)
             continue;
 
-        const double secondaryMargin = std::clamp(workspaceSLength * 0.08, 12.0, 96.0);
+        const double secondaryMargin = std::clamp(workspaceSLength * 0.16, 24.0, 144.0);
         if (pointerS < columnS - secondaryMargin || pointerS > columnS + columnSLength + secondaryMargin)
             continue;
 
         // Niri's move grab treats the primary axis as the column placement axis:
         // dropping near a column's primary edge creates a neighboring column,
         // while dropping through the middle stacks/splits inside that column.
-        // Hymission's generic nearest-gap heuristic was too eager to choose the
-        // secondary/tile gap for partial columns, so positions just outside the
-        // visible viewport became vertical stacks instead of side columns.
-        double sideBand = std::clamp(columnPLength * 0.28, 16.0, 96.0);
-        sideBand = std::min(sideBand, columnPLength * 0.42);
+        // Partial columns expose very narrow visible rects, so keep a minimum
+        // side band large enough to hit even when only a sliver is on-screen.
+        double sideBand = std::clamp(std::max(columnPLength * 0.34, draggedP * 0.18), 20.0, 112.0);
+        sideBand = std::min(sideBand, std::max(20.0, columnPLength * 0.48));
         if (pointerP <= columnP + sideBand)
             return makeTarget(visualIndex, columnP);
         if (pointerP >= columnP + columnPLength - sideBand)
@@ -672,11 +707,14 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
     const bool horizontal = direction == ScrollingLayoutDirection::Right || direction == ScrollingLayoutDirection::Left;
     const bool reversed = direction == ScrollingLayoutDirection::Left || direction == ScrollingLayoutDirection::Up;
     const auto primaryAxis = horizontal ? overview_drag::Axis::Horizontal : overview_drag::Axis::Vertical;
+    const Rect draggedPreview = directNiriDraggedPreviewRect();
 
     const EmptyWorkspacePlaceholder *lane = nullptr;
     Rect laneRect;
     double laneArea = std::numeric_limits<double>::infinity();
+    double lanePreviewOverlap = 0.0;
     bool laneExactHit = false;
+    bool lanePointerHit = false;
     for (const auto &placeholder : m_state.emptyWorkspacePlaceholders) {
         if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
             continue;
@@ -684,19 +722,29 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         if (!usableRect(current))
             continue;
 
+        const Rect expanded = expandedLaneHitRectForDirectDrag(current, primaryAxis);
         const bool exactHit = contains(current, pointer);
-        if (!exactHit && !contains(expandedLaneHitRectForDirectDrag(current, primaryAxis), pointer))
+        const bool expandedPointerHit = contains(expanded, pointer);
+        const double previewOverlap = rectIntersectionArea(current, draggedPreview);
+        const double expandedPreviewOverlap = rectIntersectionArea(expanded, draggedPreview);
+        if (!exactHit && !expandedPointerHit && previewOverlap <= 1.0 && expandedPreviewOverlap <= 1.0)
             continue;
 
         const double area = current.width * current.height;
+        const bool previewHit = previewOverlap > 1.0 || expandedPreviewOverlap > 1.0;
         const bool preferExactLane = exactHit && !laneExactHit;
-        const bool preferVisibleEmptyViewport = !preferExactLane && lane && lane->backingOnly && !placeholder.backingOnly;
-        const bool preferSmallerSameKind = !preferExactLane && (!lane || placeholder.backingOnly == lane->backingOnly) && area < laneArea;
-        if (!lane || preferExactLane || preferVisibleEmptyViewport || preferSmallerSameKind) {
+        const bool preferPointerLane = !preferExactLane && expandedPointerHit && !lanePointerHit;
+        const bool preferPreviewLane = !preferExactLane && !preferPointerLane && previewHit && !laneExactHit && !lanePointerHit &&
+            previewOverlap > lanePreviewOverlap + 1.0;
+        const bool preferVisibleEmptyViewport = !preferExactLane && !preferPointerLane && !preferPreviewLane && lane && lane->backingOnly && !placeholder.backingOnly;
+        const bool preferSmallerSameKind = !preferExactLane && !preferPointerLane && !preferPreviewLane && (!lane || placeholder.backingOnly == lane->backingOnly) && area < laneArea;
+        if (!lane || preferExactLane || preferPointerLane || preferPreviewLane || preferVisibleEmptyViewport || preferSmallerSameKind) {
             lane = &placeholder;
             laneRect = current;
             laneArea = area;
+            lanePreviewOverlap = previewOverlap;
             laneExactHit = exactHit;
+            lanePointerHit = exactHit || expandedPointerHit;
         }
     }
     if (!lane)
@@ -709,7 +757,7 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
             .workspace = workspace,
             .monitor = lane->monitor,
             .workspaceId = lane->workspaceId,
-            .insertion = {.hint = dragRect(directNiriDraggedPreviewRect())},
+            .insertion = {.hint = dragRect(draggedPreview)},
             .floating = true,
         };
     }
@@ -760,15 +808,26 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         });
     }
 
-    auto insertion = overview_drag::insertionTarget(dragRect(laneRect), columns, pointer.x, pointer.y, primaryAxis, reversed,
-                                                    dragRect(directNiriDraggedPreviewRect()));
-    if (!insertion)
-        return std::nullopt;
+    const auto laneDragRect = dragRect(laneRect);
+    const auto draggedDragRect = dragRect(draggedPreview);
+    const double laneS = dragSecondaryStart(laneDragRect, primaryAxis);
+    const double laneSLength = dragSecondarySize(laneDragRect, primaryAxis);
+    const double effectivePrimary = dragPrimaryCenter(draggedDragRect, primaryAxis);
+    const double effectiveSecondary = std::clamp(dragPointerSecondary(pointer, primaryAxis), laneS, laneS + laneSLength);
+    const Vector2D effectivePointer = dragPointFromAxes(effectivePrimary, effectiveSecondary, primaryAxis);
 
-    const auto sideInsertion = sideColumnInsertionTarget(dragRect(laneRect), columns, pointer, primaryAxis, dragRect(directNiriDraggedPreviewRect()));
+    auto insertion = overview_drag::insertionTarget(laneDragRect, columns, effectivePointer.x, effectivePointer.y, primaryAxis, reversed, draggedDragRect);
+    if (!insertion)
+        insertion = overview_drag::insertionTarget(laneDragRect, columns, pointer.x, pointer.y, primaryAxis, reversed, draggedDragRect);
+
+    auto sideInsertion = sideColumnInsertionTarget(laneDragRect, columns, effectivePointer, primaryAxis, draggedDragRect);
+    if (!sideInsertion)
+        sideInsertion = sideColumnInsertionTarget(laneDragRect, columns, pointer, primaryAxis, draggedDragRect);
     if (sideInsertion) {
         insertion = sideInsertion;
         insertion->column = backendColumnIndexForVisualGap(columns, insertion->column);
+    } else if (!insertion) {
+        return std::nullopt;
     } else if (insertion->kind == overview_drag::InsertKind::NewColumn && !columns.empty()) {
         // overview_drag::insertionTarget returns NewColumn indices in the
         // insertion axis's logical direction. Convert back to screen/visual gap
