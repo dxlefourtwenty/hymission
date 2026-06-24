@@ -1622,21 +1622,12 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
 
     auto* const controller = scrolling->m_scrollingData->controller.get();
     const bool horizontal = controller->isPrimaryHorizontal();
-    const double viewportStart = horizontal ? viewport.x : viewport.y;
-    const double viewportEnd = viewportStart + (horizontal ? viewport.width : viewport.height);
-    const double viewportCenter = (viewportStart + viewportEnd) * 0.5;
-    const double secondaryViewportCenter = horizontal ? viewport.centerY() : viewport.centerX();
     const double nativeOffset = controller->getOffset();
 
     const auto rectPrimaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const auto rectPrimarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
     const auto rectPrimaryCenter = [&](const Rect& rect) { return rectPrimaryStart(rect) + rectPrimarySize(rect) * 0.5; };
     const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
-    const auto primaryOverlap = [&](const Rect& rect) {
-        const double start = rectPrimaryStart(rect);
-        const double end = start + rectPrimarySize(rect);
-        return std::max(0.0, std::min(end, viewportEnd) - std::max(start, viewportStart));
-    };
     const auto shiftPrimary = [&](Rect rect, double delta) {
         if (horizontal)
             rect.x += delta;
@@ -1645,9 +1636,39 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         return rect;
     };
 
+    const double viewportStart = rectPrimaryStart(viewport);
+    const double viewportEnd = viewportStart + rectPrimarySize(viewport);
+    const double viewportCenter = (viewportStart + viewportEnd) * 0.5;
+    const double secondaryViewportCenter = rectSecondaryCenter(viewport);
+
+    const auto primaryOverlap = [&](const Rect& rect) {
+        const double start = rectPrimaryStart(rect);
+        const double end = start + rectPrimarySize(rect);
+        return std::max(0.0, std::min(end, viewportEnd) - std::max(start, viewportStart));
+    };
+
+    const auto mergeBounds = [](std::optional<Rect>& bounds, const Rect& rect) {
+        if (rect.width <= 1.0 || rect.height <= 1.0)
+            return;
+        if (!bounds) {
+            bounds = rect;
+            return;
+        }
+
+        const double minX = std::min(bounds->x, rect.x);
+        const double minY = std::min(bounds->y, rect.y);
+        const double maxX = std::max(bounds->x + bounds->width, rect.x + rect.width);
+        const double maxY = std::max(bounds->y + bounds->height, rect.y + rect.height);
+        bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+    };
+
     struct Candidate {
         PHLWINDOW window;
+        Rect      rect;
         double    score = std::numeric_limits<double>::infinity();
+        bool      centerInside = false;
+        double    overlap = 0.0;
+        std::size_t columnIndex = 0;
     };
 
     Candidate best;
@@ -1666,25 +1687,9 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
                 columnFocusWindow = window;
         }
 
-        std::optional<Rect> liveColumnBounds;
-        std::optional<Rect> offsetColumnBounds;
+        std::optional<Rect> columnBounds;
         PHLWINDOW fallbackWindow;
         double fallbackSecondaryDistance = std::numeric_limits<double>::infinity();
-
-        const auto mergeBounds = [](std::optional<Rect>& bounds, const Rect& rect) {
-            if (rect.width <= 1.0 || rect.height <= 1.0)
-                return;
-            if (!bounds) {
-                bounds = rect;
-                return;
-            }
-
-            const double minX = std::min(bounds->x, rect.x);
-            const double minY = std::min(bounds->y, rect.y);
-            const double maxX = std::max(bounds->x + bounds->width, rect.x + rect.width);
-            const double maxY = std::max(bounds->y + bounds->height, rect.y + rect.height);
-            bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
-        };
 
         for (const auto& targetData : column->targetDatas) {
             if (!targetData || !targetData->target)
@@ -1696,20 +1701,21 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
                 !target || target->floating())
                 continue;
 
-            if (!fallbackWindow) {
-                fallbackWindow = window;
-            }
+            if (targetData->layoutBox.width <= 1.0 || targetData->layoutBox.height <= 1.0)
+                continue;
 
-            const CBox liveBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
-            const Rect liveRect = makeRect(liveBox.x, liveBox.y, liveBox.width, liveBox.height);
-            mergeBounds(liveColumnBounds, liveRect);
+            // Use the scrolling model's stable layout boxes, translated through
+            // the current native camera offset.  Live target/window positions can
+            // still belong to the previous focus/camera state while the overview
+            // is building the target workspace transition; using them here is what
+            // made focus_fit_method=0 sometimes pick the neighboring 0.5 column
+            // and then snap the strip when the sync path recentered that wrong
+            // column.
+            const Rect layoutRect = makeRect(targetData->layoutBox.x, targetData->layoutBox.y, targetData->layoutBox.width, targetData->layoutBox.height);
+            const Rect cameraRect = shiftPrimary(layoutRect, -nativeOffset);
+            mergeBounds(columnBounds, cameraRect);
 
-            if (targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0) {
-                const Rect layoutRect = makeRect(targetData->layoutBox.x, targetData->layoutBox.y, targetData->layoutBox.width, targetData->layoutBox.height);
-                mergeBounds(offsetColumnBounds, shiftPrimary(layoutRect, -nativeOffset));
-            }
-
-            const double secondaryDistance = std::abs(rectSecondaryCenter(liveRect) - secondaryViewportCenter);
+            const double secondaryDistance = std::abs(rectSecondaryCenter(cameraRect) - secondaryViewportCenter);
             if (secondaryDistance < fallbackSecondaryDistance) {
                 fallbackSecondaryDistance = secondaryDistance;
                 fallbackWindow = window;
@@ -1717,33 +1723,35 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         }
 
         const PHLWINDOW focusWindow = columnFocusWindow ? columnFocusWindow : fallbackWindow;
-        if (!focusWindow)
+        if (!focusWindow || !columnBounds || columnBounds->width <= 1.0 || columnBounds->height <= 1.0)
             continue;
 
-        const auto considerColumnBounds = [&](const std::optional<Rect>& bounds, double sourcePenalty) {
-            if (!bounds || bounds->width <= 1.0 || bounds->height <= 1.0)
-                return;
+        const double overlap = primaryOverlap(*columnBounds);
+        if (overlap <= 0.5)
+            continue;
 
-            const double overlap = primaryOverlap(*bounds);
-            const bool intersectsViewport = overlap > 0.5;
-            const double centerDistance = std::abs(rectPrimaryCenter(*bounds) - viewportCenter);
-            const double secondaryDistance = std::abs(rectSecondaryCenter(*bounds) - secondaryViewportCenter);
-            const double visiblePenalty = intersectsViewport ? 0.0 : 200000.0;
-            const double centerInsideBonus = (viewportCenter >= rectPrimaryStart(*bounds) - 0.5 &&
-                                              viewportCenter <= rectPrimaryStart(*bounds) + rectPrimarySize(*bounds) + 0.5) ? -5000.0 : 0.0;
-            const double score = visiblePenalty + centerDistance + secondaryDistance * 0.01 + sourcePenalty + centerInsideBonus - std::min(overlap, 512.0) * 0.001;
-            if (!best.window || score < best.score) {
-                best.window = focusWindow;
-                best.score = score;
-            }
-        };
+        const double start = rectPrimaryStart(*columnBounds);
+        const double end = start + rectPrimarySize(*columnBounds);
+        const bool centerInside = viewportCenter >= start - 0.5 && viewportCenter <= end + 0.5;
+        const double centerDistance = std::abs(rectPrimaryCenter(*columnBounds) - viewportCenter);
+        const double secondaryDistance = std::abs(rectSecondaryCenter(*columnBounds) - secondaryViewportCenter);
 
-        // Prefer the live target positions because they are the same boxes that
-        // Hyprland is about to render.  The offset-derived layout boxes are only
-        // a fallback for inactive workspaces whose live boxes have not been
-        // refreshed yet.
-        considerColumnBounds(liveColumnBounds, 0.0);
-        considerColumnBounds(offsetColumnBounds, 1000.0);
+        // First decide by the native camera geometry, not by MRU/last focus.
+        // A centered partial column should always win over a merely visible
+        // neighboring partial.  Last-focused target is used only after the column
+        // has been selected, to choose a tile inside that selected column.
+        const double outsideCenterPenalty = centerInside ? 0.0 : 100000.0;
+        const double score = outsideCenterPenalty + centerDistance + secondaryDistance * 0.01 - std::min(overlap, 1024.0) * 0.001;
+        if (!best.window || score < best.score) {
+            best = Candidate{
+                .window = focusWindow,
+                .rect = *columnBounds,
+                .score = score,
+                .centerInside = centerInside,
+                .overlap = overlap,
+                .columnIndex = columnIndex,
+            };
+        }
     }
 
     return best.window;
@@ -7571,6 +7579,10 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         Event::bus()->m_events.workspace.active.emit(targetWorkspace);
     }
 
+    const bool targetFocusIsStableCenteredFit0 = targetFocus && targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
+        centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) == targetFocus;
+
     if (targetFocus) {
         targetWorkspace->m_lastFocusedWindow = targetFocus;
         if (Desktop::focusState()->window() != targetFocus) {
@@ -7579,7 +7591,8 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
             if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetFocus)
                 m_pendingLiveFocusWorkspaceChangeTarget.reset();
         }
-        (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
+        if (!targetFocusIsStableCenteredFit0)
+            (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
     } else {
         clearWindowFocusCompat(transitionMonitor);
     }
@@ -7756,6 +7769,9 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         const bool deferTargetFocusScrollSyncForEdgeRelease = targetStartedEdgeCamera && targetFocus && !preserveTargetEdgeCamera &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace) &&
             !scrollingWorkspaceHasSingleColumn(targetWorkspace);
+        const bool targetFocusIsStableCenteredFit0 = targetFocus && targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
+            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
+            centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) == targetFocus;
         if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
             if (Desktop::focusState()->window() != targetFocus) {
@@ -7765,7 +7781,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
                     m_pendingLiveFocusWorkspaceChangeTarget.reset();
             }
         }
-        if (targetFocus && !deferTargetFocusScrollSyncForEdgeRelease)
+        if (targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCenteredFit0)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         else if (!targetFocus)
             clearWindowFocusCompat(transitionMonitor);
@@ -7773,7 +7789,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             g_pAnimationManager->frameTick();
 
         const bool edgeCameraRepositioned = targetStartedEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
-        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && !deferTargetFocusScrollSyncForEdgeRelease &&
+        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCenteredFit0 &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
         if (rebuildDirectNiriTargetAfterFocusSync || edgeCameraRepositioned || targetWorkspaceSyntheticEmpty ||
             !containsHandle(next.managedWorkspaces, targetWorkspace) || next.ownerWorkspace != targetWorkspace) {
@@ -7861,7 +7877,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         // forceFinalLayoutBox and animate relayoutFromGlobal -> targetGlobal.
         if (deferTargetFocusScrollSyncForEdgeRelease) {
             refreshNiriScrollingOverviewAfterFocusDispatcher("edge-release", targetFocus, true);
-        } else if (targetFocus && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        } else if (targetFocus && !targetFocusIsStableCenteredFit0 && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
                    isScrollingWorkspace(targetFocus->m_workspace)) {
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         }
