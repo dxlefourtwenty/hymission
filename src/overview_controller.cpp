@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -2214,6 +2215,144 @@ bool scrollingWindowIntersectsNativeViewport(const PHLWINDOW& window) {
 
     return rectHasVisibleOverlap(makeRect(targetBox.x, targetBox.y, targetBox.width, targetBox.height),
                                  makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height));
+}
+
+PHLWINDOW centeredScrollingFocusCandidateForWorkspace(const PHLWORKSPACE& workspace) {
+    if (!workspace || !workspace->m_space || getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
+        return {};
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return {};
+
+    CBox viewportBox = workspace->m_space->workArea();
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        viewportBox = scrolling->usableArea();
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        return {};
+
+    const Rect viewport = makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height);
+    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
+    const double viewportPrimaryCenter = horizontal ? viewport.centerX() : viewport.centerY();
+    const double viewportSecondaryCenter = horizontal ? viewport.centerY() : viewport.centerX();
+
+    const auto rectPrimaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerX() : rect.centerY(); };
+    const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
+
+    struct CenteredCandidate {
+        PHLWINDOW   window;
+        double      columnDistance = std::numeric_limits<double>::infinity();
+        double      tileDistance = std::numeric_limits<double>::infinity();
+        bool        lastFocused = false;
+        bool        activeFocus = false;
+        std::size_t columnIndex = 0;
+    };
+
+    std::optional<CenteredCandidate> best;
+    const auto liveFocus = Desktop::focusState()->window();
+
+    const auto validTiledWindowForTarget = [&](const SP<Layout::ITarget>& target) -> PHLWINDOW {
+        if (!target || target->floating())
+            return {};
+
+        const auto window = target->window();
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace)
+            return {};
+
+        const auto liveTarget = window->layoutTarget();
+        if (!liveTarget || liveTarget != target || liveTarget->floating())
+            return {};
+
+        return window;
+    };
+
+    const auto betterCenteredCandidate = [&](const CenteredCandidate& candidate, const CenteredCandidate& current) {
+        constexpr double DISTANCE_EPSILON = 0.5;
+        if (candidate.columnDistance + DISTANCE_EPSILON < current.columnDistance)
+            return true;
+        if (current.columnDistance + DISTANCE_EPSILON < candidate.columnDistance)
+            return false;
+
+        if (candidate.lastFocused != current.lastFocused)
+            return candidate.lastFocused;
+        if (candidate.activeFocus != current.activeFocus)
+            return candidate.activeFocus;
+
+        if (candidate.tileDistance + DISTANCE_EPSILON < current.tileDistance)
+            return true;
+        if (current.tileDistance + DISTANCE_EPSILON < candidate.tileDistance)
+            return false;
+
+        return candidate.columnIndex < current.columnIndex;
+    };
+
+    for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size(); ++columnIndex) {
+        const auto& column = scrolling->m_scrollingData->columns[columnIndex];
+        if (!column || column->targetDatas.empty())
+            continue;
+
+        using TargetDataPtr = std::remove_cvref_t<decltype(column->targetDatas.front())>;
+        struct TargetEntry {
+            TargetDataPtr targetData;
+            PHLWINDOW     window;
+            Rect          rect;
+        };
+
+        std::vector<TargetEntry> entries;
+        entries.reserve(column->targetDatas.size());
+        Rect columnBounds{};
+        bool hasColumnBounds = false;
+
+        for (const auto& targetData : column->targetDatas) {
+            const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
+            const auto window = validTiledWindowForTarget(target);
+            if (!window)
+                continue;
+
+            CBox layoutBox = target->position();
+            if (layoutBox.width <= 1.0 || layoutBox.height <= 1.0) {
+                if (targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
+                    layoutBox = targetData->layoutBox;
+            }
+            if (layoutBox.width <= 1.0 || layoutBox.height <= 1.0)
+                continue;
+
+            const Rect rect = makeRect(layoutBox.x, layoutBox.y, layoutBox.width, layoutBox.height);
+            entries.push_back({targetData, window, rect});
+
+            if (!hasColumnBounds) {
+                columnBounds = rect;
+                hasColumnBounds = true;
+            } else {
+                const double minX = std::min(columnBounds.x, rect.x);
+                const double minY = std::min(columnBounds.y, rect.y);
+                const double maxX = std::max(columnBounds.x + columnBounds.width, rect.x + rect.width);
+                const double maxY = std::max(columnBounds.y + columnBounds.height, rect.y + rect.height);
+                columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+            }
+        }
+
+        if (!hasColumnBounds || entries.empty() || !rectHasVisibleOverlap(columnBounds, viewport, 0.5))
+            continue;
+
+        const auto lastFocusedTarget = column->lastFocusedTarget.lock();
+        const double columnDistance = std::abs(rectPrimaryCenter(columnBounds) - viewportPrimaryCenter);
+        for (const auto& entry : entries) {
+            CenteredCandidate candidate{
+                .window = entry.window,
+                .columnDistance = columnDistance,
+                .tileDistance = std::abs(rectSecondaryCenter(entry.rect) - viewportSecondaryCenter),
+                .lastFocused = lastFocusedTarget && entry.targetData == lastFocusedTarget,
+                .activeFocus = entry.window == liveFocus,
+                .columnIndex = columnIndex,
+            };
+
+            if (!best || betterCenteredCandidate(candidate, *best))
+                best = candidate;
+        }
+    }
+
+    return best ? best->window : PHLWINDOW{};
 }
 
 std::size_t scrollingWorkspaceColumnCount(const PHLWORKSPACE& workspace) {
@@ -6880,9 +7019,12 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .syntheticEmpty = syntheticEmpty,
     }};
 
+    const bool preferCenteredNiriFocus = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && workspace && isScrollingWorkspace(workspace) &&
+        getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+    const auto centeredNiriFocus = preferCenteredNiriFocus ? centeredScrollingFocusCandidateForWorkspace(workspace) : PHLWINDOW{};
     const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
         preferredTargetFocus :
-        focusCandidateForWorkspace(workspace);
+        (centeredNiriFocus ? centeredNiriFocus : focusCandidateForWorkspace(workspace));
     State      target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
     if (target.participatingMonitors.empty())
         return false;
@@ -7339,8 +7481,15 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         (m_workspaceTransition.targetWorkspaceSyntheticEmpty || m_workspaceTransition.targetState.windows.empty());
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
-    else if (!preserveTargetEdgeCamera && !targetFocus)
-        targetFocus = focusCandidateForWorkspace(targetWorkspace);
+    else if (!preserveTargetEdgeCamera && !targetFocus) {
+        const bool preferCenteredNiriFocus = m_workspaceTransition.targetState.collectionPolicy.onlyActiveWorkspace &&
+            niriModeAppliesToState(m_workspaceTransition.targetState) && targetWorkspace && isScrollingWorkspace(targetWorkspace) &&
+            getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+        if (preferCenteredNiriFocus)
+            targetFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
+        if (!targetFocus)
+            targetFocus = focusCandidateForWorkspace(targetWorkspace);
+    }
 
     ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
     const bool alreadyActive = transitionMonitor->m_activeWorkspace == targetWorkspace;
@@ -7541,8 +7690,14 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             targetFocus = PHLWINDOW{};
         else if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
-        else if (!preserveTargetEdgeCamera)
-            targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        else if (!preserveTargetEdgeCamera) {
+            const bool preferCenteredNiriFocus = next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && targetWorkspace &&
+                isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+            if (preferCenteredNiriFocus)
+                targetFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
+            if (!targetFocus)
+                targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        }
         const bool deferTargetFocusScrollSyncForEdgeRelease = targetStartedEdgeCamera && targetFocus && !preserveTargetEdgeCamera &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace) &&
             !scrollingWorkspaceHasSingleColumn(targetWorkspace);
