@@ -18,7 +18,6 @@
 #include <string>
 #include <string_view>
 #include <tuple>
-#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1603,6 +1602,153 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
     return snapshotBox;
 }
 
+
+PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& workspace) {
+    if (!workspace || !workspace->m_space)
+        return {};
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return {};
+
+    const CBox usable = scrolling->usableArea();
+    Rect viewport = makeRect(usable.x, usable.y, usable.width, usable.height);
+    if (viewport.width <= 1.0 || viewport.height <= 1.0) {
+        const CBox workAreaBox = workspace->m_space->workArea();
+        viewport = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+    }
+    if (viewport.width <= 1.0 || viewport.height <= 1.0)
+        return {};
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const bool horizontal = controller->isPrimaryHorizontal();
+    const double viewportStart = horizontal ? viewport.x : viewport.y;
+    const double viewportEnd = viewportStart + (horizontal ? viewport.width : viewport.height);
+    const double viewportCenter = (viewportStart + viewportEnd) * 0.5;
+    const double secondaryViewportCenter = horizontal ? viewport.centerY() : viewport.centerX();
+    const double nativeOffset = controller->getOffset();
+
+    const auto rectPrimaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+    const auto rectPrimarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
+    const auto rectPrimaryCenter = [&](const Rect& rect) { return rectPrimaryStart(rect) + rectPrimarySize(rect) * 0.5; };
+    const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
+    const auto primaryOverlap = [&](const Rect& rect) {
+        const double start = rectPrimaryStart(rect);
+        const double end = start + rectPrimarySize(rect);
+        return std::max(0.0, std::min(end, viewportEnd) - std::max(start, viewportStart));
+    };
+    const auto shiftPrimary = [&](Rect rect, double delta) {
+        if (horizontal)
+            rect.x += delta;
+        else
+            rect.y += delta;
+        return rect;
+    };
+
+    struct Candidate {
+        PHLWINDOW window;
+        double    score = std::numeric_limits<double>::infinity();
+    };
+
+    Candidate best;
+
+    for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size(); ++columnIndex) {
+        const auto& column = scrolling->m_scrollingData->columns[columnIndex];
+        if (!column || column->targetDatas.empty())
+            continue;
+
+        PHLWINDOW columnFocusWindow;
+        if (const auto lastFocusedTarget = column->lastFocusedTarget.lock()) {
+            const auto target = lastFocusedTarget->target.lock();
+            const auto window = target ? target->window() : PHLWINDOW{};
+            if (window && window->m_isMapped && !window->m_fadingOut && !window->m_pinned && !window->onSpecialWorkspace() &&
+                window->m_workspace == workspace && target && !target->floating())
+                columnFocusWindow = window;
+        }
+
+        std::optional<Rect> liveColumnBounds;
+        std::optional<Rect> offsetColumnBounds;
+        PHLWINDOW fallbackWindow;
+        double fallbackSecondaryDistance = std::numeric_limits<double>::infinity();
+
+        const auto mergeBounds = [](std::optional<Rect>& bounds, const Rect& rect) {
+            if (rect.width <= 1.0 || rect.height <= 1.0)
+                return;
+            if (!bounds) {
+                bounds = rect;
+                return;
+            }
+
+            const double minX = std::min(bounds->x, rect.x);
+            const double minY = std::min(bounds->y, rect.y);
+            const double maxX = std::max(bounds->x + bounds->width, rect.x + rect.width);
+            const double maxY = std::max(bounds->y + bounds->height, rect.y + rect.height);
+            bounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+        };
+
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target)
+                continue;
+
+            const auto target = targetData->target.lock();
+            const auto window = target ? target->window() : PHLWINDOW{};
+            if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace ||
+                !target || target->floating())
+                continue;
+
+            if (!fallbackWindow) {
+                fallbackWindow = window;
+            }
+
+            const CBox liveBox = liveScrollingLayoutBoxForTarget(targetData->target, targetData->layoutBox);
+            const Rect liveRect = makeRect(liveBox.x, liveBox.y, liveBox.width, liveBox.height);
+            mergeBounds(liveColumnBounds, liveRect);
+
+            if (targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0) {
+                const Rect layoutRect = makeRect(targetData->layoutBox.x, targetData->layoutBox.y, targetData->layoutBox.width, targetData->layoutBox.height);
+                mergeBounds(offsetColumnBounds, shiftPrimary(layoutRect, -nativeOffset));
+            }
+
+            const double secondaryDistance = std::abs(rectSecondaryCenter(liveRect) - secondaryViewportCenter);
+            if (secondaryDistance < fallbackSecondaryDistance) {
+                fallbackSecondaryDistance = secondaryDistance;
+                fallbackWindow = window;
+            }
+        }
+
+        const PHLWINDOW focusWindow = columnFocusWindow ? columnFocusWindow : fallbackWindow;
+        if (!focusWindow)
+            continue;
+
+        const auto considerColumnBounds = [&](const std::optional<Rect>& bounds, double sourcePenalty) {
+            if (!bounds || bounds->width <= 1.0 || bounds->height <= 1.0)
+                return;
+
+            const double overlap = primaryOverlap(*bounds);
+            const bool intersectsViewport = overlap > 0.5;
+            const double centerDistance = std::abs(rectPrimaryCenter(*bounds) - viewportCenter);
+            const double secondaryDistance = std::abs(rectSecondaryCenter(*bounds) - secondaryViewportCenter);
+            const double visiblePenalty = intersectsViewport ? 0.0 : 200000.0;
+            const double centerInsideBonus = (viewportCenter >= rectPrimaryStart(*bounds) - 0.5 &&
+                                              viewportCenter <= rectPrimaryStart(*bounds) + rectPrimarySize(*bounds) + 0.5) ? -5000.0 : 0.0;
+            const double score = visiblePenalty + centerDistance + secondaryDistance * 0.01 + sourcePenalty + centerInsideBonus - std::min(overlap, 512.0) * 0.001;
+            if (!best.window || score < best.score) {
+                best.window = focusWindow;
+                best.score = score;
+            }
+        };
+
+        // Prefer the live target positions because they are the same boxes that
+        // Hyprland is about to render.  The offset-derived layout boxes are only
+        // a fallback for inactive workspaces whose live boxes have not been
+        // refreshed yet.
+        considerColumnBounds(liveColumnBounds, 0.0);
+        considerColumnBounds(offsetColumnBounds, 1000.0);
+    }
+
+    return best.window;
+}
+
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
     if (!window)
         return fallbackGlobal;
@@ -2215,255 +2361,6 @@ bool scrollingWindowIntersectsNativeViewport(const PHLWINDOW& window) {
 
     return rectHasVisibleOverlap(makeRect(targetBox.x, targetBox.y, targetBox.width, targetBox.height),
                                  makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height));
-}
-
-PHLWINDOW centeredScrollingFocusCandidateForWorkspace(const PHLWORKSPACE& workspace) {
-    if (!workspace || !workspace->m_space || getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
-        return {};
-
-    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return {};
-
-    CBox viewportBox = workspace->m_space->workArea();
-    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
-        viewportBox = scrolling->usableArea();
-    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
-        return {};
-
-    const Rect viewport = makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height);
-    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
-    const double viewportPrimaryCenter = horizontal ? viewport.centerX() : viewport.centerY();
-    const double viewportSecondaryCenter = horizontal ? viewport.centerY() : viewport.centerX();
-
-    const auto rectPrimaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerX() : rect.centerY(); };
-    const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
-
-    struct CenteredCandidate {
-        PHLWINDOW   window;
-        double      columnDistance = std::numeric_limits<double>::infinity();
-        double      tileDistance = std::numeric_limits<double>::infinity();
-        bool        lastFocused = false;
-        bool        activeFocus = false;
-        std::size_t columnIndex = 0;
-    };
-
-    std::optional<CenteredCandidate> best;
-    const auto liveFocus = Desktop::focusState()->window();
-
-    const auto validTiledWindowForTarget = [&](const SP<Layout::ITarget>& target) -> PHLWINDOW {
-        if (!target || target->floating())
-            return {};
-
-        const auto window = target->window();
-        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace)
-            return {};
-
-        const auto liveTarget = window->layoutTarget();
-        if (!liveTarget || liveTarget != target || liveTarget->floating())
-            return {};
-
-        return window;
-    };
-
-    const auto betterCenteredCandidate = [&](const CenteredCandidate& candidate, const CenteredCandidate& current) {
-        constexpr double DISTANCE_EPSILON = 0.5;
-        if (candidate.columnDistance + DISTANCE_EPSILON < current.columnDistance)
-            return true;
-        if (current.columnDistance + DISTANCE_EPSILON < candidate.columnDistance)
-            return false;
-
-        if (candidate.lastFocused != current.lastFocused)
-            return candidate.lastFocused;
-        if (candidate.activeFocus != current.activeFocus)
-            return candidate.activeFocus;
-
-        if (candidate.tileDistance + DISTANCE_EPSILON < current.tileDistance)
-            return true;
-        if (current.tileDistance + DISTANCE_EPSILON < candidate.tileDistance)
-            return false;
-
-        return candidate.columnIndex < current.columnIndex;
-    };
-
-    for (std::size_t columnIndex = 0; columnIndex < scrolling->m_scrollingData->columns.size(); ++columnIndex) {
-        const auto& column = scrolling->m_scrollingData->columns[columnIndex];
-        if (!column || column->targetDatas.empty())
-            continue;
-
-        using TargetDataPtr = std::remove_cvref_t<decltype(column->targetDatas.front())>;
-        struct TargetEntry {
-            TargetDataPtr targetData;
-            PHLWINDOW     window;
-            Rect          rect;
-        };
-
-        std::vector<TargetEntry> entries;
-        entries.reserve(column->targetDatas.size());
-        Rect columnBounds{};
-        bool hasColumnBounds = false;
-
-        for (const auto& targetData : column->targetDatas) {
-            const auto target = targetData ? targetData->target.lock() : SP<Layout::ITarget>{};
-            const auto window = validTiledWindowForTarget(target);
-            if (!window)
-                continue;
-
-            CBox layoutBox = target->position();
-            if (layoutBox.width <= 1.0 || layoutBox.height <= 1.0) {
-                if (targetData && targetData->layoutBox.width > 1.0 && targetData->layoutBox.height > 1.0)
-                    layoutBox = targetData->layoutBox;
-            }
-            if (layoutBox.width <= 1.0 || layoutBox.height <= 1.0)
-                continue;
-
-            const Rect rect = makeRect(layoutBox.x, layoutBox.y, layoutBox.width, layoutBox.height);
-            entries.push_back({targetData, window, rect});
-
-            if (!hasColumnBounds) {
-                columnBounds = rect;
-                hasColumnBounds = true;
-            } else {
-                const double minX = std::min(columnBounds.x, rect.x);
-                const double minY = std::min(columnBounds.y, rect.y);
-                const double maxX = std::max(columnBounds.x + columnBounds.width, rect.x + rect.width);
-                const double maxY = std::max(columnBounds.y + columnBounds.height, rect.y + rect.height);
-                columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
-            }
-        }
-
-        if (!hasColumnBounds || entries.empty() || !rectHasVisibleOverlap(columnBounds, viewport, 0.5))
-            continue;
-
-        const auto lastFocusedTarget = column->lastFocusedTarget.lock();
-        const double columnDistance = std::abs(rectPrimaryCenter(columnBounds) - viewportPrimaryCenter);
-        for (const auto& entry : entries) {
-            CenteredCandidate candidate{
-                .window = entry.window,
-                .columnDistance = columnDistance,
-                .tileDistance = std::abs(rectSecondaryCenter(entry.rect) - viewportSecondaryCenter),
-                .lastFocused = lastFocusedTarget && entry.targetData == lastFocusedTarget,
-                .activeFocus = entry.window == liveFocus,
-                .columnIndex = columnIndex,
-            };
-
-            if (!best || betterCenteredCandidate(candidate, *best))
-                best = candidate;
-        }
-    }
-
-    return best ? best->window : PHLWINDOW{};
-}
-
-template <typename OverviewStateLike>
-PHLWINDOW centeredOverviewStateFocusCandidateForWorkspace(const OverviewStateLike& state, const PHLWORKSPACE& workspace, const PHLMONITOR& monitor) {
-    if (!workspace || !monitor || getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
-        return {};
-
-    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
-    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return {};
-
-    Rect viewport = makeRect(monitor->m_position.x, monitor->m_position.y, monitor->m_size.x, monitor->m_size.y);
-    for (const auto& placeholder : state.emptyWorkspacePlaceholders) {
-        if (!placeholder.backingOnly || !placeholder.monitor || placeholder.monitor != monitor || placeholder.workspace != workspace ||
-            placeholder.targetGlobal.width <= 1.0 || placeholder.targetGlobal.height <= 1.0)
-            continue;
-
-        // The backing-only placeholder is the exact scaled 1.0 scrolling viewport
-        // used by the direct niri overview.  Using it here matches the visual
-        // focus choice to the workspace strip instead of Hyprland's stale native
-        // last-focus candidate from before the workspace became active.
-        viewport = placeholder.targetGlobal;
-        break;
-    }
-
-    const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
-    const double viewportPrimaryCenter = horizontal ? viewport.centerX() : viewport.centerY();
-    const double viewportSecondaryCenter = horizontal ? viewport.centerY() : viewport.centerX();
-    const double viewportPrimaryStart = horizontal ? viewport.x : viewport.y;
-    const double viewportPrimaryEnd = horizontal ? viewport.x + viewport.width : viewport.y + viewport.height;
-
-    const auto rectPrimaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerX() : rect.centerY(); };
-    const auto rectSecondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
-    const auto rectPrimaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
-    const auto rectPrimaryEnd = [&](const Rect& rect) { return horizontal ? rect.x + rect.width : rect.y + rect.height; };
-
-    struct VisualCenteredCandidate {
-        PHLWINDOW window;
-        double    primaryDistance = std::numeric_limits<double>::infinity();
-        double    secondaryDistance = std::numeric_limits<double>::infinity();
-        double    visiblePrimaryOverlap = 0.0;
-        bool      lastFocused = false;
-        bool      activeFocus = false;
-    };
-
-    const auto liveFocus = Desktop::focusState()->window();
-    std::optional<VisualCenteredCandidate> best;
-
-    const auto better = [](const VisualCenteredCandidate& candidate, const VisualCenteredCandidate& current) {
-        constexpr double DISTANCE_EPSILON = 0.5;
-        constexpr double OVERLAP_EPSILON = 0.5;
-
-        if (candidate.primaryDistance + DISTANCE_EPSILON < current.primaryDistance)
-            return true;
-        if (current.primaryDistance + DISTANCE_EPSILON < candidate.primaryDistance)
-            return false;
-
-        if (candidate.visiblePrimaryOverlap > current.visiblePrimaryOverlap + OVERLAP_EPSILON)
-            return true;
-        if (current.visiblePrimaryOverlap > candidate.visiblePrimaryOverlap + OVERLAP_EPSILON)
-            return false;
-
-        if (candidate.secondaryDistance + DISTANCE_EPSILON < current.secondaryDistance)
-            return true;
-        if (current.secondaryDistance + DISTANCE_EPSILON < candidate.secondaryDistance)
-            return false;
-
-        if (candidate.lastFocused != current.lastFocused)
-            return candidate.lastFocused;
-        if (candidate.activeFocus != current.activeFocus)
-            return candidate.activeFocus;
-
-        return false;
-    };
-
-    for (const auto& managed : state.windows) {
-        const auto& window = managed.window;
-        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace ||
-            managed.targetGlobal.width <= 1.0 || managed.targetGlobal.height <= 1.0)
-            continue;
-
-        const auto target = window->layoutTarget();
-        if (!target || target->floating())
-            continue;
-
-        if (!rectHasVisibleOverlap(managed.targetGlobal, viewport, 0.5))
-            continue;
-
-        const double visiblePrimaryOverlap = std::max(0.0, std::min(rectPrimaryEnd(managed.targetGlobal), viewportPrimaryEnd) -
-                                                            std::max(rectPrimaryStart(managed.targetGlobal), viewportPrimaryStart));
-        if (visiblePrimaryOverlap <= 0.5)
-            continue;
-
-        const auto targetData = scrolling->dataFor(target);
-        const auto column = targetData && targetData->column ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-        const auto lastFocusedTarget = column ? column->lastFocusedTarget.lock() : nullptr;
-
-        VisualCenteredCandidate candidate{
-            .window = window,
-            .primaryDistance = std::abs(rectPrimaryCenter(managed.targetGlobal) - viewportPrimaryCenter),
-            .secondaryDistance = std::abs(rectSecondaryCenter(managed.targetGlobal) - viewportSecondaryCenter),
-            .visiblePrimaryOverlap = visiblePrimaryOverlap,
-            .lastFocused = lastFocusedTarget && targetData == lastFocusedTarget,
-            .activeFocus = window == liveFocus,
-        };
-
-        if (!best || better(candidate, *best))
-            best = candidate;
-    }
-
-    return best ? best->window : PHLWINDOW{};
 }
 
 std::size_t scrollingWorkspaceColumnCount(const PHLWORKSPACE& workspace) {
@@ -7130,43 +7027,31 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         .syntheticEmpty = syntheticEmpty,
     }};
 
-    const bool preferCenteredNiriFocus = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) && workspace && isScrollingWorkspace(workspace) &&
-        getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-    PHLWINDOW targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
+    const bool shouldResolveCenteredFit0Focus = !preferredTargetFocus && workspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        isScrollingWorkspace(workspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 && !syntheticEmpty;
+    const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(workspace) : PHLWINDOW{};
+    const auto fallbackTargetFocus = focusCandidateForWorkspace(workspace);
+    const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
         preferredTargetFocus :
-        focusCandidateForWorkspace(workspace);
-    State target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
+        centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
+
+    if (debugLogsEnabled() && shouldResolveCenteredFit0Focus) {
+        std::ostringstream out;
+        out << "[hymission] focus-fit0 transition begin focus resolve"
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " centered=" << debugWindowLabel(centeredFit0Focus)
+            << " fallback=" << debugWindowLabel(fallbackTargetFocus)
+            << " chosen=" << debugWindowLabel(targetFocus);
+        if (auto* scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+            out << " offset=" << scrolling->m_scrollingData->controller->getOffset()
+                << " columns=" << scrolling->m_scrollingData->columns.size();
+        }
+        debugLog(out.str());
+    }
+
+    State      target = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, targetFocus);
     if (target.participatingMonitors.empty())
         return false;
-
-    if (preferCenteredNiriFocus && !preferredTargetFocus) {
-        // focus_fit_method=0 keeps Hyprland's native centered camera.  Pick the
-        // target focus from the native scrolling viewport first, not from the
-        // scaled overview placeholder.  The placeholder spans the whole 1.0
-        // viewport, so two 0.5 columns can tie visually even though Hyprland's
-        // native camera is centered on only one of them.
-        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(workspace);
-        if (!centeredNiriFocus)
-            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(target, workspace, monitor);
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] focus-fit0 transition target focus resolve"
-                << " workspace=" << debugWorkspaceLabel(workspace)
-                << " initial=" << debugWindowLabel(targetFocus)
-                << " nativeCentered=" << debugWindowLabel(centeredNiriFocus)
-                << " preferred=<null>";
-            debugLog(out.str());
-        }
-
-        if (centeredNiriFocus && centeredNiriFocus != targetFocus) {
-            State centeredTarget = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, centeredNiriFocus);
-            if (!centeredTarget.participatingMonitors.empty()) {
-                targetFocus = centeredNiriFocus;
-                target = std::move(centeredTarget);
-            }
-        }
-    }
 
     if (workspace)
         target.ownerWorkspace = workspace;
@@ -7618,32 +7503,23 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         targetFocus = m_workspaceTransition.targetState.focusDuringOverview;
     const bool targetIsEmptyNiriWorkspace = niriModeEnabled() && m_state.collectionPolicy.onlyActiveWorkspace &&
         (m_workspaceTransition.targetWorkspaceSyntheticEmpty || m_workspaceTransition.targetState.windows.empty());
-    const bool preferCenteredNiriFocus = !targetIsEmptyNiriWorkspace && !preserveTargetEdgeCamera &&
-        m_workspaceTransition.targetState.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_workspaceTransition.targetState) && targetWorkspace &&
-        isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-    if (preferCenteredNiriFocus) {
-        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
-        if (!centeredNiriFocus)
-            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(m_workspaceTransition.targetState, targetWorkspace, transitionMonitor);
-        if (centeredNiriFocus)
-            targetFocus = centeredNiriFocus;
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] focus-fit0 early target focus resolve"
-                << " workspace=" << debugWorkspaceLabel(targetWorkspace)
-                << " chosen=" << debugWindowLabel(targetFocus)
-                << " nativeCentered=" << debugWindowLabel(centeredNiriFocus);
-            debugLog(out.str());
-        }
-    }
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
     else if (!preserveTargetEdgeCamera && !targetFocus) {
-        if (preferCenteredNiriFocus)
-            targetFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
-        if (!targetFocus)
-            targetFocus = focusCandidateForWorkspace(targetWorkspace);
+        const bool shouldResolveCenteredFit0Focus = targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+        const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) : PHLWINDOW{};
+        const auto fallbackTargetFocus = focusCandidateForWorkspace(targetWorkspace);
+        targetFocus = centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
+        if (debugLogsEnabled() && shouldResolveCenteredFit0Focus) {
+            std::ostringstream out;
+            out << "[hymission] focus-fit0 early activation focus resolve"
+                << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                << " centered=" << debugWindowLabel(centeredFit0Focus)
+                << " fallback=" << debugWindowLabel(fallbackTargetFocus)
+                << " chosen=" << debugWindowLabel(targetFocus);
+            debugLog(out.str());
+        }
     }
 
     ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
@@ -7806,25 +7682,6 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             next.focusDuringOverview->m_workspace == targetWorkspace)
             intendedTargetFocus = next.focusDuringOverview;
 
-        const bool preferCenteredNiriFocus = !preserveTargetEdgeCamera && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && targetWorkspace &&
-            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-        if (preferCenteredNiriFocus) {
-            PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
-            if (!centeredNiriFocus)
-                centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, targetWorkspace, transitionMonitor);
-            if (centeredNiriFocus)
-                intendedTargetFocus = centeredNiriFocus;
-
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] focus-fit0 commit intended focus resolve"
-                    << " workspace=" << debugWorkspaceLabel(targetWorkspace)
-                    << " chosen=" << debugWindowLabel(intendedTargetFocus)
-                    << " nativeCentered=" << debugWindowLabel(centeredNiriFocus);
-                debugLog(out.str());
-            }
-        }
-
         const bool preserveDirectNiriFocus =
             intendedTargetFocus && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
         if (preserveDirectNiriFocus)
@@ -7865,12 +7722,20 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         else if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
         else if (!preserveTargetEdgeCamera) {
-            const bool preferCenteredNiriFocus = next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && targetWorkspace &&
+            const bool shouldResolveCenteredFit0Focus = targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
                 isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-            if (preferCenteredNiriFocus)
-                targetFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
-            if (!targetFocus)
-                targetFocus = focusCandidateForWorkspace(targetWorkspace);
+            const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) : PHLWINDOW{};
+            const auto fallbackTargetFocus = focusCandidateForWorkspace(targetWorkspace);
+            targetFocus = centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
+            if (debugLogsEnabled() && shouldResolveCenteredFit0Focus) {
+                std::ostringstream out;
+                out << "[hymission] focus-fit0 commit focus resolve"
+                    << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                    << " centered=" << debugWindowLabel(centeredFit0Focus)
+                    << " fallback=" << debugWindowLabel(fallbackTargetFocus)
+                    << " chosen=" << debugWindowLabel(targetFocus);
+                debugLog(out.str());
+            }
         }
         const bool deferTargetFocusScrollSyncForEdgeRelease = targetStartedEdgeCamera && targetFocus && !preserveTargetEdgeCamera &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace) &&
@@ -12029,38 +11894,6 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
         return;
     }
 
-    const bool liveFocusAlreadyTargetsOpenWorkspace = preferredSelectedWindow && preferredSelectedWindow->m_isMapped &&
-        next.ownerWorkspace && preferredSelectedWindow->m_workspace == next.ownerWorkspace;
-    const bool preferCenteredNiriFocusOnOpen = !liveFocusAlreadyTargetsOpenWorkspace && next.collectionPolicy.onlyActiveWorkspace &&
-        niriModeAppliesToState(next) && next.ownerWorkspace && isScrollingWorkspace(next.ownerWorkspace) &&
-        getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-    PHLWINDOW focusFit0OpenFocus;
-    if (preferCenteredNiriFocusOnOpen) {
-        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(next.ownerWorkspace);
-        if (!centeredNiriFocus)
-            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, next.ownerWorkspace, monitor);
-
-        if (centeredNiriFocus && selectWindowInState(next, centeredNiriFocus)) {
-            next.focusDuringOverview = centeredNiriFocus;
-            next.ownerWorkspace->m_lastFocusedWindow = centeredNiriFocus;
-            focusFit0OpenFocus = centeredNiriFocus;
-        }
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] focus-fit0 open focus resolve"
-                << " workspace=" << debugWorkspaceLabel(next.ownerWorkspace)
-                << " liveFocus=" << debugWindowLabel(preferredSelectedWindow)
-                << " centered=" << debugWindowLabel(centeredNiriFocus)
-                << " selected=";
-            if (next.selectedIndex && *next.selectedIndex < next.windows.size())
-                out << debugWindowLabel(next.windows[*next.selectedIndex].window);
-            else
-                out << "<null>";
-            debugLog(out.str());
-        }
-    }
-
     if (!activateHooks()) {
         setDamageTrackingOverride(false);
         return;
@@ -12095,15 +11928,6 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
-    if (focusFit0OpenFocus && m_state.focusDuringOverview == focusFit0OpenFocus) {
-        if (Desktop::focusState()->window() != focusFit0OpenFocus) {
-            m_pendingLiveFocusWorkspaceChangeTarget = focusFit0OpenFocus;
-            focusWindowCompat(focusFit0OpenFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
-            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == focusFit0OpenFocus)
-                m_pendingLiveFocusWorkspaceChangeTarget.reset();
-        }
-        (void)syncScrollingWorkspaceSpotOnWindow(focusFit0OpenFocus, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
-    }
     g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
     if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
         armOverviewOpenInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK);
