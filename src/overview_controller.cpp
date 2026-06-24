@@ -7140,9 +7140,24 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         return false;
 
     if (preferCenteredNiriFocus && !preferredTargetFocus) {
-        PHLWINDOW centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(target, workspace, monitor);
+        // focus_fit_method=0 keeps Hyprland's native centered camera.  Pick the
+        // target focus from the native scrolling viewport first, not from the
+        // scaled overview placeholder.  The placeholder spans the whole 1.0
+        // viewport, so two 0.5 columns can tie visually even though Hyprland's
+        // native camera is centered on only one of them.
+        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(workspace);
         if (!centeredNiriFocus)
-            centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(workspace);
+            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(target, workspace, monitor);
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] focus-fit0 transition target focus resolve"
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " initial=" << debugWindowLabel(targetFocus)
+                << " nativeCentered=" << debugWindowLabel(centeredNiriFocus)
+                << " preferred=<null>";
+            debugLog(out.str());
+        }
 
         if (centeredNiriFocus && centeredNiriFocus != targetFocus) {
             State centeredTarget = buildState(anchorMonitor, m_state.collectionPolicy.requestedScope, overrides, true, false, centeredNiriFocus);
@@ -7607,8 +7622,20 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         m_workspaceTransition.targetState.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_workspaceTransition.targetState) && targetWorkspace &&
         isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
     if (preferCenteredNiriFocus) {
-        if (const auto centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(m_workspaceTransition.targetState, targetWorkspace, transitionMonitor))
+        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
+        if (!centeredNiriFocus)
+            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(m_workspaceTransition.targetState, targetWorkspace, transitionMonitor);
+        if (centeredNiriFocus)
             targetFocus = centeredNiriFocus;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] focus-fit0 early target focus resolve"
+                << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                << " chosen=" << debugWindowLabel(targetFocus)
+                << " nativeCentered=" << debugWindowLabel(centeredNiriFocus);
+            debugLog(out.str());
+        }
     }
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
@@ -7782,8 +7809,20 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         const bool preferCenteredNiriFocus = !preserveTargetEdgeCamera && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && targetWorkspace &&
             isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
         if (preferCenteredNiriFocus) {
-            if (const auto centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, targetWorkspace, transitionMonitor))
+            PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(targetWorkspace);
+            if (!centeredNiriFocus)
+                centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, targetWorkspace, transitionMonitor);
+            if (centeredNiriFocus)
                 intendedTargetFocus = centeredNiriFocus;
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] focus-fit0 commit intended focus resolve"
+                    << " workspace=" << debugWorkspaceLabel(targetWorkspace)
+                    << " chosen=" << debugWindowLabel(intendedTargetFocus)
+                    << " nativeCentered=" << debugWindowLabel(centeredNiriFocus);
+                debugLog(out.str());
+            }
         }
 
         const bool preserveDirectNiriFocus =
@@ -11990,6 +12029,38 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
         return;
     }
 
+    const bool liveFocusAlreadyTargetsOpenWorkspace = preferredSelectedWindow && preferredSelectedWindow->m_isMapped &&
+        next.ownerWorkspace && preferredSelectedWindow->m_workspace == next.ownerWorkspace;
+    const bool preferCenteredNiriFocusOnOpen = !liveFocusAlreadyTargetsOpenWorkspace && next.collectionPolicy.onlyActiveWorkspace &&
+        niriModeAppliesToState(next) && next.ownerWorkspace && isScrollingWorkspace(next.ownerWorkspace) &&
+        getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
+    PHLWINDOW focusFit0OpenFocus;
+    if (preferCenteredNiriFocusOnOpen) {
+        PHLWINDOW centeredNiriFocus = centeredScrollingFocusCandidateForWorkspace(next.ownerWorkspace);
+        if (!centeredNiriFocus)
+            centeredNiriFocus = centeredOverviewStateFocusCandidateForWorkspace(next, next.ownerWorkspace, monitor);
+
+        if (centeredNiriFocus && selectWindowInState(next, centeredNiriFocus)) {
+            next.focusDuringOverview = centeredNiriFocus;
+            next.ownerWorkspace->m_lastFocusedWindow = centeredNiriFocus;
+            focusFit0OpenFocus = centeredNiriFocus;
+        }
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] focus-fit0 open focus resolve"
+                << " workspace=" << debugWorkspaceLabel(next.ownerWorkspace)
+                << " liveFocus=" << debugWindowLabel(preferredSelectedWindow)
+                << " centered=" << debugWindowLabel(centeredNiriFocus)
+                << " selected=";
+            if (next.selectedIndex && *next.selectedIndex < next.windows.size())
+                out << debugWindowLabel(next.windows[*next.selectedIndex].window);
+            else
+                out << "<null>";
+            debugLog(out.str());
+        }
+    }
+
     if (!activateHooks()) {
         setDamageTrackingOverride(false);
         return;
@@ -12024,6 +12095,15 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
+    if (focusFit0OpenFocus && m_state.focusDuringOverview == focusFit0OpenFocus) {
+        if (Desktop::focusState()->window() != focusFit0OpenFocus) {
+            m_pendingLiveFocusWorkspaceChangeTarget = focusFit0OpenFocus;
+            focusWindowCompat(focusFit0OpenFocus, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == focusFit0OpenFocus)
+                m_pendingLiveFocusWorkspaceChangeTarget.reset();
+        }
+        (void)syncScrollingWorkspaceSpotOnWindow(focusFit0OpenFocus, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
+    }
     g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
     if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
         armOverviewOpenInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK);
