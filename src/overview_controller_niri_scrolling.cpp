@@ -7888,6 +7888,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                    targetHeight);
 
         }
+
+        // Remember the mapped 1.0 workspace viewport for every direct-niri
+        // window, not just floating overlays.  The focus_fit_method=0 workspace
+        // switch selection path needs this viewport to decide which partial
+        // tiled column is visually centered on the newly-switched strip.
+        niriWorkspaceViewportGlobalByWindowIndex[windowIndex] = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
+                                                                        targetMonitor->m_position.y + workspaceViewportLocal.y,
+                                                                        workspaceViewportLocal.width,
+                                                                        workspaceViewportLocal.height);
         // Pinned windows are monitor-global overlays. They must not claim the
         // per-workspace wallpaper/backing placeholder, because their slot path
         // does not carry the scrolling tape overflow axis. If a pinned window is
@@ -8628,7 +8637,83 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.participatingMonitors = std::move(activeParticipatingMonitors);
     buildWorkspaceStripEntries(state);
 
-    const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : focusedWindow;
+    const auto centeredFit0SelectionTarget = [&]() -> PHLWINDOW {
+        if (preferredSelectedWindow || getConfigInt(m_handle, "scrolling:focus_fit_method", 0) != 0 || !state.collectionPolicy.onlyActiveWorkspace ||
+            !usesDirectNiriScrollingOverview(state) || !state.ownerWorkspace || !isScrollingWorkspace(state.ownerWorkspace))
+            return {};
+
+        auto* const scrolling = scrollingAlgorithmForWorkspace(state.ownerWorkspace);
+        if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+            return {};
+
+        const bool horizontal = scrolling->m_scrollingData->controller->isPrimaryHorizontal();
+        const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+        const auto primarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
+        const auto primaryCenter = [&](const Rect& rect) { return primaryStart(rect) + primarySize(rect) * 0.5; };
+        const auto secondaryCenter = [&](const Rect& rect) { return horizontal ? rect.centerY() : rect.centerX(); };
+        const auto primaryOverlap = [&](const Rect& rect, const Rect& viewport) {
+            const double start = primaryStart(rect);
+            const double end = start + primarySize(rect);
+            const double viewportStart = primaryStart(viewport);
+            const double viewportEnd = viewportStart + primarySize(viewport);
+            return std::max(0.0, std::min(end, viewportEnd) - std::max(start, viewportStart));
+        };
+
+        PHLWINDOW bestWindow;
+        double    bestScore = std::numeric_limits<double>::infinity();
+        Rect      bestRect{};
+        Rect      bestViewport{};
+
+        for (const auto& managed : state.windows) {
+            const auto& window = managed.window;
+            if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() ||
+                window->m_workspace != state.ownerWorkspace || isFloatingOverviewWindow(window))
+                continue;
+
+            const auto target = window->layoutTarget();
+            if (!target || target->floating())
+                continue;
+
+            const auto viewportIt = niriWorkspaceViewportGlobalByWindowIndex.find(managed.slot.index);
+            const Rect viewport = viewportIt != niriWorkspaceViewportGlobalByWindowIndex.end() ? viewportIt->second : Rect{};
+            if (viewport.width <= 1.0 || viewport.height <= 1.0 || managed.targetGlobal.width <= 1.0 || managed.targetGlobal.height <= 1.0)
+                continue;
+
+            const double overlap = primaryOverlap(managed.targetGlobal, viewport);
+            if (overlap <= 0.5)
+                continue;
+
+            const double viewportCenter = primaryCenter(viewport);
+            const double rectStart = primaryStart(managed.targetGlobal);
+            const double rectEnd = rectStart + primarySize(managed.targetGlobal);
+            const bool centerInside = viewportCenter >= rectStart - 0.5 && viewportCenter <= rectEnd + 0.5;
+            const double primaryDistance = std::abs(primaryCenter(managed.targetGlobal) - viewportCenter);
+            const double secondaryDistance = std::abs(secondaryCenter(managed.targetGlobal) - secondaryCenter(viewport));
+            const double score = primaryDistance + secondaryDistance * 0.02 - (centerInside ? 10000.0 : 0.0) - std::min(overlap, 512.0) * 0.01;
+            if (!bestWindow || score < bestScore) {
+                bestWindow = window;
+                bestScore = score;
+                bestRect = managed.targetGlobal;
+                bestViewport = viewport;
+            }
+        }
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] focus-fit0 build-state centered selection"
+                << " owner=" << debugWorkspaceLabel(state.ownerWorkspace)
+                << " chosen=" << debugWindowLabel(bestWindow)
+                << " score=" << bestScore
+                << " rect=" << rectToString(bestRect)
+                << " viewport=" << rectToString(bestViewport)
+                << " windows=" << state.windows.size();
+            debugLog(out.str());
+        }
+
+        return bestWindow;
+    }();
+
+    const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : focusedWindow);
     const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
     const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
     const auto edgeCameraFocusCandidate = selectionTarget ? selectionTarget : focusedWindow;

@@ -7060,13 +7060,29 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     const bool targetWorkspaceHasSingleScrollingColumn = scrollingWorkspaceHasSingleColumn(workspace);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
-    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn;
+    const bool targetHasResolvedFocus = target.focusDuringOverview && target.focusDuringOverview->m_isMapped && workspace &&
+        target.focusDuringOverview->m_workspace == workspace;
+    const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn && !targetHasResolvedFocus;
+    if (debugLogsEnabled() && target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) && workspace && isScrollingWorkspace(workspace) &&
+        getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0) {
+        std::ostringstream out;
+        out << "[hymission] focus-fit0 target edge-camera decision"
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " centered=" << debugWindowLabel(centeredFit0Focus)
+            << " fallback=" << debugWindowLabel(fallbackTargetFocus)
+            << " targetFocus=" << debugWindowLabel(targetFocus)
+            << " targetStateFocus=" << debugWindowLabel(target.focusDuringOverview)
+            << " edgeCamera=" << (targetOwnerEdgeCameraActive ? 1 : 0)
+            << " singleColumn=" << (targetWorkspaceHasSingleScrollingColumn ? 1 : 0)
+            << " resolvedFocus=" << (targetHasResolvedFocus ? 1 : 0)
+            << " preserve=" << (preserveTargetEdgeCamera ? 1 : 0);
+        debugLog(out.str());
+    }
     if (preserveTargetEdgeCamera) {
         // A multi-column scrolling workspace in Hyprland's edge-camera range is
-        // the scroll-past empty viewport. Switching away and back must preserve
-        // that focusless camera state even if the remembered/last-focused leaf can
-        // be rebuilt into an overview-visible rect. Only single-column workspaces
-        // are exempt so centered partial single columns still get their focus handoff.
+        // the scroll-past empty viewport.  Do not preserve that focusless state
+        // when focus_fit_method=0 has resolved a visible centered partial column;
+        // that case is a real focused strip position, not an empty edge camera.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
     }
