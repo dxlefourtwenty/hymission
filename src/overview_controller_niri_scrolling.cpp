@@ -6307,9 +6307,9 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     if (niriModeAppliesToState(state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
         const CBox workAreaBox = workspace->m_space->workArea();
         Rect       baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-        if (state.collectionPolicy.onlyActiveWorkspace && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0) {
-            baseGlobal = makeRect(monitor->m_position.x, monitor->m_position.y, monitor->m_size.x, monitor->m_size.y);
-        }
+        // Keep empty/backing viewport sizing independent of Hyprland's
+        // scrolling focus policy.  focus_fit_method=0 should center differently,
+        // not use a different monitor-sized base box than focus_fit_method=1.
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
             const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
             const LayoutConfig config = layoutConfigForState(state);
@@ -7631,35 +7631,38 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const Rect content = overviewContentRectForMonitor(candidateMonitor, state);
             const double visibleScale = niriMultiWorkspaceScale();
             const double laneHeight = std::max(1.0, content.height * visibleScale);
-            const bool fitFocusMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
             const double baseGap = niriWorkspaceGap();
             const double zoomedLaneHeight = laneHeight * niriActiveWorkspaceLayoutScale;
             double gap = baseGap;
-            if (fitFocusMethod) {
-                PHLWORKSPACE baseWorkspace;
-                if (const auto workspaceIt = workspaceById.find(centerWorkspaceId); workspaceIt != workspaceById.end())
-                    baseWorkspace = workspaceIt->second;
-                if (!baseWorkspace && !monitorWorkspaces.empty())
-                    baseWorkspace = monitorWorkspaces.front();
 
-                if (baseWorkspace && baseWorkspace->m_space) {
-                    const CBox workAreaBox = baseWorkspace->m_space->workArea();
-                    const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-                    const Rect lanePreview = makeRect(content.x, content.y, content.width, laneHeight);
-                    if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
-                        const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
-                        double centerScale = niriOverviewPreviewScale(lanePreview, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
-                        const double viewportScale = lanePreview.width / std::max(1.0, baseGlobal.width * 4.0);
-                        centerScale = std::max(config.minSlotScale, std::min({centerScale, visibleScale, viewportScale}));
-                        centerScale *= niriActiveWorkspaceLayoutScale;
+            // Both scrolling focus modes should render the same overview-sized
+            // workspace viewports.  focus_fit_method only changes the native
+            // scrolling camera/anchor policy.  Keep the lane spacing large
+            // enough for the fit-sized viewport in center mode too, otherwise
+            // changing 1 -> 0 makes adjacent viewport rows look smaller/closer.
+            PHLWORKSPACE baseWorkspace;
+            if (const auto workspaceIt = workspaceById.find(centerWorkspaceId); workspaceIt != workspaceById.end())
+                baseWorkspace = workspaceIt->second;
+            if (!baseWorkspace && !monitorWorkspaces.empty())
+                baseWorkspace = monitorWorkspaces.front();
 
-                        const double fitScale =
-                            std::max(config.minSlotScale, std::min(lanePreview.width / baseGlobal.width, lanePreview.height / baseGlobal.height)) *
-                            niriActiveWorkspaceLayoutScale;
-                        const double centerViewportHeight = baseGlobal.height * centerScale;
-                        const double fitViewportHeight = baseGlobal.height * fitScale;
-                        gap = std::max(baseGap, baseGap + fitViewportHeight - centerViewportHeight);
-                    }
+            if (baseWorkspace && baseWorkspace->m_space) {
+                const CBox workAreaBox = baseWorkspace->m_space->workArea();
+                const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+                const Rect lanePreview = makeRect(content.x, content.y, content.width, laneHeight);
+                if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
+                    const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
+                    double centerScale = niriOverviewPreviewScale(lanePreview, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
+                    const double viewportScale = lanePreview.width / std::max(1.0, baseGlobal.width * 4.0);
+                    centerScale = std::max(config.minSlotScale, std::min({centerScale, visibleScale, viewportScale}));
+                    centerScale *= niriActiveWorkspaceLayoutScale;
+
+                    const double fitScale =
+                        std::max(config.minSlotScale, std::min(lanePreview.width / baseGlobal.width, lanePreview.height / baseGlobal.height)) *
+                        niriActiveWorkspaceLayoutScale;
+                    const double centerViewportHeight = baseGlobal.height * centerScale;
+                    const double fitViewportHeight = baseGlobal.height * fitScale;
+                    gap = std::max(baseGap, baseGap + fitViewportHeight - centerViewportHeight);
                 }
             }
             const double laneStep = std::max(1.0, zoomedLaneHeight + gap);
@@ -7802,8 +7805,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         if (baseGlobal.width <= 1.0 || baseGlobal.height <= 1.0)
             return std::nullopt;
 
-        const bool fitModeViewport = !g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
-        double fitModeViewportScale = 0.0;
+        const bool fitSizedViewport = !g_niriStripSnapshotSingleWorkspaceOnly && overflowAxis;
+        double fitSizedViewportScale = 0.0;
         double scale = niriOverviewPreviewScale(previewArea, baseGlobal, config.maxPreviewScale, config.minSlotScale, overflowAxis);
         if (overflowAxis) {
             if (g_niriStripSnapshotSingleWorkspaceOnly) {
@@ -7813,9 +7816,13 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 const double baseLength = *overflowAxis == GestureAxis::Vertical ? baseGlobal.height : baseGlobal.width;
                 const double viewportScale = previewLength / std::max(1.0, baseLength * visibleViewportCount);
                 scale = std::max(config.minSlotScale, std::min(scale * stripZoom, viewportScale));
-            } else if (fitModeViewport) {
+            } else if (fitSizedViewport) {
+                // focus_fit_method=0 centers the focused column, while =1 fits
+                // the focused group.  That should not change the overview zoom.
+                // Use the same full-viewport fit scale for both methods and let
+                // scrollingOverviewTapeRowGeometryForWindow decide the anchor.
                 const double fitScale = std::min(previewArea.width / baseGlobal.width, previewArea.height / baseGlobal.height);
-                fitModeViewportScale = fitScale;
+                fitSizedViewportScale = fitScale;
                 scale = std::max(config.minSlotScale, fitScale);
             } else {
                 const double maxNiriScale = niriMultiWorkspaceScale();
@@ -7868,8 +7875,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         const double targetCenterY = viewportY + (sourceGlobal.centerY() - baseGlobal.y) * scale;
         Rect targetLocal = makeRect(targetCenterX - targetWidth * 0.5, targetCenterY - targetHeight * 0.5, targetWidth, targetHeight);
         Rect workspaceViewportLocal = makeRect(viewportX, viewportY, baseGlobal.width * scale, baseGlobal.height * scale);
-        if (fitModeViewport) {
-            const double viewportScale = fitModeViewportScale > 0.0 ? fitModeViewportScale * niriActiveWorkspaceLayoutScale : scale;
+        if (fitSizedViewport) {
+            const double viewportScale = fitSizedViewportScale > 0.0 ? fitSizedViewportScale * niriActiveWorkspaceLayoutScale : scale;
             Rect viewportLocal = makeRect(previewArea.centerX() - baseGlobal.width * viewportScale * 0.5,
                                           previewArea.centerY() - baseGlobal.height * viewportScale * 0.5,
                                           baseGlobal.width * viewportScale,
