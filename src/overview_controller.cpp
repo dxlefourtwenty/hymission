@@ -529,6 +529,102 @@ std::string getConfigString(HANDLE handle, const char* name, std::string fallbac
     return fallback;
 }
 
+
+std::unordered_map<const void*, uint64_t> g_openOverviewLayoutConfigSignatures;
+
+uint64_t mixSignatureValue(uint64_t hash, uint64_t value) {
+    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+    return hash;
+}
+
+uint64_t stableStringSignature(std::string value) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : value) {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+uint64_t layoutAffectingConfigSignature(HANDLE handle) {
+    uint64_t hash = 1469598103934665603ULL;
+
+    const auto mixInt = [&](const char* name, long fallback) {
+        hash = mixSignatureValue(hash, stableStringSignature(name));
+        hash = mixSignatureValue(hash, static_cast<uint64_t>(getConfigInt(handle, name, fallback)));
+    };
+    const auto mixFloat = [&](const char* name, double fallback) {
+        hash = mixSignatureValue(hash, stableStringSignature(name));
+        hash = mixSignatureValue(hash, static_cast<uint64_t>(std::llround(getConfigFloat(handle, name, fallback) * 1000000.0)));
+    };
+    const auto mixString = [&](const char* name, const std::string& fallback) {
+        hash = mixSignatureValue(hash, stableStringSignature(name));
+        hash = mixSignatureValue(hash, stableStringSignature(getConfigString(handle, name, fallback)));
+    };
+
+    mixInt("plugin:hymission:outer_padding", 32);
+    mixInt("plugin:hymission:outer_padding_top", 92);
+    mixInt("plugin:hymission:outer_padding_right", 32);
+    mixInt("plugin:hymission:outer_padding_bottom", 32);
+    mixInt("plugin:hymission:outer_padding_left", 32);
+    mixInt("plugin:hymission:row_spacing", 32);
+    mixInt("plugin:hymission:column_spacing", 32);
+    mixInt("plugin:hymission:min_window_length", 120);
+    mixInt("plugin:hymission:min_preview_short_edge", 32);
+    mixFloat("plugin:hymission:small_window_boost", 1.35);
+    mixFloat("plugin:hymission:max_preview_scale", 0.95);
+    mixFloat("plugin:hymission:workspace_overview_max_preview_scale", 0.95);
+    mixFloat("plugin:hymission:min_slot_scale", 0.10);
+    mixFloat("plugin:hymission:natural_scale_flex", 0.22);
+    mixFloat("plugin:hymission:layout_scale_weight", 1.0);
+    mixFloat("plugin:hymission:layout_space_weight", 0.10);
+    mixInt("plugin:hymission:expand_selected_window", 1);
+    mixInt("plugin:hymission:multi_workspace_expand_selected_window", 1);
+    mixInt("plugin:hymission:multi_workspace_sort_recent_first", 1);
+    mixInt("plugin:hymission:niri_mode", 0);
+    mixFloat("plugin:hymission:niri_layout_scale", 1.0);
+    mixFloat("plugin:hymission:niri_overview_scale", 0.65);
+    mixFloat("plugin:hymission:niri_window_gaps", -1.0);
+    mixFloat("plugin:hymission:niri_single_ws_gap_multiplier", -1.0);
+    mixFloat("plugin:hymission:niri_single_ws_gap_pixels", -1.0);
+    mixFloat("plugin:hymission:niri_multi_ws_scale", 0.18);
+    mixFloat("plugin:hymission:niri_workspace_gap", -1.0);
+    mixFloat("plugin:hymission:niri_multi_ws_gap", -1.0);
+    mixFloat("plugin:hymission:niri_workspace_scale", 1.0);
+    mixFloat("plugin:hymission:niri_strip_workspace_scale", 1.30);
+    mixFloat("plugin:hymission:niri_strip_workspace_zoom", 2.0);
+    mixInt("plugin:hymission:niri_mode_show_empty_workspaces_btwn", 1);
+    mixInt("plugin:hymission:niri_preview_disabled", 0);
+    mixInt("plugin:hymission:niri_overview_animations", 1);
+    mixFloat("plugin:hymission:niri_overview_open_close_speed_multiplier", 1.5);
+    mixInt("plugin:hymission:one_workspace_per_row", 0);
+    mixInt("plugin:hymission:only_active_workspace", 0);
+    mixInt("plugin:hymission:only_active_monitor", 0);
+    mixInt("plugin:hymission:show_special", 0);
+    mixInt("plugin:hymission:workspace_strip_thickness", 160);
+    mixInt("plugin:hymission:workspace_strip_gap", 24);
+    mixString("plugin:hymission:layout_engine", "grid");
+    mixString("plugin:hymission:workspace_strip_anchor", "left");
+    mixString("plugin:hymission:workspace_strip_empty_mode", "existing");
+
+    // Hyprland's native scrolling layout reads these live.  Hymission must
+    // treat changes to them as layout mutations while its direct niri overview
+    // is open, otherwise cached overview geometry can fight the newly rebuilt
+    // native scrolling camera.
+    mixInt("scrolling:focus_fit_method", 0);
+    mixInt("scrolling:fullscreen_on_one_column", 1);
+    mixInt("scrolling:follow_focus", 1);
+    mixInt("scrolling:column_default_width", 0);
+    mixInt("scrolling:default_column_width", 0);
+    mixInt("scrolling:center_window", 0);
+    mixInt("general:gaps_in", 0);
+    mixInt("general:gaps_out", 0);
+    mixInt("general:gaps_workspaces", 0);
+
+    return hash;
+}
+
+
 SP<Hyprutils::Animation::SAnimationPropertyConfig> scaledAnimationConfig(
     const SP<Hyprutils::Animation::SAnimationPropertyConfig>& baseConfig, double speedMultiplier) {
     if (!baseConfig)
@@ -2359,9 +2455,11 @@ bool niri_scrolling_detail::isActiveController(const OverviewController* control
 
 OverviewController::OverviewController(HANDLE handle) : m_handle(handle) {
     g_controller = this;
+    g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
 }
 
 OverviewController::~OverviewController() {
+    g_openOverviewLayoutConfigSignatures.erase(this);
     setDamageTrackingOverride(false);
     destroyGaussianBlurPipeline();
     clearToggleSwitchReleasePollTimer();
@@ -3678,6 +3776,111 @@ void OverviewController::renderStage(eRenderStage stage) {
 
 void OverviewController::handleConfigReloaded() {
     replaceNativeWorkspaceGestures("config-reloaded");
+
+    const uint64_t currentLayoutSignature = layoutAffectingConfigSignature(m_handle);
+    const auto     previousLayoutSignatureIt = g_openOverviewLayoutConfigSignatures.find(this);
+    const bool     layoutAffectingConfigChanged =
+        isVisible() && previousLayoutSignatureIt != g_openOverviewLayoutConfigSignatures.end() && previousLayoutSignatureIt->second != currentLayoutSignature;
+    g_openOverviewLayoutConfigSignatures[this] = currentLayoutSignature;
+
+    if (layoutAffectingConfigChanged && isVisible() && m_state.phase != Phase::Closing && m_state.phase != Phase::ClosingSettle) {
+        const auto previousPreviewRects = captureCurrentPreviewRects();
+        PHLWINDOW  preferredWindow = m_state.focusDuringOverview;
+        if (!preferredWindow || !preferredWindow->m_isMapped || !hasManagedWindow(preferredWindow))
+            preferredWindow = selectedWindow();
+        if ((!preferredWindow || !preferredWindow->m_isMapped || !hasManagedWindow(preferredWindow)) &&
+            Desktop::focusState()->window() && hasManagedWindow(Desktop::focusState()->window()))
+            preferredWindow = Desktop::focusState()->window();
+
+        const auto reloadedPolicy = loadCollectionPolicy(m_state.collectionPolicy.requestedScope);
+        const bool collectionPolicyChanged = reloadedPolicy.onlyActiveWorkspace != m_state.collectionPolicy.onlyActiveWorkspace ||
+            reloadedPolicy.onlyActiveMonitor != m_state.collectionPolicy.onlyActiveMonitor || reloadedPolicy.includeSpecial != m_state.collectionPolicy.includeSpecial;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] layout-affecting config reload"
+                << " directNiri=" << (usesDirectNiriScrollingOverview(m_state) ? 1 : 0)
+                << " collectionPolicyChanged=" << (collectionPolicyChanged ? 1 : 0)
+                << " phase=" << static_cast<int>(m_state.phase)
+                << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
+                << " windows=" << m_state.windows.size()
+                << " preferred=" << debugWindowLabel(preferredWindow);
+            debugLog(out.str());
+        }
+
+        if (usesDirectNiriScrollingOverview(m_state) && !collectionPolicyChanged) {
+            std::vector<PHLMONITOR> recalculatedMonitors;
+            const auto rememberMonitor = [&](const PHLMONITOR& monitor) {
+                if (monitor && std::ranges::find(recalculatedMonitors, monitor) == recalculatedMonitors.end())
+                    recalculatedMonitors.push_back(monitor);
+            };
+
+            const auto reflowScrollingWorkspace = [&](const PHLWORKSPACE& workspace) {
+                if (!workspace || !isScrollingWorkspace(workspace))
+                    return;
+
+                auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+                if (workspace->m_space)
+                    workspace->m_space->recalculate();
+
+                PHLWINDOW workspaceFocus;
+                if (preferredWindow && preferredWindow->m_workspace == workspace && !preferredWindow->m_pinned)
+                    workspaceFocus = preferredWindow;
+                if (!workspaceFocus)
+                    workspaceFocus = focusCandidateForWorkspace(workspace);
+
+                if (scrolling && scrolling->m_scrollingData) {
+                    if (workspaceFocus) {
+                        const auto target = workspaceFocus->layoutTarget();
+                        if (target && !target->floating()) {
+                            if (const auto targetData = scrolling->dataFor(target); targetData) {
+                                if (const auto column = targetData->column.lock()) {
+                                    column->lastFocusedTarget = targetData;
+                                    if (scrolling->m_scrollingData->controller) {
+                                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
+                                            scrolling->m_scrollingData->fitCol(column);
+                                        else
+                                            scrolling->m_scrollingData->centerCol(column);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    scrolling->m_scrollingData->recalculate(true);
+                }
+
+                if (workspace->m_space)
+                    workspace->m_space->recalculate();
+
+                if (const auto monitor = workspace->m_monitor.lock()) {
+                    rememberMonitor(monitor);
+                    g_layoutManager->recalculateMonitor(monitor);
+                }
+            };
+
+            for (const auto& workspace : m_state.managedWorkspaces)
+                reflowScrollingWorkspace(workspace);
+            if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace)
+                reflowScrollingWorkspace(activeWorkspace);
+            if (preferredWindow && preferredWindow->m_workspace)
+                reflowScrollingWorkspace(preferredWindow->m_workspace);
+
+            if (preferredWindow && preferredWindow->m_workspace && isScrollingWorkspace(preferredWindow->m_workspace))
+                (void)syncScrollingWorkspaceSpotOnWindow(preferredWindow, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
+
+            for (const auto& monitor : recalculatedMonitors)
+                g_layoutManager->recalculateMonitor(monitor);
+            if (g_pAnimationManager)
+                g_pAnimationManager->frameTick();
+
+            m_stripSnapshotsDirty = true;
+            scheduleWorkspaceStripSnapshotRefresh();
+            refreshNiriScrollingOverviewAfterLayoutScroll("config-reload-layout", &previousPreviewRects);
+        } else {
+            rebuildVisibleState(preferredWindow, true);
+        }
+    }
+
     if (isVisible()) {
         syncNiriWallpaperSnapshots();
         clearNiriWallpaperLayoutLayerRefresh();
@@ -11531,6 +11734,7 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_deactivatePending = false;
     carryOverWorkspaceStripSnapshots(next, m_state);
     m_state = std::move(next);
+    g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
     if (m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state)) {
         armOverviewOpenInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK);
         armOverviewHeavyEditInputBarrier(DIRECT_NIRI_OPEN_INPUT_BLOCK_FALLBACK + DIRECT_NIRI_HEAVY_EDIT_EXTRA_DELAY);
