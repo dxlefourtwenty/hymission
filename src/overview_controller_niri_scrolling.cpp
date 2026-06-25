@@ -4296,26 +4296,55 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const auto edgeCameraWorkspaceBefore = activeLayoutWorkspace();
     auto* const edgeCameraScrollingBefore = edgeCameraWorkspaceBefore && isScrollingWorkspace(edgeCameraWorkspaceBefore) ?
         scrollingAlgorithmForWorkspace(edgeCameraWorkspaceBefore) : nullptr;
+    const bool moveColumnDispatcherForEdge = isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher;
+    const auto validEdgeWorkspaceTiledWindow = [&](const PHLWINDOW& window) {
+        if (!window || !window->m_isMapped || window->m_pinned || !edgeCameraWorkspaceBefore || window->m_workspace != edgeCameraWorkspaceBefore)
+            return false;
+        if (isFloatingOverviewWindow(window))
+            return false;
+
+        const auto target = window->layoutTarget();
+        return target && !target->floating();
+    };
+
+    PHLWINDOW edgeLeafCandidateBefore = validEdgeWorkspaceTiledWindow(selectedBefore) ? selectedBefore : PHLWINDOW{};
+    if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(m_state.focusDuringOverview))
+        edgeLeafCandidateBefore = m_state.focusDuringOverview;
+    if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(Desktop::focusState()->window()))
+        edgeLeafCandidateBefore = Desktop::focusState()->window();
+
     const bool directEdgeCameraBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() && scrollingEdgeCameraActive(edgeCameraScrollingBefore);
-    const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+    const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && moveColumnDispatcherForEdge &&
         moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
-    const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && !edgeMoveColumnTowardEdge;
-    const bool leafMoveColumnTowardEdge = !directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+    const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && moveColumnDispatcherForEdge && !edgeMoveColumnTowardEdge;
+    const bool selectedLeafMoveColumnTowardEdge = !directEdgeCameraBefore && moveColumnDispatcherForEdge &&
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
-    const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
-        !edgeMoveColumnAwayFromEdge;
+    const bool candidateLeafMoveColumnTowardEdge = !directEdgeCameraBefore && moveColumnDispatcherForEdge && edgeLeafCandidateBefore &&
+        edgeLeafCandidateBefore != selectedBefore &&
+        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, edgeLeafCandidateBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool leafMoveColumnTowardEdge = selectedLeafMoveColumnTowardEdge || candidateLeafMoveColumnTowardEdge;
+    const bool interruptedLeafNativeGeometryInFlight = !directEdgeCameraBefore && moveColumnDispatcherForEdge &&
+        (m_state.relayoutActive || scrollingNativeGeometryInFlight(edgeCameraScrollingBefore));
+    const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+        interruptedLeafNativeGeometryInFlight && leafMoveColumnTowardEdge;
+    const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && moveColumnDispatcherForEdge && !edgeMoveColumnAwayFromEdge;
     const bool nativeEdgeCameraTransition = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge);
+        (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge || handOffInterruptedLeafToNativeEdge);
     const bool preserveNativeEdgeCameraDispatchFocus = preserveNativeEdgeCameraFocusRelease || edgeMoveColumnAwayFromEdge;
 
-    if (debugLogsEnabled() && overviewActive && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher)) {
+    if (debugLogsEnabled() && overviewActive && moveColumnDispatcherForEdge) {
         std::ostringstream out;
         out << "[hymission] niri movecol edge classification"
             << " directEdgeBefore=" << (directEdgeCameraBefore ? 1 : 0)
             << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+            << " selectedLeafTowardEdge=" << (selectedLeafMoveColumnTowardEdge ? 1 : 0)
+            << " candidateLeafTowardEdge=" << (candidateLeafMoveColumnTowardEdge ? 1 : 0)
+            << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore)
             << " edgeTowardEdge=" << (edgeMoveColumnTowardEdge ? 1 : 0)
             << " edgeAway=" << (edgeMoveColumnAwayFromEdge ? 1 : 0)
             << " nativeTransition=" << (nativeEdgeCameraTransition ? 1 : 0)
+            << " handOffInterruptedLeaf=" << (handOffInterruptedLeafToNativeEdge ? 1 : 0)
+            << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) ? 1 : 0)
             << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
         debugLog(out.str());
     }
@@ -4540,11 +4569,30 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         if (!result.success)
             return result;
 
+        if (handOffInterruptedLeafToNativeEdge && directNiriEdgeCameraActive()) {
+            // If a movecol reaches the scroll-past edge while the overview strip
+            // is still retargeting from the previous scroll, stop sampling the old
+            // overview relayout vector and hand the rest of the motion to the
+            // native scrolling layout. This mirrors Hyprland's leaf-window path:
+            // the leaf keeps its current native animation vector instead of being
+            // snapped to the final edge-camera overview box.
+            finishOverviewRelayoutAnimation();
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] niri movecol handed interrupted leaf animation to native edge camera"
+                    << " candidate=" << debugWindowLabel(edgeLeafCandidateBefore)
+                    << " selectedBefore=" << debugWindowLabel(selectedBefore)
+                    << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0);
+                debugLog(out.str());
+            }
+        }
+
         PHLWINDOW preferred = Desktop::focusState()->window();
         const auto preferredWorkspace = activeLayoutWorkspace();
         const bool multiColumnEdgeCameraAfter = preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive() &&
             directNiriScrollingColumnCount(preferredWorkspace) != 1;
-        const bool movingIntoOrStayingAtEdge = leafMoveColumnTowardEdge || edgeMoveColumnTowardEdge || preserveNativeEdgeCameraFocusRelease;
+        const bool movingIntoOrStayingAtEdge = leafMoveColumnTowardEdge || edgeMoveColumnTowardEdge || preserveNativeEdgeCameraFocusRelease ||
+            handOffInterruptedLeafToNativeEdge;
         const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && multiColumnEdgeCameraAfter &&
             (movingIntoOrStayingAtEdge || (!preferred && !edgeMoveColumnAwayFromEdge));
         if (nativeEdgeCameraFocusReleased) {
