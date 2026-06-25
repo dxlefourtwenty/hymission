@@ -13224,12 +13224,31 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.fullscreenOverrideActive = previousState.fullscreenOverrideActive;
     next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
     next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
-    const bool retargetDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && (previousState.relayoutActive || relayoutOrigins);
+    const std::string_view relayoutSourceView = relayoutSource ? std::string_view{relayoutSource} : std::string_view{};
+    const bool forcedDirectNiriEdgeRelease = usesDirectNiriScrollingOverview(previousState) &&
+        relayoutSourceView.find("movecol-edge-release") != std::string_view::npos;
+    const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
+    const bool previousDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(previousState);
+    const bool nativeEdgeCameraOwnsRedirection = forcedDirectNiriEdgeRelease;
+    const bool retargetDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && !nativeEdgeCameraOwnsRedirection &&
+        (previousState.relayoutActive || relayoutOrigins);
     const auto capturedRelayoutOrigins = retargetDirectNiriRelayout && !relayoutOrigins ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     const auto* directNiriRetargetOrigins = relayoutOrigins ? relayoutOrigins : &capturedRelayoutOrigins;
     next.relayoutActive = retargetDirectNiriRelayout;
     next.relayoutProgress = retargetDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
     next.relayoutStart = retargetDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
+    if (nativeEdgeCameraOwnsRedirection) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] metadata refresh delegated edge release to native camera"
+                << " source=" << (relayoutSource ? relayoutSource : "?")
+                << " previousRelayoutActive=" << (previousState.relayoutActive ? 1 : 0)
+                << " relayoutOrigins=" << (relayoutOrigins ? 1 : 0)
+                << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
+                << " previousEdge=" << (previousDirectNiriEdgeCamera ? 1 : 0);
+            debugLog(out.str());
+        }
+    }
     for (auto& backup : next.fullscreenBackups) {
         const auto previous = std::find_if(previousState.fullscreenBackups.begin(), previousState.fullscreenBackups.end(),
                                            [&](const FullscreenWorkspaceBackup& candidate) { return candidate.workspace == backup.workspace; });
@@ -13247,12 +13266,21 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.slots.reserve(next.windows.size());
     for (auto& managed : next.windows) {
         if (const auto* previous = previousManagedFor(managed.window); previous) {
-            managed.targetMonitor = previous->targetMonitor;
-            managed.naturalGlobal = previous->naturalGlobal;
-            managed.exitGlobal = previous->exitGlobal;
-            managed.relayoutFromGlobal = previous->relayoutFromGlobal;
-            managed.targetGlobal = previous->targetGlobal;
-            managed.slot = previous->slot;
+            if (!nativeEdgeCameraOwnsRedirection) {
+                managed.targetMonitor = previous->targetMonitor;
+                managed.naturalGlobal = previous->naturalGlobal;
+                managed.exitGlobal = previous->exitGlobal;
+                managed.relayoutFromGlobal = previous->relayoutFromGlobal;
+                managed.targetGlobal = previous->targetGlobal;
+                managed.slot = previous->slot;
+            } else {
+                // Leaf -> empty-column / scroll-past is already represented by
+                // Hyprland's native scrolling camera animation.  Do not overwrite
+                // the freshly-built live/edge target with the previous cached leaf
+                // target, or the overview will hold the strip at the old target and
+                // then snap when the native camera reaches the empty column.
+                managed.relayoutFromGlobal = managed.targetGlobal;
+            }
         }
         next.slots.push_back(managed.slot);
     }
@@ -13265,6 +13293,11 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
                                            });
         if (previous == previousState.emptyWorkspacePlaceholders.end())
             continue;
+
+        if (nativeEdgeCameraOwnsRedirection) {
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+            continue;
+        }
 
         placeholder.naturalGlobal = previous->naturalGlobal;
         placeholder.exitGlobal = previous->exitGlobal;
@@ -13291,11 +13324,6 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         next.transientClosingWindows.push_back(previous);
     }
 
-    const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
-    const bool previousDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(previousState);
-    const std::string_view relayoutSourceView = relayoutSource ? std::string_view{relayoutSource} : std::string_view{};
-    const bool forcedDirectNiriEdgeRelease = usesDirectNiriScrollingOverview(previousState) &&
-        relayoutSourceView.find("movecol-edge-release") != std::string_view::npos;
     const auto validRestoredDirectNiriFocus = [&](const PHLWINDOW& window) {
         return window && window->m_isMapped && managedWindowFor(next, window, true);
     };

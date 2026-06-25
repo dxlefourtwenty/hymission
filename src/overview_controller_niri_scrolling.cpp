@@ -6312,6 +6312,32 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (!target || target->floating())
             return std::nullopt;
 
+        auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+        if (scrollingEdgeCameraActive(scrolling)) {
+            // In leaf -> empty-column / scroll-past, Hyprland's native scrolling
+            // camera owns the real animation.  If an older overview relayout is
+            // still in flight, using that cached relayout rect hides Hyprland's
+            // redirected velocity and makes the edge pan appear to snap.  Map the
+            // live compositor rect directly through the backing viewport instead.
+            if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect) {
+                static std::size_t s_edgeLivePreviewOverrideBudget = 120;
+                if (debugLogsEnabled() && s_edgeLivePreviewOverrideBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri edge live preview override"
+                        << " window=" << debugWindowLabel(window.window)
+                        << " live=" << rectToString(*liveRect)
+                        << " cachedTarget=" << rectToString(window.targetGlobal)
+                        << " cachedFrom=" << rectToString(window.relayoutFromGlobal)
+                        << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                        << " relayoutProgress=" << m_state.relayoutProgress
+                        << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(scrolling) ? 1 : 0);
+                    debugLog(out.str());
+                    --s_edgeLivePreviewOverrideBudget;
+                }
+                return *liveRect;
+            }
+        }
+
         PHLWINDOW anchorWindow;
         if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
             m_state.focusDuringOverview->m_workspace == workspace && !isFloatingOverviewWindow(m_state.focusDuringOverview)) {
