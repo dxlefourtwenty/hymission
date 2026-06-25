@@ -1573,6 +1573,32 @@ Layout::Tiled::CScrollingAlgorithm* scrollingAlgorithmForWorkspace(const PHLWORK
     return dynamic_cast<Layout::Tiled::CScrollingAlgorithm*>(algorithm->tiledAlgo().get());
 }
 
+enum class MetadataEdgeCameraSide {
+    None,
+    BeforeFirst,
+    AfterLast,
+};
+
+MetadataEdgeCameraSide metadataEdgeCameraSide(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return MetadataEdgeCameraSide::None;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox  usable = scrolling->usableArea();
+    const bool  fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
+    const double offset = controller->getOffset();
+
+    if (offset < -0.5)
+        return MetadataEdgeCameraSide::BeforeFirst;
+    if (offset > maxNormalOffset + 0.5)
+        return MetadataEdgeCameraSide::AfterLast;
+
+    return MetadataEdgeCameraSide::None;
+}
+
 bool isFloatingOverviewWindow(const PHLWINDOW& window) {
     if (!window)
         return false;
@@ -13224,7 +13250,26 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     next.fullscreenOverrideActive = previousState.fullscreenOverrideActive;
     next.pendingExitFocus = windowMatchesOverviewScope(previousState.pendingExitFocus, next, false) ? previousState.pendingExitFocus : PHLWINDOW{};
     next.pendingExitWorkspace = containsHandle(next.managedWorkspaces, previousState.pendingExitWorkspace) ? previousState.pendingExitWorkspace : PHLWORKSPACE{};
-    const std::string_view relayoutSourceView = relayoutSource ? std::string_view{relayoutSource} : std::string_view{};
+    const std::string_view requestedRelayoutSourceView = relayoutSource ? std::string_view{relayoutSource} : std::string_view{};
+    std::string            effectiveRelayoutSourceStorage;
+    const char*            effectiveRelayoutSource = relayoutSource;
+    if (usesDirectNiriScrollingOverview(previousState) && previousState.collectionPolicy.onlyActiveWorkspace && previousState.relayoutActive &&
+        (requestedRelayoutSourceView.empty() || requestedRelayoutSourceView == "metadata-retarget")) {
+        const auto edgeWorkspace = previousState.ownerWorkspace ? previousState.ownerWorkspace : activeLayoutWorkspace();
+        switch (metadataEdgeCameraSide(scrollingAlgorithmForWorkspace(edgeWorkspace))) {
+            case MetadataEdgeCameraSide::BeforeFirst:
+                effectiveRelayoutSourceStorage = "movecol-edge-release-prev";
+                effectiveRelayoutSource = effectiveRelayoutSourceStorage.c_str();
+                break;
+            case MetadataEdgeCameraSide::AfterLast:
+                effectiveRelayoutSourceStorage = "movecol-edge-release-next";
+                effectiveRelayoutSource = effectiveRelayoutSourceStorage.c_str();
+                break;
+            case MetadataEdgeCameraSide::None: break;
+        }
+    }
+
+    const std::string_view relayoutSourceView = effectiveRelayoutSource ? std::string_view{effectiveRelayoutSource} : std::string_view{};
     const bool forcedDirectNiriEdgeRelease = usesDirectNiriScrollingOverview(previousState) &&
         relayoutSourceView.find("movecol-edge-release") != std::string_view::npos;
     const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
@@ -13247,6 +13292,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         std::ostringstream out;
         out << "[hymission] metadata refresh retargeting edge release through overview relayout"
             << " source=" << (relayoutSource ? relayoutSource : "?")
+            << " effectiveSource=" << (effectiveRelayoutSource ? effectiveRelayoutSource : "?")
             << " previousRelayoutActive=" << (previousState.relayoutActive ? 1 : 0)
             << " relayoutOrigins=" << (relayoutOrigins ? 1 : 0)
             << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
@@ -13350,6 +13396,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
             std::ostringstream out;
             out << "[hymission] metadata refresh preserved direct niri edge release"
                 << " source=" << (relayoutSource ? relayoutSource : "?")
+                << " effectiveSource=" << (effectiveRelayoutSource ? effectiveRelayoutSource : "?")
                 << " forced=" << (forcedDirectNiriEdgeRelease ? 1 : 0)
                 << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
                 << " previousEdge=" << (previousDirectNiriEdgeCamera ? 1 : 0)
@@ -13387,7 +13434,7 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
     }
 
     if (retargetDirectNiriRelayout)
-        refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directNiriRetargetOrigins);
+        refreshNiriScrollingOverviewAfterLayoutScroll(effectiveRelayoutSource, directNiriRetargetOrigins);
 
     syncHiddenStripLayerProxies();
     refreshWorkspaceStripSnapshots();
