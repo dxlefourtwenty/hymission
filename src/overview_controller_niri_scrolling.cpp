@@ -1926,6 +1926,59 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
+    std::optional<Vector2D> edgeCameraViewportDelta;
+    bool                    edgeCameraViewportDeltaUsed = false;
+    const bool              edgeRetargetSource = sourceView.find("movecol-edge") != std::string_view::npos ||
+        sourceView.find("edge-release") != std::string_view::npos;
+    const bool edgeRetargetCameraActive = edgeRetargetSource && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) &&
+        scrollingEdgeCameraActive(scrolling);
+    if (edgeRetargetCameraActive && workspace && m_state.ownerMonitor) {
+        const auto nextBacking = std::find_if(next.emptyWorkspacePlaceholders.begin(), next.emptyWorkspacePlaceholders.end(),
+                                              [&](const EmptyWorkspacePlaceholder& placeholder) {
+                                                  return placeholder.backingOnly && placeholder.monitor == m_state.ownerMonitor &&
+                                                      placeholder.workspaceId == workspace->m_id;
+                                              });
+
+        auto previousBacking = previousPlaceholderRects.end();
+        if (nextBacking != next.emptyWorkspacePlaceholders.end()) {
+            previousBacking = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
+                return candidate.monitor == nextBacking->monitor && candidate.workspaceId == nextBacking->workspaceId &&
+                    candidate.backingOnly == nextBacking->backingOnly;
+            });
+            if (previousBacking == previousPlaceholderRects.end()) {
+                previousBacking = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
+                    return candidate.monitor == nextBacking->monitor && candidate.workspaceId == nextBacking->workspaceId;
+                });
+            }
+        }
+
+        if (nextBacking != next.emptyWorkspacePlaceholders.end() && previousBacking != previousPlaceholderRects.end()) {
+            edgeCameraViewportDelta = Vector2D{nextBacking->targetGlobal.x - previousBacking->rect.x,
+                                               nextBacking->targetGlobal.y - previousBacking->rect.y};
+            if (std::abs(edgeCameraViewportDelta->x) <= 0.5 && std::abs(edgeCameraViewportDelta->y) <= 0.5)
+                edgeCameraViewportDelta.reset();
+        }
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] niri edge viewport delta resolve"
+                << " source=" << (source ? source : "?")
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " edgeCamera=" << (scrollingEdgeCameraActive(scrolling) ? 1 : 0)
+                << " previousRects=" << (previousPreviewRects ? previousPreviewRects->size() : 0)
+                << " previousPlaceholders=" << previousPlaceholderRects.size()
+                << " nextPlaceholders=" << next.emptyWorkspacePlaceholders.size()
+                << " hasDelta=" << (edgeCameraViewportDelta ? 1 : 0);
+            if (nextBacking != next.emptyWorkspacePlaceholders.end())
+                out << " nextBacking=" << rectToString(nextBacking->targetGlobal);
+            if (previousBacking != previousPlaceholderRects.end())
+                out << " previousBacking=" << rectToString(previousBacking->rect);
+            if (edgeCameraViewportDelta)
+                out << " delta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
+            debugLog(out.str());
+        }
+    }
+
     bool stripRelayoutChanged = false;
     std::size_t stripRelayoutEntries = 0;
     if (animateRefresh && workspaceStripEnabled(m_state)) {
@@ -1962,6 +2015,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     }
 
     std::size_t updated = 0;
+    std::size_t edgeCameraViewportWindowLogs = 0;
     bool        targetChanged = false;
     bool        placeholderTargetChanged = false;
     const auto previousPreviewRectFor = [&](const PHLWINDOW& window, const ManagedWindow& fallback) {
@@ -1990,6 +2044,31 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         managed.targetGlobal = it->targetGlobal;
         managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
+
+        const bool edgeViewportCameraPanWindow = edgeCameraViewportDelta && managed.window && managed.window->m_isMapped && workspace &&
+            managed.window->m_workspace == workspace && !managed.window->m_pinned && !isFloatingOverviewWindow(managed.window) &&
+            managed.window->layoutTarget() && !managed.window->layoutTarget()->floating();
+        if (edgeViewportCameraPanWindow) {
+            const Rect translatedTarget = translateRect(managed.relayoutFromGlobal, edgeCameraViewportDelta->x, edgeCameraViewportDelta->y);
+            managed.targetGlobal = translatedTarget;
+            if (managed.targetMonitor)
+                managed.slot.target = rectToMonitorLocal(translatedTarget, managed.targetMonitor);
+            edgeCameraViewportDeltaUsed = true;
+            targetChanged = true;
+
+            if (debugLogsEnabled() && edgeCameraViewportWindowLogs < 8) {
+                ++edgeCameraViewportWindowLogs;
+                std::ostringstream out;
+                out << "[hymission] niri edge viewport delta window target"
+                    << " source=" << (source ? source : "?")
+                    << " window=" << debugWindowLabel(managed.window)
+                    << " from=" << rectToString(managed.relayoutFromGlobal)
+                    << " nativeTarget=" << rectToString(it->targetGlobal)
+                    << " translatedTarget=" << rectToString(translatedTarget)
+                    << " delta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
+                debugLog(out.str());
+            }
+        }
         if (carriedFrozenSwapColumnLayout)
             (void)carryFrozenSwapColumnBackendPreviewLayout(managed, static_cast<std::size_t>(&managed - m_state.windows.data()), workspace);
         if (captureTwoColumnRefresh && refreshGroups[0].hasBounds && refreshGroups[1].hasBounds && refreshGroups[0].hasPreviousPrimary &&
@@ -2071,7 +2150,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     m_state.stripEntries = next.stripEntries;
     m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
     if (animateRefresh) {
-        const bool edgeRetargetSource = sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos;
         for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
             auto previous = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
                 return candidate.monitor == placeholder.monitor && candidate.workspaceId == placeholder.workspaceId &&
@@ -2134,6 +2212,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             << " placeholderTargetChanged=" << (placeholderTargetChanged ? 1 : 0)
             << " stripRelayoutChanged=" << (stripRelayoutChanged ? 1 : 0)
             << " stripRelayoutEntries=" << stripRelayoutEntries
+            << " edgeViewportDelta=" << (edgeCameraViewportDelta ? 1 : 0)
+            << " edgeViewportDeltaUsed=" << (edgeCameraViewportDeltaUsed ? 1 : 0)
             << " forcePreviousRectRelayout=" << (forcePreviousRectRelayout ? 1 : 0)
             << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
