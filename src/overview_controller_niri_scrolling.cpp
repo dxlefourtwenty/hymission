@@ -1909,6 +1909,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         WORKSPACEID workspaceId = WORKSPACE_INVALID;
         bool        backingOnly = false;
         Rect        rect;
+        Rect        target;
     };
     std::vector<PreviousPlaceholderRect> previousPlaceholderRects;
     previousPlaceholderRects.reserve(m_state.emptyWorkspacePlaceholders.size());
@@ -1922,6 +1923,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                 .workspaceId = placeholder.workspaceId,
                 .backingOnly = placeholder.backingOnly,
                 .rect = currentEmptyWorkspacePlaceholderRect(placeholder),
+                .target = placeholder.targetGlobal,
             });
         }
     }
@@ -1953,8 +1955,15 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
 
         if (nextBacking != next.emptyWorkspacePlaceholders.end() && previousBacking != previousPlaceholderRects.end()) {
-            edgeCameraViewportDelta = Vector2D{nextBacking->targetGlobal.x - previousBacking->rect.x,
-                                               nextBacking->targetGlobal.y - previousBacking->rect.y};
+            // Use the previous animation *target* as the continuity base, not the
+            // current visual placeholder.  During rapid movecol spam, the current
+            // visual rect is still between two leaf columns, while targetGlobal is
+            // already the leaf destination Hyprland redirected toward.  The
+            // leaf -> scroll-past step must append only the final edge-camera
+            // segment onto that existing target; using the current visual rect here
+            // under-shoots the destination and makes the edge pan appear skipped.
+            edgeCameraViewportDelta = Vector2D{nextBacking->targetGlobal.x - previousBacking->target.x,
+                                               nextBacking->targetGlobal.y - previousBacking->target.y};
             if (std::abs(edgeCameraViewportDelta->x) <= 0.5 && std::abs(edgeCameraViewportDelta->y) <= 0.5)
                 edgeCameraViewportDelta.reset();
         }
@@ -1972,9 +1981,10 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             if (nextBacking != next.emptyWorkspacePlaceholders.end())
                 out << " nextBacking=" << rectToString(nextBacking->targetGlobal);
             if (previousBacking != previousPlaceholderRects.end())
-                out << " previousBacking=" << rectToString(previousBacking->rect);
+                out << " previousBacking=" << rectToString(previousBacking->rect)
+                    << " previousBackingTarget=" << rectToString(previousBacking->target);
             if (edgeCameraViewportDelta)
-                out << " delta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
+                out << " targetDelta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
             debugLog(out.str());
         }
     }
@@ -2049,7 +2059,12 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             managed.window->m_workspace == workspace && !managed.window->m_pinned && !isFloatingOverviewWindow(managed.window) &&
             managed.window->layoutTarget() && !managed.window->layoutTarget()->floating();
         if (edgeViewportCameraPanWindow) {
-            const Rect translatedTarget = translateRect(managed.relayoutFromGlobal, edgeCameraViewportDelta->x, edgeCameraViewportDelta->y);
+            // Retarget exactly like Hyprland's animation redirection: the source is
+            // the current visual rect, but the new destination is based on the
+            // previous animation destination plus the new scroll-past segment.
+            // Using current + segment only works when the old animation has already
+            // settled; while spam-scrolling it under-shoots and visibly snaps.
+            const Rect translatedTarget = translateRect(previousTarget, edgeCameraViewportDelta->x, edgeCameraViewportDelta->y);
             managed.targetGlobal = translatedTarget;
             if (managed.targetMonitor)
                 managed.slot.target = rectToMonitorLocal(translatedTarget, managed.targetMonitor);
@@ -2059,13 +2074,14 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             if (debugLogsEnabled() && edgeCameraViewportWindowLogs < 8) {
                 ++edgeCameraViewportWindowLogs;
                 std::ostringstream out;
-                out << "[hymission] niri edge viewport delta window target"
+                out << "[hymission] niri edge target-continuity window target"
                     << " source=" << (source ? source : "?")
                     << " window=" << debugWindowLabel(managed.window)
                     << " from=" << rectToString(managed.relayoutFromGlobal)
+                    << " previousTarget=" << rectToString(previousTarget)
                     << " nativeTarget=" << rectToString(it->targetGlobal)
                     << " translatedTarget=" << rectToString(translatedTarget)
-                    << " delta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
+                    << " targetDelta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
                 debugLog(out.str());
             }
         }
@@ -2212,8 +2228,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             << " placeholderTargetChanged=" << (placeholderTargetChanged ? 1 : 0)
             << " stripRelayoutChanged=" << (stripRelayoutChanged ? 1 : 0)
             << " stripRelayoutEntries=" << stripRelayoutEntries
-            << " edgeViewportDelta=" << (edgeCameraViewportDelta ? 1 : 0)
-            << " edgeViewportDeltaUsed=" << (edgeCameraViewportDeltaUsed ? 1 : 0)
+            << " edgeTargetContinuityDelta=" << (edgeCameraViewportDelta ? 1 : 0)
+            << " edgeTargetContinuityUsed=" << (edgeCameraViewportDeltaUsed ? 1 : 0)
             << " forcePreviousRectRelayout=" << (forcePreviousRectRelayout ? 1 : 0)
             << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
