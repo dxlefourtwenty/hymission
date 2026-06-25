@@ -1781,14 +1781,14 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         }
     }
 
-    // Only treat focus_fit_method=0 as having a real centered focus when the
-    // native viewport center actually lands inside a tiled column *and* that
-    // column is actually centered on the viewport.  In the scroll-past /
-    // edge-camera state a first or last leaf can still overlap or even contain
-    // the viewport center, but its own center is offset from the viewport focus.
-    // Returning that merely-visible edge leaf here forces Hyprland to focus it
-    // and snaps the camera back out of the scroll-past state.
-    return best.centerAligned ? best.window : PHLWINDOW{};
+    // The distinction that matters for focus_fit_method=0 is whether the native
+    // viewport center is inside a real tiled column.  A centered 0.5 column can
+    // have a small alignment mismatch while the target workspace is being built,
+    // but the center is still inside that column and it should receive focus.
+    // A scroll-past edge-camera state has no column under the viewport center;
+    // preserve that focusless camera instead of falling back to a visible edge
+    // leaf and snapping the strip back.
+    return best.centerInside ? best.window : PHLWINDOW{};
 }
 
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {

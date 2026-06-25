@@ -8722,12 +8722,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             debugLog(out.str());
         }
 
-        // Match the core focus resolver: a visible edge column is not enough
-        // to claim focus in focus_fit_method=0.  When the viewport is in the
-        // scroll-past edge-camera position, the nearest leaf can overlap the
-        // row, but selecting it would erase the focusless edge camera state and
-        // snap the native scrolling camera back to that leaf.
-        return bestCenterAligned ? bestWindow : PHLWINDOW{};
+        // Match the core focus resolver: focus a center-mode partial when the
+        // overview viewport center is inside that real tile.  For a scroll-past
+        // edge-camera state, no real tile owns the viewport center, so returning
+        // null preserves the focusless camera instead of snapping to a visible
+        // edge leaf.
+        return bestCenterInside ? bestWindow : PHLWINDOW{};
     }();
 
     const bool fit0DirectEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
