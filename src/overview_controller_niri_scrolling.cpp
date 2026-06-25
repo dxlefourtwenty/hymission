@@ -1883,8 +1883,31 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             refreshGroupToNextRank[nextRankToGroup[rank]] = rank;
     }
 
+    struct PreviousPlaceholderRect {
+        PHLMONITOR  monitor;
+        WORKSPACEID workspaceId = WORKSPACE_INVALID;
+        bool        backingOnly = false;
+        Rect        rect;
+    };
+    std::vector<PreviousPlaceholderRect> previousPlaceholderRects;
+    previousPlaceholderRects.reserve(m_state.emptyWorkspacePlaceholders.size());
+    if (animateRefresh) {
+        for (const auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+            if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
+                continue;
+
+            previousPlaceholderRects.push_back({
+                .monitor = placeholder.monitor,
+                .workspaceId = placeholder.workspaceId,
+                .backingOnly = placeholder.backingOnly,
+                .rect = currentEmptyWorkspacePlaceholderRect(placeholder),
+            });
+        }
+    }
+
     std::size_t updated = 0;
     bool        targetChanged = false;
+    bool        placeholderTargetChanged = false;
     const auto previousPreviewRectFor = [&](const PHLWINDOW& window, const ManagedWindow& fallback) {
         if (previousPreviewRects) {
             const auto previous = std::find_if(previousPreviewRects->begin(), previousPreviewRects->end(),
@@ -1990,8 +2013,39 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         return;
 
     m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
+    if (animateRefresh) {
+        for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+            const auto previous = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
+                return candidate.monitor == placeholder.monitor && candidate.workspaceId == placeholder.workspaceId &&
+                    candidate.backingOnly == placeholder.backingOnly;
+            });
+
+            if (previous != previousPlaceholderRects.end()) {
+                placeholder.relayoutFromGlobal = previous->rect;
+                if (!rectApproxEqual(previous->rect, placeholder.targetGlobal, 0.5))
+                    placeholderTargetChanged = true;
+
+                if (traceColumnRefresh) {
+                    std::ostringstream out;
+                    out << "[hymission] niri refresh placeholder retarget"
+                        << " source=" << (source ? source : "?")
+                        << " workspaceId=" << placeholder.workspaceId
+                        << " backingOnly=" << (placeholder.backingOnly ? 1 : 0)
+                        << " from=" << rectToString(previous->rect)
+                        << " target=" << rectToString(placeholder.targetGlobal);
+                    debugLog(out.str());
+                }
+            } else {
+                placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+            }
+        }
+    } else {
+        for (auto& placeholder : m_state.emptyWorkspacePlaceholders)
+            placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+    }
+
     const bool forcePreviousRectRelayout = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && animateRefresh;
-    m_state.relayoutActive = (targetChanged || forcePreviousRectRelayout) && (animateRefresh || captureTwoColumnRefresh);
+    m_state.relayoutActive = (targetChanged || placeholderTargetChanged || forcePreviousRectRelayout) && (animateRefresh || captureTwoColumnRefresh);
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
     if (m_state.relayoutActive)
@@ -2001,6 +2055,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
             << " animate=" << (m_state.relayoutActive ? 1 : 0)
             << " targetChanged=" << (targetChanged ? 1 : 0)
+            << " placeholderTargetChanged=" << (placeholderTargetChanged ? 1 : 0)
             << " forcePreviousRectRelayout=" << (forcePreviousRectRelayout ? 1 : 0)
             << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
@@ -4570,19 +4625,19 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return result;
 
         if (handOffInterruptedLeafToNativeEdge && directNiriEdgeCameraActive()) {
-            // If a movecol reaches the scroll-past edge while the overview strip
-            // is still retargeting from the previous scroll, stop sampling the old
-            // overview relayout vector and hand the rest of the motion to the
-            // native scrolling layout. This mirrors Hyprland's leaf-window path:
-            // the leaf keeps its current native animation vector instead of being
-            // snapped to the final edge-camera overview box.
-            finishOverviewRelayoutAnimation();
+            // Keep the active overview relayout vector alive.  The current visual
+            // preview origins were already captured/committed before dispatch;
+            // finishing here would jump the strip to the stale leaf target for one
+            // frame before the edge-camera target is installed.  Let the normal
+            // edge refresh below retarget from those current visual origins, which
+            // matches Hyprland's interrupted animation redirection.
             if (debugLogsEnabled()) {
                 std::ostringstream out;
-                out << "[hymission] niri movecol handed interrupted leaf animation to native edge camera"
+                out << "[hymission] niri movecol retarget interrupted leaf animation to edge camera"
                     << " candidate=" << debugWindowLabel(edgeLeafCandidateBefore)
                     << " selectedBefore=" << debugWindowLabel(selectedBefore)
-                    << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0);
+                    << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0)
+                    << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
                 debugLog(out.str());
             }
         }
