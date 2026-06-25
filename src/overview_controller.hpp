@@ -107,6 +107,7 @@ class OverviewController {
     [[nodiscard]] SDispatchResult focusWorkspaceOnCurrentMonitorDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult moveFocusDispatcherHook(std::string args);
+    [[nodiscard]] std::optional<Config::Actions::ActionResult> layoutMessageActionHook(const std::string& msg);
     [[nodiscard]] Config::Actions::ActionResult moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window);
     bool                surfaceNeedsLiveBlurHook(void* surfacePassThisptr);
     bool                surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr);

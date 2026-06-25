@@ -4286,6 +4286,35 @@ void OverviewController::logScrollingWorkspaceSpotState(const char* context, con
 SDispatchResult OverviewController::layoutMessageDispatcherHook(std::string args) {
     return runOverviewEditingDispatcher("layoutmsg", &m_layoutMessageOriginal, std::move(args));
 }
+
+std::optional<Config::Actions::ActionResult> OverviewController::layoutMessageActionHook(const std::string& msg) {
+    if (m_overviewEditingDispatcherInProgress)
+        return std::nullopt;
+
+    if (!m_layoutMessageOriginal)
+        return std::nullopt;
+
+    if (!activeDirectNiriSingleWorkspaceOverview() && !timedNiriSingleWorkspaceTransitionActive())
+        return std::nullopt;
+
+    const auto result = layoutMessageDispatcherHook(msg);
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] routed layout message action through overview"
+            << " msg=" << msg
+            << " success=" << (result.success ? 1 : 0)
+            << " passEvent=" << (result.passEvent ? 1 : 0);
+        if (!result.error.empty())
+            out << " error=" << result.error;
+        debugLog(out.str());
+    }
+
+    if (!result.success)
+        return Config::Actions::actionError(result.error.empty() ? "layout message failed" : result.error);
+
+    return Config::Actions::SActionResult{.passEvent = result.passEvent};
+}
+
 SDispatchResult OverviewController::moveFocusDispatcherHook(std::string args) {
     if (!m_moveFocusOriginal)
         return {};

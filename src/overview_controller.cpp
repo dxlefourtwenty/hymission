@@ -428,6 +428,11 @@ Config::Actions::ActionResult hkLayoutMessageAction(const std::string& msg) {
     if (shouldSuppressNativeActionDuringOverviewOpen(isDelayedOverviewOpenEditCommand("layoutmsg", msg)))
         return {};
 
+    if (g_controller) {
+        if (auto handled = g_controller->layoutMessageActionHook(msg); handled)
+            return std::move(*handled);
+    }
+
     return g_layoutMessageActionOriginal ? g_layoutMessageActionOriginal(msg) : Config::Actions::ActionResult{};
 }
 
