@@ -4628,11 +4628,26 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         return target && !target->floating();
     };
 
-    PHLWINDOW edgeLeafCandidateBefore = validEdgeWorkspaceTiledWindow(selectedBefore) ? selectedBefore : PHLWINDOW{};
+    const PHLWINDOW nativeFocusBefore = Desktop::focusState()->window();
+    const bool interruptedMovecolBeforeFocusResolve = overviewActive && activeDirectNiriSingleWorkspaceOverview() && moveColumnDispatcherForEdge &&
+        (m_state.relayoutActive || scrollingNativeGeometryInFlight(edgeCameraScrollingBefore));
+    const bool preferNativeFocusForInterruptedMovecol = interruptedMovecolBeforeFocusResolve && validEdgeWorkspaceTiledWindow(nativeFocusBefore);
+
+    // When movecol is spammed, Hyprland's native scrolling layout can already
+    // have redirected focus/offset to the next leaf while the overview strip is
+    // still animating toward the previous preview target.  If we keep using the
+    // stale overview-selected window here, the final leaf -> empty-column keypress
+    // gets dispatched from the old leaf.  That skips the native scroll-past pan
+    // and the overview then appears to snap.  Prefer native focus only for an
+    // interrupted direct-Niri movecol; non-interrupted edits keep the overview
+    // selection semantics.
+    PHLWINDOW edgeLeafCandidateBefore = preferNativeFocusForInterruptedMovecol ? nativeFocusBefore : PHLWINDOW{};
+    if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(selectedBefore))
+        edgeLeafCandidateBefore = selectedBefore;
     if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(m_state.focusDuringOverview))
         edgeLeafCandidateBefore = m_state.focusDuringOverview;
-    if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(Desktop::focusState()->window()))
-        edgeLeafCandidateBefore = Desktop::focusState()->window();
+    if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(nativeFocusBefore))
+        edgeLeafCandidateBefore = nativeFocusBefore;
 
     const bool directEdgeCameraBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() && scrollingEdgeCameraActive(edgeCameraScrollingBefore);
     const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && moveColumnDispatcherForEdge &&
@@ -4661,6 +4676,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             << " selectedLeafTowardEdge=" << (selectedLeafMoveColumnTowardEdge ? 1 : 0)
             << " candidateLeafTowardEdge=" << (candidateLeafMoveColumnTowardEdge ? 1 : 0)
             << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore)
+            << " nativeFocus=" << debugWindowLabel(nativeFocusBefore)
+            << " preferNativeFocus=" << (preferNativeFocusForInterruptedMovecol ? 1 : 0)
+            << " interruptedBeforeFocusResolve=" << (interruptedMovecolBeforeFocusResolve ? 1 : 0)
             << " edgeTowardEdge=" << (edgeMoveColumnTowardEdge ? 1 : 0)
             << " edgeAway=" << (edgeMoveColumnAwayFromEdge ? 1 : 0)
             << " nativeTransition=" << (nativeEdgeCameraTransition ? 1 : 0)
@@ -4930,13 +4948,31 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
         PHLWINDOW dispatchFocus;
         if (!preserveNativeEdgeCameraDispatchFocus) {
-            dispatchFocus = validDispatchFocus(selectedBefore) ? selectedBefore : PHLWINDOW{};
+            const PHLWINDOW liveDispatchFocus = Desktop::focusState()->window();
+            const bool preferLiveDispatchFocus = interruptedMovecolBeforeFocusResolve && validDispatchFocus(liveDispatchFocus);
+            dispatchFocus = preferLiveDispatchFocus ? liveDispatchFocus : PHLWINDOW{};
+            if (!validDispatchFocus(dispatchFocus))
+                dispatchFocus = validDispatchFocus(selectedBefore) ? selectedBefore : PHLWINDOW{};
             if (!validDispatchFocus(dispatchFocus))
                 dispatchFocus = validDispatchFocus(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
             if (!validDispatchFocus(dispatchFocus))
-                dispatchFocus = validDispatchFocus(Desktop::focusState()->window()) ? Desktop::focusState()->window() : PHLWINDOW{};
+                dispatchFocus = validDispatchFocus(liveDispatchFocus) ? liveDispatchFocus : PHLWINDOW{};
             if (!validDispatchFocus(dispatchFocus) && dispatchWorkspace)
                 dispatchFocus = focusCandidateForWorkspace(dispatchWorkspace);
+
+            if (debugLogsEnabled() && moveColumnDispatcherForEdge && overviewActive && activeDirectNiriSingleWorkspaceOverview()) {
+                std::ostringstream out;
+                out << "[hymission] niri movecol dispatch focus resolve"
+                    << " selected=" << debugWindowLabel(selectedBefore)
+                    << " focusDuringOverview=" << debugWindowLabel(m_state.focusDuringOverview)
+                    << " nativeFocus=" << debugWindowLabel(liveDispatchFocus)
+                    << " dispatchFocus=" << debugWindowLabel(dispatchFocus)
+                    << " preferLive=" << (preferLiveDispatchFocus ? 1 : 0)
+                    << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                    << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) ? 1 : 0)
+                    << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0);
+                debugLog(out.str());
+            }
         }
 
         const auto activeDispatchWorkspace = activeLayoutWorkspace();

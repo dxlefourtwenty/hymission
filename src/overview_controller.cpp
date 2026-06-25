@@ -13229,25 +13229,30 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         relayoutSourceView.find("movecol-edge-release") != std::string_view::npos;
     const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
     const bool previousDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(previousState);
-    const bool nativeEdgeCameraOwnsRedirection = forcedDirectNiriEdgeRelease;
-    const bool retargetDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) && !nativeEdgeCameraOwnsRedirection &&
+    // Do not delegate leaf -> empty-column / scroll-past to native camera only.
+    // In overview, the strip/backing placeholder is our transformed preview layer,
+    // so native camera motion alone is not enough when the previous overview
+    // relayout is still in flight.  Keep the normal direct-Niri relayout retarget
+    // path active so refreshNiriScrollingOverviewAfterLayoutScroll can redirect
+    // source=current visual preview into the new edge-camera target.
+    const bool nativeEdgeCameraOwnsRedirection = false;
+    const bool retargetDirectNiriRelayout = usesDirectNiriScrollingOverview(previousState) &&
         (previousState.relayoutActive || relayoutOrigins);
     const auto capturedRelayoutOrigins = retargetDirectNiriRelayout && !relayoutOrigins ? captureCurrentPreviewRects() : PreviewRectSnapshot{};
     const auto* directNiriRetargetOrigins = relayoutOrigins ? relayoutOrigins : &capturedRelayoutOrigins;
     next.relayoutActive = retargetDirectNiriRelayout;
     next.relayoutProgress = retargetDirectNiriRelayout ? previousState.relayoutProgress : 1.0;
     next.relayoutStart = retargetDirectNiriRelayout ? previousState.relayoutStart : std::chrono::steady_clock::time_point{};
-    if (nativeEdgeCameraOwnsRedirection) {
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] metadata refresh delegated edge release to native camera"
-                << " source=" << (relayoutSource ? relayoutSource : "?")
-                << " previousRelayoutActive=" << (previousState.relayoutActive ? 1 : 0)
-                << " relayoutOrigins=" << (relayoutOrigins ? 1 : 0)
-                << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
-                << " previousEdge=" << (previousDirectNiriEdgeCamera ? 1 : 0);
-            debugLog(out.str());
-        }
+    if (forcedDirectNiriEdgeRelease && debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] metadata refresh retargeting edge release through overview relayout"
+            << " source=" << (relayoutSource ? relayoutSource : "?")
+            << " previousRelayoutActive=" << (previousState.relayoutActive ? 1 : 0)
+            << " relayoutOrigins=" << (relayoutOrigins ? 1 : 0)
+            << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
+            << " previousEdge=" << (previousDirectNiriEdgeCamera ? 1 : 0)
+            << " retarget=" << (retargetDirectNiriRelayout ? 1 : 0);
+        debugLog(out.str());
     }
     for (auto& backup : next.fullscreenBackups) {
         const auto previous = std::find_if(previousState.fullscreenBackups.begin(), previousState.fullscreenBackups.end(),
