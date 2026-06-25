@@ -9401,6 +9401,17 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     if (!m_state.relayoutActive)
         return previewRects;
 
+    std::size_t committedPlaceholders = 0;
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (!placeholder.monitor || placeholder.workspaceId == WORKSPACE_INVALID)
+            continue;
+
+        const Rect preview = currentEmptyWorkspacePlaceholderRect(placeholder);
+        placeholder.targetGlobal = preview;
+        placeholder.relayoutFromGlobal = preview;
+        ++committedPlaceholders;
+    }
+
     m_state.slots.clear();
     m_state.slots.reserve(m_state.windows.size());
     for (auto& managed : m_state.windows) {
@@ -9419,8 +9430,13 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     m_state.relayoutProgress = 1.0;
     m_state.relayoutStart = {};
 
-    if (debugLogsEnabled())
-        debugLog("[hymission] committed active niri relayout for retarget");
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] committed active niri relayout for retarget"
+            << " windows=" << previewRects.size()
+            << " placeholders=" << committedPlaceholders;
+        debugLog(out.str());
+    }
 
     return previewRects;
 }
