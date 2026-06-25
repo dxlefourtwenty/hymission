@@ -8637,9 +8637,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     state.participatingMonitors = std::move(activeParticipatingMonitors);
     buildWorkspaceStripEntries(state);
 
-    const auto centeredFit0SelectionTarget = [&]() -> PHLWINDOW {
-        if (preferredSelectedWindow || getConfigInt(m_handle, "scrolling:focus_fit_method", 0) != 0 || !state.collectionPolicy.onlyActiveWorkspace ||
-            !usesDirectNiriScrollingOverview(state) || !state.ownerWorkspace || !isScrollingWorkspace(state.ownerWorkspace))
+    const long scrollingFocusFitMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0);
+    const auto centeredEdgeCameraSelectionTarget = [&]() -> PHLWINDOW {
+        if (preferredSelectedWindow || !state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(state) ||
+            !state.ownerWorkspace || !isScrollingWorkspace(state.ownerWorkspace) || !directNiriOwnerEdgeCameraActive(state))
             return {};
 
         auto* const scrolling = scrollingAlgorithmForWorkspace(state.ownerWorkspace);
@@ -8709,7 +8710,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         if (debugLogsEnabled()) {
             std::ostringstream out;
-            out << "[hymission] focus-fit0 build-state centered selection"
+            out << "[hymission] focus-fit build-state edge-camera centered selection"
+                << " focusFit=" << scrollingFocusFitMethod
                 << " owner=" << debugWorkspaceLabel(state.ownerWorkspace)
                 << " chosen=" << debugWindowLabel(bestWindow)
                 << " score=" << bestScore
@@ -8722,36 +8724,37 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             debugLog(out.str());
         }
 
-        // Match the core focus resolver: focus a center-mode partial when the
-        // overview viewport center is inside that real tile.  For a scroll-past
-        // edge-camera state, no real tile owns the viewport center, so returning
-        // null preserves the focusless camera instead of snapping to a visible
-        // edge leaf.
+        // For both center and fit modes, the scroll-past edge-camera state is
+        // identified by the absence of any real tiled column under the viewport
+        // center.  Center mode uses this window as the real focus target; fit
+        // mode only uses its presence to avoid mistaking a normal edge-aligned
+        // focused column for scroll-past.
         return bestCenterInside ? bestWindow : PHLWINDOW{};
     }();
 
-    const bool fit0DirectEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
-        state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(state) && directNiriOwnerEdgeCameraActive(state) &&
-        !centeredFit0SelectionTarget;
+    const bool directEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && state.collectionPolicy.onlyActiveWorkspace &&
+        usesDirectNiriScrollingOverview(state) && directNiriOwnerEdgeCameraActive(state) && !centeredEdgeCameraSelectionTarget;
+    const auto centeredFit0SelectionTarget = scrollingFocusFitMethod == 0 ? centeredEdgeCameraSelectionTarget : PHLWINDOW{};
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow :
-        (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : (fit0DirectEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : focusedWindow));
+        (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : (directEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : focusedWindow));
     const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
     const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
-    const auto edgeCameraFocusCandidate = fit0DirectEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : (selectionTarget ? selectionTarget : focusedWindow);
+    const auto edgeCameraFocusCandidate = directEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : (selectionTarget ? selectionTarget : focusedWindow);
     const bool preserveEdgeCamera = directNiriOwnerEdgeCameraActive(state) &&
-        (fit0DirectEdgeCameraWithoutCenteredFocus || !edgeCameraFocusCandidate || !edgeCameraFocusCandidate->m_isMapped || edgeCameraFocusCandidate->m_pinned ||
+        (directEdgeCameraWithoutCenteredFocus || !edgeCameraFocusCandidate || !edgeCameraFocusCandidate->m_isMapped || edgeCameraFocusCandidate->m_pinned ||
          edgeCameraFocusCandidate->m_workspace != state.ownerWorkspace);
-    if (debugLogsEnabled() && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 && state.collectionPolicy.onlyActiveWorkspace &&
-        usesDirectNiriScrollingOverview(state) && state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace)) {
+    if (debugLogsEnabled() && state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(state) && state.ownerWorkspace &&
+        isScrollingWorkspace(state.ownerWorkspace)) {
         std::ostringstream out;
-        out << "[hymission] focus-fit0 build-state edge-camera preserve"
+        out << "[hymission] focus-fit build-state edge-camera preserve"
+            << " focusFit=" << scrollingFocusFitMethod
             << " owner=" << debugWorkspaceLabel(state.ownerWorkspace)
-            << " centered=" << debugWindowLabel(centeredFit0SelectionTarget)
+            << " centered=" << debugWindowLabel(centeredEdgeCameraSelectionTarget)
             << " focused=" << debugWindowLabel(focusedWindow)
             << " selection=" << debugWindowLabel(selectionTarget)
             << " candidate=" << debugWindowLabel(edgeCameraFocusCandidate)
             << " directEdge=" << (directNiriOwnerEdgeCameraActive(state) ? 1 : 0)
-            << " noCenteredEdge=" << (fit0DirectEdgeCameraWithoutCenteredFocus ? 1 : 0)
+            << " noCenteredEdge=" << (directEdgeCameraWithoutCenteredFocus ? 1 : 0)
             << " preserve=" << (preserveEdgeCamera ? 1 : 0);
         debugLog(out.str());
     }
