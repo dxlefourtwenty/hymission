@@ -13293,15 +13293,18 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
 
     const bool nextDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(next);
     const bool previousDirectNiriEdgeCamera = directNiriOwnerEdgeCameraActive(previousState);
+    const std::string_view relayoutSourceView = relayoutSource ? std::string_view{relayoutSource} : std::string_view{};
+    const bool forcedDirectNiriEdgeRelease = usesDirectNiriScrollingOverview(previousState) &&
+        relayoutSourceView.find("movecol-edge-release") != std::string_view::npos;
     const auto validRestoredDirectNiriFocus = [&](const PHLWINDOW& window) {
         return window && window->m_isMapped && managedWindowFor(next, window, true);
     };
 
     PHLWINDOW restoredDirectNiriFocus = preferredSelectedWindow;
-    if (!validRestoredDirectNiriFocus(restoredDirectNiriFocus))
+    if (!validRestoredDirectNiriFocus(restoredDirectNiriFocus) && !forcedDirectNiriEdgeRelease)
         restoredDirectNiriFocus = Desktop::focusState()->window();
 
-    const bool preserveDirectNiriEdgeCamera = (nextDirectNiriEdgeCamera || previousDirectNiriEdgeCamera) &&
+    const bool preserveDirectNiriEdgeCamera = (forcedDirectNiriEdgeRelease || nextDirectNiriEdgeCamera || previousDirectNiriEdgeCamera) &&
         !validRestoredDirectNiriFocus(restoredDirectNiriFocus);
     if (preserveDirectNiriEdgeCamera) {
         // Native scrolling layout has deliberately released window focus while
@@ -13310,6 +13313,16 @@ void OverviewController::refreshVisibleStateMetadata(PHLWINDOW preferredSelected
         // comes back while leaving the edge camera, accept that live focus again.
         next.selectedIndex.reset();
         next.focusDuringOverview.reset();
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] metadata refresh preserved direct niri edge release"
+                << " source=" << (relayoutSource ? relayoutSource : "?")
+                << " forced=" << (forcedDirectNiriEdgeRelease ? 1 : 0)
+                << " nextEdge=" << (nextDirectNiriEdgeCamera ? 1 : 0)
+                << " previousEdge=" << (previousDirectNiriEdgeCamera ? 1 : 0)
+                << " restored=" << debugWindowLabel(restoredDirectNiriFocus);
+            debugLog(out.str());
+        }
     } else {
         PHLWINDOW selected = restoredDirectNiriFocus;
         if (!validRestoredDirectNiriFocus(selected) && !previousDirectNiriEdgeCamera)
