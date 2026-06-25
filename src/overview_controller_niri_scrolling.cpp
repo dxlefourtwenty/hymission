@@ -4544,8 +4544,57 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
     const bool commitActiveStripRelayout = animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive;
+
+    const auto captureDirectNiriRetargetOrigins = [&]() {
+        PreviewRectSnapshot rects;
+        rects.reserve(m_state.windows.size());
+
+        std::size_t liveOrigins = 0;
+        std::size_t fallbackOrigins = 0;
+        for (const auto& managed : m_state.windows) {
+            if (!managed.window)
+                continue;
+
+            if (const auto liveRect = livePreviewRectForManagedWindow(managed); liveRect) {
+                rects.emplace_back(managed.window, *liveRect);
+                ++liveOrigins;
+            } else {
+                rects.emplace_back(managed.window, currentPreviewRect(managed));
+                ++fallbackOrigins;
+            }
+        }
+
+        if (debugLogsEnabled() && activeDirectNiriSingleWorkspaceOverview() &&
+            (directNiriFocusOrColumnRelayout || directNiriColumnRelayout)) {
+            const auto workspace = activeLayoutWorkspace();
+            auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+            std::ostringstream out;
+            out << "[hymission] captured direct niri retarget origins"
+                << " live=" << liveOrigins
+                << " fallback=" << fallbackOrigins
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(scrolling) ? 1 : 0)
+                << " edgeCamera=" << (scrollingEdgeCameraActive(scrolling) ? 1 : 0);
+            debugLog(out.str());
+
+            std::size_t logged = 0;
+            for (const auto& entry : rects) {
+                if (!entry.first || logged >= 4)
+                    continue;
+                std::ostringstream winOut;
+                winOut << "[hymission] direct niri retarget origin"
+                    << " window=" << debugWindowLabel(entry.first)
+                    << " rect=" << rectToString(entry.second);
+                debugLog(winOut.str());
+                ++logged;
+            }
+        }
+
+        return rects;
+    };
+
     const auto directStripPreviewRects = commitActiveStripRelayout ? commitActiveNiriRelayoutForRetarget() :
-        (animateDirectStripRelayout ? captureCurrentPreviewRects() : PreviewRectSnapshot{});
+        (animateDirectStripRelayout ? captureDirectNiriRetargetOrigins() : PreviewRectSnapshot{});
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
