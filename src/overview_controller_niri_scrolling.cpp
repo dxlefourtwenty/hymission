@@ -8663,6 +8663,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         double    bestScore = std::numeric_limits<double>::infinity();
         Rect      bestRect{};
         Rect      bestViewport{};
+        bool      bestCenterInside = false;
 
         for (const auto& managed : state.windows) {
             const auto& window = managed.window;
@@ -8695,6 +8696,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 bestScore = score;
                 bestRect = managed.targetGlobal;
                 bestViewport = viewport;
+                bestCenterInside = centerInside;
             }
         }
 
@@ -8706,11 +8708,17 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 << " score=" << bestScore
                 << " rect=" << rectToString(bestRect)
                 << " viewport=" << rectToString(bestViewport)
+                << " centerInside=" << (bestCenterInside ? 1 : 0)
                 << " windows=" << state.windows.size();
             debugLog(out.str());
         }
 
-        return bestWindow;
+        // Match the core focus resolver: a visible edge column is not enough
+        // to claim focus in focus_fit_method=0.  When the viewport is in the
+        // scroll-past edge-camera position, the nearest leaf can overlap the
+        // row, but selecting it would erase the focusless edge camera state and
+        // snap the native scrolling camera back to that leaf.
+        return bestCenterInside ? bestWindow : PHLWINDOW{};
     }();
 
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : focusedWindow);

@@ -1603,6 +1603,26 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
 }
 
 
+
+bool focusFit0NativeEdgeCameraActive(const PHLWORKSPACE& workspace) {
+    if (!workspace || !isScrollingWorkspace(workspace))
+        return false;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox usable = scrolling->usableArea();
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
+    const double offset = controller->getOffset();
+
+    return offset < -0.5 || offset > maxNormalOffset + 0.5;
+}
+
 PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& workspace) {
     if (!workspace || !workspace->m_space)
         return {};
@@ -1754,7 +1774,13 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         }
     }
 
-    return best.window;
+    // Only treat focus_fit_method=0 as having a real centered focus when the
+    // native viewport center actually lands inside a tiled column.  In the
+    // scroll-past / edge-camera state a first or last column can still overlap
+    // the viewport, but its center is not the viewport focus.  Returning that
+    // merely-visible edge column here forces Hyprland to focus it and snaps the
+    // camera back out of the scroll-past state.
+    return best.centerInside ? best.window : PHLWINDOW{};
 }
 
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
@@ -7038,7 +7064,8 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     const bool shouldResolveCenteredFit0Focus = !preferredTargetFocus && workspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
         isScrollingWorkspace(workspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 && !syntheticEmpty;
     const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(workspace) : PHLWINDOW{};
-    const auto fallbackTargetFocus = focusCandidateForWorkspace(workspace);
+    const bool focusFit0PreserveScrollPastCamera = shouldResolveCenteredFit0Focus && !centeredFit0Focus && focusFit0NativeEdgeCameraActive(workspace);
+    const auto fallbackTargetFocus = focusFit0PreserveScrollPastCamera ? PHLWINDOW{} : focusCandidateForWorkspace(workspace);
     const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
         preferredTargetFocus :
         centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
@@ -7049,7 +7076,8 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             << " workspace=" << debugWorkspaceLabel(workspace)
             << " centered=" << debugWindowLabel(centeredFit0Focus)
             << " fallback=" << debugWindowLabel(fallbackTargetFocus)
-            << " chosen=" << debugWindowLabel(targetFocus);
+            << " chosen=" << debugWindowLabel(targetFocus)
+            << " preserveScrollPast=" << (focusFit0PreserveScrollPastCamera ? 1 : 0);
         if (auto* scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
             out << " offset=" << scrolling->m_scrollingData->controller->getOffset()
                 << " columns=" << scrolling->m_scrollingData->columns.size();
@@ -7080,6 +7108,7 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
             << " fallback=" << debugWindowLabel(fallbackTargetFocus)
             << " targetFocus=" << debugWindowLabel(targetFocus)
             << " targetStateFocus=" << debugWindowLabel(target.focusDuringOverview)
+            << " preserveScrollPast=" << (focusFit0PreserveScrollPastCamera ? 1 : 0)
             << " edgeCamera=" << (targetOwnerEdgeCameraActive ? 1 : 0)
             << " singleColumn=" << (targetWorkspaceHasSingleScrollingColumn ? 1 : 0)
             << " resolvedFocus=" << (targetHasResolvedFocus ? 1 : 0)
