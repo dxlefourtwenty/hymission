@@ -4754,14 +4754,32 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
     // Normal direct-Niri relayouts commit the active overview animation to the
     // current visual position before rebuilding targets.  Leaf -> empty-column
-    // edge release is different: its new target is derived from the previous
-    // animation destination plus one more column-sized pan.  Committing here
-    // would erase that previous destination and make rapid movecol spam
-    // undershoot/snap.  Keep the old target alive for the edge-retarget pass
-    // while still capturing current visual origins below.
-    const bool preserveActiveTargetForLeafEdgeRetarget = leafMoveColumnTowardEdge && m_state.phase == Phase::Active && m_state.relayoutActive;
+    // edge release is different: the final target may only become knowable after
+    // the native movecol dispatcher runs.  If we commit a still-running movecol
+    // relayout before dispatch, we erase the previous animation destination that
+    // the edge release needs to extend by one more empty-column pan.  Preserve the
+    // active target for every interrupted movecol, but still sample the live
+    // animation progress so the new relayout starts from the current visual strip.
+    const bool preserveActiveTargetForMovecolRetarget = moveColumnDispatcherForEdge && overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+        m_state.phase == Phase::Active && m_state.relayoutActive;
+    if (preserveActiveTargetForMovecolRetarget && m_relayoutProgressAnimation) {
+        const double previousRelayoutProgress = m_state.relayoutProgress;
+        const double liveRelayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
+        m_state.relayoutProgress = liveRelayoutProgress;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] synced active relayout progress for interrupted movecol retarget"
+                << " previousProgress=" << previousRelayoutProgress
+                << " liveProgress=" << liveRelayoutProgress
+                << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+                << " selectedBefore=" << debugWindowLabel(selectedBefore)
+                << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore);
+            debugLog(out.str());
+        }
+    }
     const bool commitActiveStripRelayout = animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive &&
-        !preserveActiveTargetForLeafEdgeRetarget;
+        !preserveActiveTargetForMovecolRetarget;
 
     const auto captureDirectNiriRetargetOrigins = [&]() {
         PreviewRectSnapshot rects;
@@ -4812,14 +4830,15 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     };
 
     const auto directStripPreviewRects = commitActiveStripRelayout ? commitActiveNiriRelayoutForRetarget() :
-        (preserveActiveTargetForLeafEdgeRetarget ? captureCurrentPreviewRects() :
+        (preserveActiveTargetForMovecolRetarget ? captureCurrentPreviewRects() :
          (animateDirectStripRelayout ? captureDirectNiriRetargetOrigins() : PreviewRectSnapshot{}));
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
-    if (debugLogsEnabled() && preserveActiveTargetForLeafEdgeRetarget) {
+    if (debugLogsEnabled() && preserveActiveTargetForMovecolRetarget) {
         std::ostringstream out;
-        out << "[hymission] preserving active relayout target for leaf-edge retarget"
+        out << "[hymission] preserving active relayout target for interrupted movecol retarget"
             << " origins=" << directStripPreviewRects.size()
             << " relayoutProgress=" << m_state.relayoutProgress
+            << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
             << " selectedBefore=" << debugWindowLabel(selectedBefore)
             << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore);
         debugLog(out.str());
