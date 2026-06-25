@@ -4591,10 +4591,25 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         const auto preferredWorkspace = activeLayoutWorkspace();
         const bool multiColumnEdgeCameraAfter = preferredWorkspace && isScrollingWorkspace(preferredWorkspace) && directNiriEdgeCameraActive() &&
             directNiriScrollingColumnCount(preferredWorkspace) != 1;
+        const bool enteredNativeEdgeCameraAfterDispatch = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) &&
+            !directEdgeCameraBefore && multiColumnEdgeCameraAfter;
         const bool movingIntoOrStayingAtEdge = leafMoveColumnTowardEdge || edgeMoveColumnTowardEdge || preserveNativeEdgeCameraFocusRelease ||
-            handOffInterruptedLeafToNativeEdge;
+            handOffInterruptedLeafToNativeEdge || enteredNativeEdgeCameraAfterDispatch;
         const bool nativeEdgeCameraFocusReleased = (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && multiColumnEdgeCameraAfter &&
-            (movingIntoOrStayingAtEdge || (!preferred && !edgeMoveColumnAwayFromEdge));
+            (enteredNativeEdgeCameraAfterDispatch || movingIntoOrStayingAtEdge || (!preferred && !edgeMoveColumnAwayFromEdge));
+        if (debugLogsEnabled() && (isMoveColumnLayoutMessage || isDirectMoveColumnDispatcher) && multiColumnEdgeCameraAfter) {
+            std::ostringstream out;
+            out << "[hymission] niri movecol edge camera after dispatch"
+                << " directEdgeBefore=" << (directEdgeCameraBefore ? 1 : 0)
+                << " enteredEdgeAfter=" << (enteredNativeEdgeCameraAfterDispatch ? 1 : 0)
+                << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+                << " handOffInterruptedLeaf=" << (handOffInterruptedLeafToNativeEdge ? 1 : 0)
+                << " preferred=" << debugWindowLabel(preferred)
+                << " dispatchFocus=" << debugWindowLabel(dispatchFocus)
+                << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0)
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
+            debugLog(out.str());
+        }
         if (nativeEdgeCameraFocusReleased) {
             clearDirectNiriEdgeCameraFocusState("movecol-edge-release-after-dispatch");
             preferred = PHLWINDOW{};
@@ -4670,12 +4685,18 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             const char* relayoutSource = nativeEdgeCameraFocusReleased ? "movecol-edge-release" :
                 (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
                  (movecolStyleRelayout ? "movecol" : "movefocus"));
+            const bool nativeEdgeCameraTransitionAfterDispatch = nativeEdgeCameraTransition || nativeEdgeCameraFocusReleased || enteredNativeEdgeCameraAfterDispatch;
 
-            if (nativeEdgeCameraTransition) {
-                if (debugLogsEnabled())
-                    debugLog("[hymission] niri movecol edge transition retargeted overview relayout");
-                refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
-            } else if (nativeEdgeCameraFocusReleased) {
+            if (nativeEdgeCameraTransitionAfterDispatch) {
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] niri movecol edge transition retargeted overview relayout"
+                        << " source=" << relayoutSource
+                        << " enteredEdgeAfter=" << (enteredNativeEdgeCameraAfterDispatch ? 1 : 0)
+                        << " focusReleased=" << (nativeEdgeCameraFocusReleased ? 1 : 0)
+                        << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0);
+                    debugLog(out.str());
+                }
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
             } else {
                 // Match movecol exactly for swapcol / resizecol / resizeactive here:
