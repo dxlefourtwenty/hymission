@@ -445,8 +445,28 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
     if (!target)
         return snapshotBox;
 
-    if (g_forceScrollingFinalLayoutBoxForOverview)
+    if (g_forceScrollingFinalLayoutBoxForOverview) {
+        // Edge-camera / scroll-past retargeting needs the same target that
+        // Hyprland is already animating toward.  The scrolling layoutBox can lag
+        // behind during rapid movecol spam because the native windowsMove
+        // animation has already been redirected but the cached column snapshot is
+        // still the old leaf-centered box.  Use the real animated variable goal as
+        // the final overview target, and keep snapshotBox only as a fallback.
+        const auto window = target->window();
+        if (window && window->m_realPosition && window->m_realSize) {
+            Vector2D position = window->m_realPosition->goal();
+            if (window->m_workspace && !window->m_pinned && window->m_workspace->m_renderOffset)
+                position += window->m_workspace->m_renderOffset->goal();
+            if (window->m_isFloating)
+                position += window->m_floatingOffset;
+
+            const Vector2D size = window->m_realSize->goal();
+            if (size.x > 1.0 && size.y > 1.0)
+                return CBox{position.x, position.y, size.x, size.y};
+        }
+
         return snapshotBox;
+    }
 
     const CBox liveBox = target->position();
     if (liveBox.width > 1.0 && liveBox.height > 1.0)
@@ -1041,6 +1061,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
         targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
+
 
         double anchorX = targetColumn.virtualBounds.centerX();
         double anchorY = targetColumn.virtualBounds.centerY();
@@ -4859,6 +4880,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                         << " originWindows=" << (directStripRelayoutOrigins ? directStripRelayoutOrigins->size() : 0)
                         << " relayoutActiveBeforeRefresh=" << (m_state.relayoutActive ? 1 : 0)
                         << " relayoutProgressBeforeRefresh=" << m_state.relayoutProgress
+                        << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(scrollingAlgorithmForWorkspace(preferredWorkspace)) ? 1 : 0)
+                        << " edgeCamera=" << (scrollingEdgeCameraActive(scrollingAlgorithmForWorkspace(preferredWorkspace)) ? 1 : 0)
                         << " stripEntries=" << m_state.stripEntries.size()
                         << " placeholders=" << m_state.emptyWorkspacePlaceholders.size();
                     debugLog(out.str());
