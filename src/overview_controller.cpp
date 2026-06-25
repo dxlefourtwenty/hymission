@@ -1605,7 +1605,7 @@ CBox liveScrollingLayoutBoxForTarget(const TargetPtr& target, const CBox& snapsh
 
 
 bool focusFit0NativeEdgeCameraActive(const PHLWORKSPACE& workspace) {
-    if (!workspace || !isScrollingWorkspace(workspace))
+    if (!workspace || !workspace->m_space)
         return false;
 
     auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
