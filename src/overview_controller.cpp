@@ -1687,7 +1687,9 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         Rect      rect;
         double    score = std::numeric_limits<double>::infinity();
         bool      centerInside = false;
+        bool      centerAligned = false;
         double    overlap = 0.0;
+        double    centerDistance = std::numeric_limits<double>::infinity();
         std::size_t columnIndex = 0;
     };
 
@@ -1755,32 +1757,38 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         const bool centerInside = viewportCenter >= start - 0.5 && viewportCenter <= end + 0.5;
         const double centerDistance = std::abs(rectPrimaryCenter(*columnBounds) - viewportCenter);
         const double secondaryDistance = std::abs(rectSecondaryCenter(*columnBounds) - secondaryViewportCenter);
+        const double centerAlignmentTolerance = std::clamp(rectPrimarySize(*columnBounds) * 0.08, 16.0, 96.0);
+        const bool centerAligned = centerInside && centerDistance <= centerAlignmentTolerance;
 
         // First decide by the native camera geometry, not by MRU/last focus.
         // A centered partial column should always win over a merely visible
         // neighboring partial.  Last-focused target is used only after the column
         // has been selected, to choose a tile inside that selected column.
         const double outsideCenterPenalty = centerInside ? 0.0 : 100000.0;
-        const double score = outsideCenterPenalty + centerDistance + secondaryDistance * 0.01 - std::min(overlap, 1024.0) * 0.001;
+        const double misalignedCenterPenalty = centerAligned ? 0.0 : 50000.0;
+        const double score = outsideCenterPenalty + misalignedCenterPenalty + centerDistance + secondaryDistance * 0.01 - std::min(overlap, 1024.0) * 0.001;
         if (!best.window || score < best.score) {
             best = Candidate{
                 .window = focusWindow,
                 .rect = *columnBounds,
                 .score = score,
                 .centerInside = centerInside,
+                .centerAligned = centerAligned,
                 .overlap = overlap,
+                .centerDistance = centerDistance,
                 .columnIndex = columnIndex,
             };
         }
     }
 
     // Only treat focus_fit_method=0 as having a real centered focus when the
-    // native viewport center actually lands inside a tiled column.  In the
-    // scroll-past / edge-camera state a first or last column can still overlap
-    // the viewport, but its center is not the viewport focus.  Returning that
-    // merely-visible edge column here forces Hyprland to focus it and snaps the
-    // camera back out of the scroll-past state.
-    return best.centerInside ? best.window : PHLWINDOW{};
+    // native viewport center actually lands inside a tiled column *and* that
+    // column is actually centered on the viewport.  In the scroll-past /
+    // edge-camera state a first or last leaf can still overlap or even contain
+    // the viewport center, but its own center is offset from the viewport focus.
+    // Returning that merely-visible edge leaf here forces Hyprland to focus it
+    // and snaps the camera back out of the scroll-past state.
+    return best.centerAligned ? best.window : PHLWINDOW{};
 }
 
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {

@@ -8664,6 +8664,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect      bestRect{};
         Rect      bestViewport{};
         bool      bestCenterInside = false;
+        bool      bestCenterAligned = false;
+        double    bestCenterDistance = std::numeric_limits<double>::infinity();
 
         for (const auto& managed : state.windows) {
             const auto& window = managed.window;
@@ -8690,13 +8692,18 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const bool centerInside = viewportCenter >= rectStart - 0.5 && viewportCenter <= rectEnd + 0.5;
             const double primaryDistance = std::abs(primaryCenter(managed.targetGlobal) - viewportCenter);
             const double secondaryDistance = std::abs(secondaryCenter(managed.targetGlobal) - secondaryCenter(viewport));
-            const double score = primaryDistance + secondaryDistance * 0.02 - (centerInside ? 10000.0 : 0.0) - std::min(overlap, 512.0) * 0.01;
+            const double centerAlignmentTolerance = std::clamp(primarySize(managed.targetGlobal) * 0.08, 16.0, 96.0);
+            const bool centerAligned = centerInside && primaryDistance <= centerAlignmentTolerance;
+            const double score = primaryDistance + secondaryDistance * 0.02 - (centerInside ? 10000.0 : 0.0) - (centerAligned ? 5000.0 : 0.0) -
+                std::min(overlap, 512.0) * 0.01;
             if (!bestWindow || score < bestScore) {
                 bestWindow = window;
                 bestScore = score;
                 bestRect = managed.targetGlobal;
                 bestViewport = viewport;
                 bestCenterInside = centerInside;
+                bestCenterAligned = centerAligned;
+                bestCenterDistance = primaryDistance;
             }
         }
 
@@ -8709,6 +8716,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 << " rect=" << rectToString(bestRect)
                 << " viewport=" << rectToString(bestViewport)
                 << " centerInside=" << (bestCenterInside ? 1 : 0)
+                << " centerAligned=" << (bestCenterAligned ? 1 : 0)
+                << " centerDistance=" << bestCenterDistance
                 << " windows=" << state.windows.size();
             debugLog(out.str());
         }
@@ -8718,16 +8727,34 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         // scroll-past edge-camera position, the nearest leaf can overlap the
         // row, but selecting it would erase the focusless edge camera state and
         // snap the native scrolling camera back to that leaf.
-        return bestCenterInside ? bestWindow : PHLWINDOW{};
+        return bestCenterAligned ? bestWindow : PHLWINDOW{};
     }();
 
-    const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow : (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : focusedWindow);
+    const bool fit0DirectEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
+        state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(state) && directNiriOwnerEdgeCameraActive(state) &&
+        !centeredFit0SelectionTarget;
+    const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow :
+        (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : (fit0DirectEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : focusedWindow));
     const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
     const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
-    const auto edgeCameraFocusCandidate = selectionTarget ? selectionTarget : focusedWindow;
+    const auto edgeCameraFocusCandidate = fit0DirectEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : (selectionTarget ? selectionTarget : focusedWindow);
     const bool preserveEdgeCamera = directNiriOwnerEdgeCameraActive(state) &&
-        (!edgeCameraFocusCandidate || !edgeCameraFocusCandidate->m_isMapped || edgeCameraFocusCandidate->m_pinned ||
+        (fit0DirectEdgeCameraWithoutCenteredFocus || !edgeCameraFocusCandidate || !edgeCameraFocusCandidate->m_isMapped || edgeCameraFocusCandidate->m_pinned ||
          edgeCameraFocusCandidate->m_workspace != state.ownerWorkspace);
+    if (debugLogsEnabled() && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 && state.collectionPolicy.onlyActiveWorkspace &&
+        usesDirectNiriScrollingOverview(state) && state.ownerWorkspace && isScrollingWorkspace(state.ownerWorkspace)) {
+        std::ostringstream out;
+        out << "[hymission] focus-fit0 build-state edge-camera preserve"
+            << " owner=" << debugWorkspaceLabel(state.ownerWorkspace)
+            << " centered=" << debugWindowLabel(centeredFit0SelectionTarget)
+            << " focused=" << debugWindowLabel(focusedWindow)
+            << " selection=" << debugWindowLabel(selectionTarget)
+            << " candidate=" << debugWindowLabel(edgeCameraFocusCandidate)
+            << " directEdge=" << (directNiriOwnerEdgeCameraActive(state) ? 1 : 0)
+            << " noCenteredEdge=" << (fit0DirectEdgeCameraWithoutCenteredFocus ? 1 : 0)
+            << " preserve=" << (preserveEdgeCamera ? 1 : 0);
+        debugLog(out.str());
+    }
     if (!preserveEdgeCamera && !selectWindowInState(state, selectionTarget) && !selectWindowInState(state, focusedWindow) && !state.windows.empty() &&
         !centeredEmptyPlaceholder) {
         state.selectedIndex = 0;
