@@ -2097,6 +2097,14 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             const Rect previousRect = currentWorkspaceStripRect(*previous);
             nextEntry.relayoutFromRect = previousRect;
+            if (edgeCameraViewportDelta && nextEntry.monitor == m_state.ownerMonitor && nextEntry.workspaceId != WORKSPACE_INVALID) {
+                const Vector2D delta = *edgeCameraViewportDelta;
+                nextEntry.rect = translateRect(previous->rect, delta.x, delta.y);
+                for (auto& windowPreview : nextEntry.windows) {
+                    windowPreview.naturalGlobal = translateRect(windowPreview.naturalGlobal, delta.x, delta.y);
+                }
+                edgeCameraViewportDeltaUsed = true;
+            }
             nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
             if (nextEntry.hasRelayoutFromRect) {
                 stripRelayoutChanged = true;
@@ -2156,7 +2164,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             // previous animation destination plus the new scroll-past segment.
             // Using current + segment only works when the old animation has already
             // settled; while spam-scrolling it under-shoots and visibly snaps.
-            const Rect translatedTarget = translateRect(previousTarget, edgeCameraViewportDelta->x, edgeCameraViewportDelta->y);
+            const Vector2D delta = *edgeCameraViewportDelta;
+            const Rect     translatedTarget = translateRect(previousTarget, delta.x, delta.y);
             managed.targetGlobal = translatedTarget;
             if (managed.targetMonitor)
                 managed.slot.target = rectToMonitorLocal(translatedTarget, managed.targetMonitor);
@@ -2173,7 +2182,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                     << " previousTarget=" << rectToString(previousTarget)
                     << " nativeTarget=" << rectToString(it->targetGlobal)
                     << " translatedTarget=" << rectToString(translatedTarget)
-                    << " targetDelta=(" << edgeCameraViewportDelta->x << "," << edgeCameraViewportDelta->y << ")";
+                    << " targetDelta=(" << delta.x << "," << delta.y << ")";
                 debugLog(out.str());
             }
         }
@@ -2273,6 +2282,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             if (previous != previousPlaceholderRects.end()) {
                 placeholder.relayoutFromGlobal = previous->rect;
+                if (edgeCameraViewportDelta && placeholder.monitor == m_state.ownerMonitor) {
+                    const Vector2D delta = *edgeCameraViewportDelta;
+                    placeholder.targetGlobal = translateRect(previous->target, delta.x, delta.y);
+                    edgeCameraViewportDeltaUsed = true;
+                }
                 if (!rectApproxEqual(previous->rect, placeholder.targetGlobal, 0.5))
                     placeholderTargetChanged = true;
 
