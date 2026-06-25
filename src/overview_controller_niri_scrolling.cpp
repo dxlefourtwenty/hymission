@@ -1905,6 +1905,41 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
+    bool stripRelayoutChanged = false;
+    std::size_t stripRelayoutEntries = 0;
+    if (animateRefresh && workspaceStripEnabled(m_state)) {
+        for (auto& nextEntry : next.stripEntries) {
+            const auto previous = std::find_if(m_state.stripEntries.begin(), m_state.stripEntries.end(), [&](const WorkspaceStripEntry& previousEntry) {
+                return workspaceStripEntriesMatchForSnapshot(nextEntry, previousEntry);
+            });
+
+            if (previous == m_state.stripEntries.end()) {
+                nextEntry.relayoutFromRect = nextEntry.rect;
+                nextEntry.hasRelayoutFromRect = false;
+                continue;
+            }
+
+            const Rect previousRect = currentWorkspaceStripRect(*previous);
+            nextEntry.relayoutFromRect = previousRect;
+            nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
+            if (nextEntry.hasRelayoutFromRect) {
+                stripRelayoutChanged = true;
+                ++stripRelayoutEntries;
+            }
+        }
+
+        if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && sourceView.find("movecol") != std::string_view::npos) {
+            std::ostringstream out;
+            out << "[hymission] niri refresh strip retarget"
+                << " source=" << (source ? source : "?")
+                << " previousEntries=" << m_state.stripEntries.size()
+                << " nextEntries=" << next.stripEntries.size()
+                << " changed=" << (stripRelayoutChanged ? 1 : 0)
+                << " changedEntries=" << stripRelayoutEntries;
+            debugLog(out.str());
+        }
+    }
+
     std::size_t updated = 0;
     bool        targetChanged = false;
     bool        placeholderTargetChanged = false;
@@ -2012,13 +2047,22 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     if (updated == 0)
         return;
 
+    m_state.stripEntries = next.stripEntries;
     m_state.emptyWorkspacePlaceholders = next.emptyWorkspacePlaceholders;
     if (animateRefresh) {
+        const bool edgeRetargetSource = sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos;
         for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-            const auto previous = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
+            auto previous = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
                 return candidate.monitor == placeholder.monitor && candidate.workspaceId == placeholder.workspaceId &&
                     candidate.backingOnly == placeholder.backingOnly;
             });
+            bool usedBackingMismatchFallback = false;
+            if (previous == previousPlaceholderRects.end() && edgeRetargetSource) {
+                previous = std::find_if(previousPlaceholderRects.begin(), previousPlaceholderRects.end(), [&](const PreviousPlaceholderRect& candidate) {
+                    return candidate.monitor == placeholder.monitor && candidate.workspaceId == placeholder.workspaceId;
+                });
+                usedBackingMismatchFallback = previous != previousPlaceholderRects.end();
+            }
 
             if (previous != previousPlaceholderRects.end()) {
                 placeholder.relayoutFromGlobal = previous->rect;
@@ -2031,12 +2075,23 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                         << " source=" << (source ? source : "?")
                         << " workspaceId=" << placeholder.workspaceId
                         << " backingOnly=" << (placeholder.backingOnly ? 1 : 0)
+                        << " previousBackingOnly=" << (previous->backingOnly ? 1 : 0)
+                        << " backingMismatchFallback=" << (usedBackingMismatchFallback ? 1 : 0)
                         << " from=" << rectToString(previous->rect)
                         << " target=" << rectToString(placeholder.targetGlobal);
                     debugLog(out.str());
                 }
             } else {
                 placeholder.relayoutFromGlobal = placeholder.targetGlobal;
+                if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && sourceView.find("movecol") != std::string_view::npos) {
+                    std::ostringstream out;
+                    out << "[hymission] niri refresh placeholder retarget missing-previous"
+                        << " source=" << (source ? source : "?")
+                        << " workspaceId=" << placeholder.workspaceId
+                        << " backingOnly=" << (placeholder.backingOnly ? 1 : 0)
+                        << " target=" << rectToString(placeholder.targetGlobal);
+                    debugLog(out.str());
+                }
             }
         }
     } else {
@@ -2045,7 +2100,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     }
 
     const bool forcePreviousRectRelayout = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && animateRefresh;
-    m_state.relayoutActive = (targetChanged || placeholderTargetChanged || forcePreviousRectRelayout) && (animateRefresh || captureTwoColumnRefresh);
+    m_state.relayoutActive = (targetChanged || placeholderTargetChanged || stripRelayoutChanged || forcePreviousRectRelayout) && (animateRefresh || captureTwoColumnRefresh);
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
     if (m_state.relayoutActive)
@@ -2056,6 +2111,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             << " animate=" << (m_state.relayoutActive ? 1 : 0)
             << " targetChanged=" << (targetChanged ? 1 : 0)
             << " placeholderTargetChanged=" << (placeholderTargetChanged ? 1 : 0)
+            << " stripRelayoutChanged=" << (stripRelayoutChanged ? 1 : 0)
+            << " stripRelayoutEntries=" << stripRelayoutEntries
             << " forcePreviousRectRelayout=" << (forcePreviousRectRelayout ? 1 : 0)
             << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0)
             << " columns=" << columnCount
@@ -4749,7 +4806,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                         << " source=" << relayoutSource
                         << " enteredEdgeAfter=" << (enteredNativeEdgeCameraAfterDispatch ? 1 : 0)
                         << " focusReleased=" << (nativeEdgeCameraFocusReleased ? 1 : 0)
-                        << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0);
+                        << " relayoutOrigins=" << (directStripRelayoutOrigins ? 1 : 0)
+                        << " originWindows=" << (directStripRelayoutOrigins ? directStripRelayoutOrigins->size() : 0)
+                        << " relayoutActiveBeforeRefresh=" << (m_state.relayoutActive ? 1 : 0)
+                        << " relayoutProgressBeforeRefresh=" << m_state.relayoutProgress
+                        << " stripEntries=" << m_state.stripEntries.size()
+                        << " placeholders=" << m_state.emptyWorkspacePlaceholders.size();
                     debugLog(out.str());
                 }
                 refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);

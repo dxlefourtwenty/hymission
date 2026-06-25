@@ -9412,6 +9412,18 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
         ++committedPlaceholders;
     }
 
+    std::size_t committedStripEntries = 0;
+    for (auto& entry : m_state.stripEntries) {
+        if (!entry.monitor)
+            continue;
+
+        const Rect preview = currentWorkspaceStripRect(entry);
+        entry.rect = preview;
+        entry.relayoutFromRect = preview;
+        entry.hasRelayoutFromRect = false;
+        ++committedStripEntries;
+    }
+
     m_state.slots.clear();
     m_state.slots.reserve(m_state.windows.size());
     for (auto& managed : m_state.windows) {
@@ -9434,8 +9446,22 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
         std::ostringstream out;
         out << "[hymission] committed active niri relayout for retarget"
             << " windows=" << previewRects.size()
-            << " placeholders=" << committedPlaceholders;
+            << " placeholders=" << committedPlaceholders
+            << " stripEntries=" << committedStripEntries;
         debugLog(out.str());
+
+        std::size_t logged = 0;
+        for (const auto& entry : m_state.stripEntries) {
+            if (!entry.monitor || logged >= 6)
+                continue;
+            std::ostringstream stripOut;
+            stripOut << "[hymission] committed active niri strip entry"
+                << " workspaceId=" << entry.workspaceId
+                << " active=" << (entry.active ? 1 : 0)
+                << " rect=" << rectToString(entry.rect);
+            debugLog(stripOut.str());
+            ++logged;
+        }
     }
 
     return previewRects;
