@@ -1859,12 +1859,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
-    const auto refreshEdgeCameraSide = scrollingEdgeCameraSide(scrolling);
-    const bool interruptedWindowActiveEdgeRetarget = sourceView.starts_with("window-active") && previousPreviewRects &&
-        usesDirectNiriScrollingOverview(m_state) && m_state.relayoutActive && refreshEdgeCameraSide != ScrollingEdgeCameraSide::None;
     const bool forceFinalScrollingLayoutBox = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) &&
-        (sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos ||
-         interruptedWindowActiveEdgeRetarget);
+        (sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos);
 
     State next;
     {
@@ -1935,30 +1931,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     std::optional<Vector2D> edgeCameraViewportDelta;
     bool                    edgeCameraViewportDeltaUsed = false;
     const bool edgeReleaseRetargetSource = sourceView.find("movecol-edge-release") != std::string_view::npos ||
-        sourceView.find("edge-release") != std::string_view::npos || interruptedWindowActiveEdgeRetarget;
+        sourceView.find("edge-release") != std::string_view::npos;
     const bool edgeRetargetSource = edgeReleaseRetargetSource || sourceView.find("movecol-edge") != std::string_view::npos;
     const bool edgeRetargetPrevious = sourceView.find("prev") != std::string_view::npos ||
-        sourceView.find("before") != std::string_view::npos ||
-        (interruptedWindowActiveEdgeRetarget && refreshEdgeCameraSide == ScrollingEdgeCameraSide::BeforeFirst);
+        sourceView.find("before") != std::string_view::npos;
     const bool edgeRetargetNext = !edgeRetargetPrevious;
-    if (debugLogsEnabled() && interruptedWindowActiveEdgeRetarget) {
-        const auto* const controller = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->controller.get() : nullptr;
-        const CBox        usable = scrolling ? scrolling->usableArea() : CBox{};
-        const bool        fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
-        const double      viewportLength = controller ? (controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h)) : 0.0;
-        const double      maxExtent = controller ? controller->calculateMaxExtent(usable, fullscreenOnOne) : 0.0;
-        const double      maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
-        std::ostringstream out;
-        out << "[hymission] niri interrupted window-active edge retarget"
-            << " source=" << (source ? source : "?")
-            << " side=" << (refreshEdgeCameraSide == ScrollingEdgeCameraSide::BeforeFirst ? "prev" : "next")
-            << " offset=" << (controller ? controller->getOffset() : 0.0)
-            << " maxNormalOffset=" << maxNormalOffset
-            << " previousRects=" << previousPreviewRects->size()
-            << " relayoutProgress=" << m_state.relayoutProgress
-            << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0);
-        debugLog(out.str());
-    }
 
     // Leaf -> empty-column is a camera pan, not a focus change to another real
     // tiled window.  Hyprland can represent this as a scroll-past/edge-camera
@@ -2120,14 +2097,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             const Rect previousRect = currentWorkspaceStripRect(*previous);
             nextEntry.relayoutFromRect = previousRect;
-            if (edgeCameraViewportDelta && nextEntry.monitor == m_state.ownerMonitor && nextEntry.workspaceId != WORKSPACE_INVALID) {
-                const Vector2D delta = *edgeCameraViewportDelta;
-                nextEntry.rect = translateRect(previous->rect, delta.x, delta.y);
-                for (auto& windowPreview : nextEntry.windows) {
-                    windowPreview.naturalGlobal = translateRect(windowPreview.naturalGlobal, delta.x, delta.y);
-                }
-                edgeCameraViewportDeltaUsed = true;
-            }
             nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
             if (nextEntry.hasRelayoutFromRect) {
                 stripRelayoutChanged = true;
@@ -2135,8 +2104,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             }
         }
 
-        if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) &&
-            (sourceView.find("movecol") != std::string_view::npos || interruptedWindowActiveEdgeRetarget || edgeCameraViewportDelta)) {
+        if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && sourceView.find("movecol") != std::string_view::npos) {
             std::ostringstream out;
             out << "[hymission] niri refresh strip retarget"
                 << " source=" << (source ? source : "?")
@@ -2306,11 +2274,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             if (previous != previousPlaceholderRects.end()) {
                 placeholder.relayoutFromGlobal = previous->rect;
-                if (edgeCameraViewportDelta && placeholder.monitor == m_state.ownerMonitor) {
-                    const Vector2D delta = *edgeCameraViewportDelta;
-                    placeholder.targetGlobal = translateRect(previous->target, delta.x, delta.y);
-                    edgeCameraViewportDeltaUsed = true;
-                }
                 if (!rectApproxEqual(previous->rect, placeholder.targetGlobal, 0.5))
                     placeholderTargetChanged = true;
 
@@ -2396,6 +2359,29 @@ void OverviewController::refreshNiriScrollingOverviewAfterFocusDispatcher(const 
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
     const auto liveFocus = Desktop::focusState()->window();
     const bool liveFocusValid = liveFocus && liveFocus->m_isMapped && hasManagedWindow(liveFocus);
+    if (sourceView.starts_with("window-active") && directNiriEdgeCameraActive() && m_state.relayoutActive) {
+        m_state.selectedIndex.reset();
+        m_state.focusDuringOverview.reset();
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] skip stale niri window-active during edge relayout"
+                << " source=" << (source ? source : "?")
+                << " liveFocus=" << debugWindowLabel(liveFocus)
+                << " liveFocusValid=" << (liveFocusValid ? 1 : 0)
+                << " relayoutProgress=" << m_state.relayoutProgress;
+            debugLog(out.str());
+        }
+
+        damageOwnedMonitors();
+        return;
+    }
     if (sourceView.starts_with("window-active") && directNiriEdgeCameraActive() && !liveFocusValid) {
         // A delayed window.active event from the leaf window can arrive after the
         // native scrolling layout has already released focus for leaf -> scroll-past.
