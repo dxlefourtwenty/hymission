@@ -4966,7 +4966,14 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                         << " placeholders=" << m_state.emptyWorkspacePlaceholders.size();
                     debugLog(out.str());
                 }
-                refreshNiriScrollingOverviewAfterLayoutScroll(relayoutSource, directStripRelayoutOrigins);
+                // Use the same metadata refresh path as normal movecol/movefocus retargets.
+                // The direct edge refresh path rebuilt only window/placeholder geometry;
+                // when the previous strip motion was still in flight, that skipped the
+                // normal state carry-over that redirects ongoing overview animations.
+                // Passing a null preferred focus while native edge camera has released
+                // focus preserves the scroll-past state, then refreshVisibleStateMetadata
+                // forwards the captured origins into refreshNiriScrollingOverviewAfterLayoutScroll.
+                refreshVisibleStateMetadata(preferred, directStripRelayoutOrigins, relayoutSource);
             } else {
                 // Match movecol exactly for swapcol / resizecol / resizeactive here:
                 // do not force a focus-fit/center sync after the native dispatcher.
