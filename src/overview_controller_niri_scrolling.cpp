@@ -1859,8 +1859,12 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
+    const auto refreshEdgeCameraSide = scrollingEdgeCameraSide(scrolling);
+    const bool interruptedWindowActiveEdgeRetarget = sourceView.starts_with("window-active") && previousPreviewRects &&
+        usesDirectNiriScrollingOverview(m_state) && m_state.relayoutActive && refreshEdgeCameraSide != ScrollingEdgeCameraSide::None;
     const bool forceFinalScrollingLayoutBox = previousPreviewRects && usesDirectNiriScrollingOverview(m_state) &&
-        (sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos);
+        (sourceView.find("movecol-edge") != std::string_view::npos || sourceView.find("edge-release") != std::string_view::npos ||
+         interruptedWindowActiveEdgeRetarget);
 
     State next;
     {
@@ -1931,11 +1935,30 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     std::optional<Vector2D> edgeCameraViewportDelta;
     bool                    edgeCameraViewportDeltaUsed = false;
     const bool edgeReleaseRetargetSource = sourceView.find("movecol-edge-release") != std::string_view::npos ||
-        sourceView.find("edge-release") != std::string_view::npos;
+        sourceView.find("edge-release") != std::string_view::npos || interruptedWindowActiveEdgeRetarget;
     const bool edgeRetargetSource = edgeReleaseRetargetSource || sourceView.find("movecol-edge") != std::string_view::npos;
     const bool edgeRetargetPrevious = sourceView.find("prev") != std::string_view::npos ||
-        sourceView.find("before") != std::string_view::npos;
+        sourceView.find("before") != std::string_view::npos ||
+        (interruptedWindowActiveEdgeRetarget && refreshEdgeCameraSide == ScrollingEdgeCameraSide::BeforeFirst);
     const bool edgeRetargetNext = !edgeRetargetPrevious;
+    if (debugLogsEnabled() && interruptedWindowActiveEdgeRetarget) {
+        const auto* const controller = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->controller.get() : nullptr;
+        const CBox        usable = scrolling ? scrolling->usableArea() : CBox{};
+        const bool        fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+        const double      viewportLength = controller ? (controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h)) : 0.0;
+        const double      maxExtent = controller ? controller->calculateMaxExtent(usable, fullscreenOnOne) : 0.0;
+        const double      maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
+        std::ostringstream out;
+        out << "[hymission] niri interrupted window-active edge retarget"
+            << " source=" << (source ? source : "?")
+            << " side=" << (refreshEdgeCameraSide == ScrollingEdgeCameraSide::BeforeFirst ? "prev" : "next")
+            << " offset=" << (controller ? controller->getOffset() : 0.0)
+            << " maxNormalOffset=" << maxNormalOffset
+            << " previousRects=" << previousPreviewRects->size()
+            << " relayoutProgress=" << m_state.relayoutProgress
+            << " forceFinalLayoutBox=" << (forceFinalScrollingLayoutBox ? 1 : 0);
+        debugLog(out.str());
+    }
 
     // Leaf -> empty-column is a camera pan, not a focus change to another real
     // tiled window.  Hyprland can represent this as a scroll-past/edge-camera
@@ -2112,7 +2135,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
             }
         }
 
-        if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && sourceView.find("movecol") != std::string_view::npos) {
+        if (debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) &&
+            (sourceView.find("movecol") != std::string_view::npos || interruptedWindowActiveEdgeRetarget || edgeCameraViewportDelta)) {
             std::ostringstream out;
             out << "[hymission] niri refresh strip retarget"
                 << " source=" << (source ? source : "?")
