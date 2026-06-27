@@ -2383,8 +2383,24 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
     std::size_t updated = 0;
     std::size_t edgeCameraViewportWindowLogs = 0;
+    std::size_t guardedInactiveEdgeRetargetWindows = 0;
     bool        targetChanged = false;
     bool        placeholderTargetChanged = false;
+    const auto  edgeRetargetWorkspaceMonitor = workspace ? workspace->m_monitor.lock() : PHLMONITOR{};
+    const auto  shouldGuardInactiveEdgeRetargetWindow = [&](const ManagedWindow& managed) {
+        if (!edgeRetargetSource || !usesDirectNiriScrollingOverview(m_state) || !workspace || !managed.window ||
+            managed.window->m_pinned || managed.isPinned)
+            return false;
+
+        const auto windowWorkspace = managed.window->m_workspace;
+        if (!windowWorkspace || windowWorkspace == workspace || !isScrollingWorkspace(windowWorkspace))
+            return false;
+
+        if (edgeRetargetWorkspaceMonitor && managed.targetMonitor && managed.targetMonitor != edgeRetargetWorkspaceMonitor)
+            return false;
+
+        return true;
+    };
     const auto previousPreviewRectFor = [&](const PHLWINDOW& window, const ManagedWindow& fallback) {
         if (previousPreviewRects) {
             const auto previous = std::find_if(previousPreviewRects->begin(), previousPreviewRects->end(),
@@ -2406,6 +2422,30 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         const Rect currentRect = previousPreviewRectFor(managed.window, managed);
         const Rect previousTarget = managed.targetGlobal;
         const Rect previousRelayoutFrom = managed.relayoutFromGlobal;
+        if (shouldGuardInactiveEdgeRetargetWindow(managed)) {
+            managed.relayoutFromGlobal = previousTarget;
+            if (managed.targetMonitor)
+                managed.slot.target = rectToMonitorLocal(previousTarget, managed.targetMonitor);
+            m_state.slots.push_back(managed.slot);
+            ++updated;
+
+            if (debugLogsEnabled() && guardedInactiveEdgeRetargetWindows < 8) {
+                ++guardedInactiveEdgeRetargetWindows;
+                std::ostringstream out;
+                out << "[hymission] guard inactive niri edge retarget window"
+                    << " source=" << (source ? source : "?")
+                    << " window=" << debugWindowLabel(managed.window)
+                    << " activeWorkspace=" << debugWorkspaceLabel(workspace)
+                    << " windowWorkspace=" << debugWorkspaceLabel(managed.window->m_workspace)
+                    << " keptTarget=" << rectToString(previousTarget)
+                    << " rebuildTarget=" << rectToString(it->targetGlobal)
+                    << " current=" << rectToString(currentRect);
+                debugLog(out.str());
+            }
+
+            continue;
+        }
+
         managed.naturalGlobal = it->naturalGlobal;
         managed.slot = it->slot;
         managed.targetGlobal = it->targetGlobal;
@@ -5289,19 +5329,35 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         PreviewRectSnapshot rects;
         rects.reserve(m_state.windows.size());
 
+        const auto retargetWorkspace = activeLayoutWorkspace();
+        const auto canUseLiveRetargetOrigin = [&](const ManagedWindow& managed) {
+            if (!managed.window || managed.window->m_pinned || managed.isPinned)
+                return true;
+
+            return !retargetWorkspace || managed.window->m_workspace == retargetWorkspace;
+        };
+
         std::size_t liveOrigins = 0;
         std::size_t fallbackOrigins = 0;
         for (const auto& managed : m_state.windows) {
             if (!managed.window)
                 continue;
 
-            if (const auto liveRect = livePreviewRectForManagedWindow(managed); liveRect) {
-                rects.emplace_back(managed.window, *liveRect);
-                ++liveOrigins;
+            const bool liveOriginAllowed = canUseLiveRetargetOrigin(managed);
+            if (liveOriginAllowed) {
+                if (const auto liveRect = livePreviewRectForManagedWindow(managed); liveRect) {
+                    rects.emplace_back(managed.window, *liveRect);
+                    ++liveOrigins;
+                    continue;
+                }
+            }
+
+            if (!liveOriginAllowed && managed.window && managed.window->m_workspace && isScrollingWorkspace(managed.window->m_workspace)) {
+                rects.emplace_back(managed.window, managed.targetGlobal);
             } else {
                 rects.emplace_back(managed.window, currentPreviewRect(managed));
-                ++fallbackOrigins;
             }
+            ++fallbackOrigins;
         }
 
         if (debugLogsEnabled()) {
