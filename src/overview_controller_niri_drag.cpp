@@ -947,6 +947,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const PHLWINDOW preservedSourceLastFocus = sourceWorkspace ? sourceWorkspace->getLastFocusedWindow() : PHLWINDOW{};
     const PHLWINDOW preservedTargetLastFocus = workspace ? workspace->getLastFocusedWindow() : PHLWINDOW{};
     const PHLWINDOW preservedOwnerLastFocus = preservedOwnerWorkspace ? preservedOwnerWorkspace->getLastFocusedWindow() : PHLWINDOW{};
+    const bool      dropIntoPreservedEmptyOwner = dropIntoEmptyWorkspace && workspace == preservedOwnerWorkspace;
 
     const auto validPreservedFocus = [&](const PHLWINDOW &candidate) {
         return candidate && candidate->m_isMapped && !candidate->m_fadingOut && !candidate->m_pinned && !candidate->onSpecialWorkspace() &&
@@ -962,6 +963,8 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     };
 
     const auto focusFallbackForPreservedOwner = [&]() -> PHLWINDOW {
+        if (dropIntoPreservedEmptyOwner && validPreservedFocus(window))
+            return window;
         if (validPreservedFocus(preservedOverviewFocus))
             return preservedOverviewFocus;
         if (validPreservedFocus(preservedNativeFocus))
@@ -1507,7 +1510,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
-    } else if (!target.floating && crossWorkspaceDrop) {
+    } else if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace) {
         // Cross-workspace drops stay native-owned for workspace transfer.  If the
         // drop target was an existing column, the narrow post-move retile above
         // may have stacked the moved window into that column; otherwise Hyprland's
@@ -1520,10 +1523,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         // moveWindowToWorkspaceSafe() already creates the first scrolling column.
         // Do not remove/re-add the freshly moved target or call SScrollingData::add()
         // here; doing so can leave renderer-visible window state with an invalid
-        // variant on the next frame. Also make the drop workspace the real active
-        // workspace before rebuilding the overview: otherwise Hyprland hides the
-        // moved window because it now belongs to an inactive workspace, leaving
-        // only Hymission's selection border visible.
+        // variant on the next frame.
         if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData)
             scrolling->m_scrollingData->recalculate();
         if (target.monitor && g_layoutManager)
