@@ -10,6 +10,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #define private public
 #include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
@@ -482,21 +483,45 @@ enum class ScrollingEdgeCameraSide {
     AfterLast,
 };
 
-ScrollingEdgeCameraSide scrollingEdgeCameraSide(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+std::pair<double, double> scrollingNormalOffsetBounds(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
-        return ScrollingEdgeCameraSide::None;
+        return {0.0, 0.0};
 
     auto* const controller = scrolling->m_scrollingData->controller.get();
     const CBox usable = scrolling->usableArea();
     const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
     const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double viewport = std::max(1.0, viewportLength);
     const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
-    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
-    const double offset = controller->getOffset();
+    const double maxNormalOffset = std::max(0.0, maxExtent - viewport);
+    double beforeFirstNormalOffset = 0.0;
+    double afterLastNormalOffset = maxNormalOffset;
 
-    if (offset < -0.5)
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 0 && controller->stripCount() > 0) {
+        const auto centeredStripOffset = [&](std::size_t index) {
+            const double stripStart = controller->calculateStripStart(index, usable, fullscreenOnOne);
+            const double stripSize = controller->calculateStripSize(index, usable, fullscreenOnOne);
+            return stripStart - (viewport - stripSize) * 0.5;
+        };
+
+        beforeFirstNormalOffset = std::min(beforeFirstNormalOffset, centeredStripOffset(0));
+        afterLastNormalOffset = std::max(afterLastNormalOffset, centeredStripOffset(controller->stripCount() - 1));
+    }
+
+    return {beforeFirstNormalOffset, afterLastNormalOffset};
+}
+
+ScrollingEdgeCameraSide scrollingEdgeCameraSide(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return ScrollingEdgeCameraSide::None;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const double offset = controller->getOffset();
+    const auto [beforeFirstNormalOffset, afterLastNormalOffset] = scrollingNormalOffsetBounds(scrolling);
+
+    if (offset < beforeFirstNormalOffset - 0.5)
         return ScrollingEdgeCameraSide::BeforeFirst;
-    if (offset > maxNormalOffset + 0.5)
+    if (offset > afterLastNormalOffset + 0.5)
         return ScrollingEdgeCameraSide::AfterLast;
 
     return ScrollingEdgeCameraSide::None;
@@ -4737,6 +4762,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     const bool moveColumnPrefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
     const bool moveColumnPrefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
+    const auto [normalEdgeBeforeOffset, normalEdgeAfterOffset] = scrollingNormalOffsetBounds(edgeCameraScrollingBefore);
     const auto rawEdgeCameraSideBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() ?
         scrollingEdgeCameraSide(edgeCameraScrollingBefore) : ScrollingEdgeCameraSide::None;
     const bool rawDirectEdgeCameraBefore = rawEdgeCameraSideBefore != ScrollingEdgeCameraSide::None;
@@ -4770,6 +4796,12 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             << " directEdgeBefore=" << (directEdgeCameraBefore ? 1 : 0)
             << " rawDirectEdgeBefore=" << (rawDirectEdgeCameraBefore ? 1 : 0)
             << " rawEdgeSide=" << static_cast<int>(rawEdgeCameraSideBefore)
+            << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
+            << " offset=" << (edgeCameraScrollingBefore && edgeCameraScrollingBefore->m_scrollingData &&
+                                      edgeCameraScrollingBefore->m_scrollingData->controller ?
+                                  edgeCameraScrollingBefore->m_scrollingData->controller->getOffset() : 0.0)
+            << " normalBefore=" << normalEdgeBeforeOffset
+            << " normalAfter=" << normalEdgeAfterOffset
             << " staleLeafEdge=" << (staleAfterLastEdgeCameraWithLeafFocus ? 1 : 0)
             << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
             << " selectedLeafTowardEdge=" << (selectedLeafMoveColumnTowardEdge ? 1 : 0)

@@ -1584,21 +1584,45 @@ enum class MetadataEdgeCameraSide {
     AfterLast,
 };
 
+std::pair<double, double> metadataNormalOffsetBounds(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return {0.0, 0.0};
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox usable = scrolling->usableArea();
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
+    const double viewport = std::max(1.0, viewportLength);
+    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
+    const double maxNormalOffset = std::max(0.0, maxExtent - viewport);
+    double beforeFirstNormalOffset = 0.0;
+    double afterLastNormalOffset = maxNormalOffset;
+
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 0 && controller->stripCount() > 0) {
+        const auto centeredStripOffset = [&](std::size_t index) {
+            const double stripStart = controller->calculateStripStart(index, usable, fullscreenOnOne);
+            const double stripSize = controller->calculateStripSize(index, usable, fullscreenOnOne);
+            return stripStart - (viewport - stripSize) * 0.5;
+        };
+
+        beforeFirstNormalOffset = std::min(beforeFirstNormalOffset, centeredStripOffset(0));
+        afterLastNormalOffset = std::max(afterLastNormalOffset, centeredStripOffset(controller->stripCount() - 1));
+    }
+
+    return {beforeFirstNormalOffset, afterLastNormalOffset};
+}
+
 MetadataEdgeCameraSide metadataEdgeCameraSide(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
         return MetadataEdgeCameraSide::None;
 
     auto* const controller = scrolling->m_scrollingData->controller.get();
-    const CBox  usable = scrolling->usableArea();
-    const bool  fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
-    const double viewportLength = controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h);
-    const double maxExtent = controller->calculateMaxExtent(usable, fullscreenOnOne);
-    const double maxNormalOffset = std::max(0.0, maxExtent - std::max(1.0, viewportLength));
     const double offset = controller->getOffset();
+    const auto [beforeFirstNormalOffset, afterLastNormalOffset] = metadataNormalOffsetBounds(scrolling);
 
-    if (offset < -0.5)
+    if (offset < beforeFirstNormalOffset - 0.5)
         return MetadataEdgeCameraSide::BeforeFirst;
-    if (offset > maxNormalOffset + 0.5)
+    if (offset > afterLastNormalOffset + 0.5)
         return MetadataEdgeCameraSide::AfterLast;
 
     return MetadataEdgeCameraSide::None;
@@ -4011,6 +4035,10 @@ void OverviewController::handleConfigReloaded() {
         if ((!preferredWindow || !preferredWindow->m_isMapped || !hasManagedWindow(preferredWindow)) &&
             Desktop::focusState()->window() && hasManagedWindow(Desktop::focusState()->window()))
             preferredWindow = Desktop::focusState()->window();
+        const bool preserveDirectNiriScrollPastReload = usesDirectNiriScrollingOverview(m_state) && directNiriEdgeCameraActive() &&
+            (!preferredWindow || shouldPreserveDirectNiriEdgeCamera(preferredWindow));
+        if (preserveDirectNiriScrollPastReload)
+            preferredWindow = {};
 
         const auto reloadedPolicy = loadCollectionPolicy(m_state.collectionPolicy.requestedScope);
         const bool collectionPolicyChanged = reloadedPolicy.onlyActiveWorkspace != m_state.collectionPolicy.onlyActiveWorkspace ||
@@ -4023,6 +4051,7 @@ void OverviewController::handleConfigReloaded() {
                 << " collectionPolicyChanged=" << (collectionPolicyChanged ? 1 : 0)
                 << " phase=" << static_cast<int>(m_state.phase)
                 << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
+                << " preserveScrollPast=" << (preserveDirectNiriScrollPastReload ? 1 : 0)
                 << " windows=" << m_state.windows.size()
                 << " preferred=" << debugWindowLabel(preferredWindow);
             debugLog(out.str());
@@ -4046,7 +4075,8 @@ void OverviewController::handleConfigReloaded() {
                 PHLWINDOW workspaceFocus;
                 if (preferredWindow && preferredWindow->m_workspace == workspace && !preferredWindow->m_pinned)
                     workspaceFocus = preferredWindow;
-                if (!workspaceFocus)
+                const bool preserveWorkspaceScrollPast = preserveDirectNiriScrollPastReload && workspace == m_state.ownerWorkspace;
+                if (!workspaceFocus && !preserveWorkspaceScrollPast)
                     workspaceFocus = focusCandidateForWorkspace(workspace);
 
                 if (scrolling && scrolling->m_scrollingData) {
@@ -4085,7 +4115,7 @@ void OverviewController::handleConfigReloaded() {
             if (preferredWindow && preferredWindow->m_workspace)
                 reflowScrollingWorkspace(preferredWindow->m_workspace);
 
-            if (preferredWindow && preferredWindow->m_workspace && isScrollingWorkspace(preferredWindow->m_workspace))
+            if (!preserveDirectNiriScrollPastReload && preferredWindow && preferredWindow->m_workspace && isScrollingWorkspace(preferredWindow->m_workspace))
                 (void)syncScrollingWorkspaceSpotOnWindow(preferredWindow, ScrollingSpotTargeting::Configured, ScrollingSpotSyncIntent::FocusChange);
 
             for (const auto& monitor : recalculatedMonitors)
