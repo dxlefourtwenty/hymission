@@ -526,6 +526,13 @@ bool moveColumnCommandPrefersNext(std::string_view dispatcherNameLower, std::str
     return dispatcherNameLower.find("right") != std::string_view::npos || dispatcherNameLower.find("next") != std::string_view::npos;
 }
 
+bool layoutMessageArgsMoveColumn(std::string_view dispatcherArgsLower) {
+    return dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
+        dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
+        dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
+        dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,");
+}
+
 bool moveColumnCommandTargetsEdge(Layout::Tiled::CScrollingAlgorithm* scrolling, std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
     const auto side = scrollingEdgeCameraSide(scrolling);
     if (side == ScrollingEdgeCameraSide::None)
@@ -1936,6 +1943,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     const bool edgeRetargetPrevious = sourceView.find("prev") != std::string_view::npos ||
         sourceView.find("before") != std::string_view::npos;
     const bool edgeRetargetNext = !edgeRetargetPrevious;
+    const bool afterLastEdgeReleaseRetarget = edgeReleaseRetargetSource && edgeRetargetNext;
 
     // Leaf -> empty-column is a camera pan, not a focus change to another real
     // tiled window.  Hyprland can represent this as a scroll-past/edge-camera
@@ -1944,7 +1952,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     // buildState target stays at the previous leaf.  Derive the missing target
     // directly from the existing overview column spacing: previous animation
     // destination + one more column step.
-    if (edgeReleaseRetargetSource && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && scrolling && scrolling->m_scrollingData &&
+    if (afterLastEdgeReleaseRetarget && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() >= 2 && workspace) {
         const bool horizontal = scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->isPrimaryHorizontal() : true;
         struct PreviousColumnOverviewBounds {
@@ -2097,6 +2105,14 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             const Rect previousRect = currentWorkspaceStripRect(*previous);
             nextEntry.relayoutFromRect = previousRect;
+            if (afterLastEdgeReleaseRetarget && edgeCameraViewportDelta && nextEntry.monitor == m_state.ownerMonitor && nextEntry.workspaceId != WORKSPACE_INVALID) {
+                const Vector2D delta = *edgeCameraViewportDelta;
+                nextEntry.rect = translateRect(previous->rect, delta.x, delta.y);
+                for (auto& windowPreview : nextEntry.windows) {
+                    windowPreview.naturalGlobal = translateRect(windowPreview.naturalGlobal, delta.x, delta.y);
+                }
+                edgeCameraViewportDeltaUsed = true;
+            }
             nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
             if (nextEntry.hasRelayoutFromRect) {
                 stripRelayoutChanged = true;
@@ -2149,7 +2165,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
         const bool edgeViewportCameraPanWindow = edgeCameraViewportDelta && managed.window && managed.window->m_isMapped && workspace &&
             managed.window->m_workspace == workspace && !managed.window->m_pinned && !isFloatingOverviewWindow(managed.window) &&
-            managed.window->layoutTarget() && !managed.window->layoutTarget()->floating();
+            managed.window->layoutTarget() && !managed.window->layoutTarget()->floating() && afterLastEdgeReleaseRetarget;
         if (edgeViewportCameraPanWindow) {
             // Retarget exactly like Hyprland's animation redirection: the source is
             // the current visual rect, but the new destination is based on the
@@ -2274,6 +2290,11 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             if (previous != previousPlaceholderRects.end()) {
                 placeholder.relayoutFromGlobal = previous->rect;
+                if (afterLastEdgeReleaseRetarget && edgeCameraViewportDelta && placeholder.monitor == m_state.ownerMonitor) {
+                    const Vector2D delta = *edgeCameraViewportDelta;
+                    placeholder.targetGlobal = translateRect(previous->target, delta.x, delta.y);
+                    edgeCameraViewportDeltaUsed = true;
+                }
                 if (!rectApproxEqual(previous->rect, placeholder.targetGlobal, 0.5))
                     placeholderTargetChanged = true;
 
@@ -4297,6 +4318,10 @@ std::optional<Config::Actions::ActionResult> OverviewController::layoutMessageAc
     if (!activeDirectNiriSingleWorkspaceOverview() && !timedNiriSingleWorkspaceTransitionActive())
         return std::nullopt;
 
+    const std::string msgLower = asciiLowerCopy(trimCopy(msg));
+    if (!layoutMessageArgsMoveColumn(msgLower))
+        return std::nullopt;
+
     const auto result = layoutMessageDispatcherHook(msg);
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -4540,11 +4565,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          dispatcherArgsLower.starts_with("swap col ") || dispatcherArgsLower.starts_with("swap col,") ||
          dispatcherArgsLower == "swap +col" || dispatcherArgsLower.starts_with("swap +col ") || dispatcherArgsLower.starts_with("swap +col,") ||
          dispatcherArgsLower == "swap -col" || dispatcherArgsLower.starts_with("swap -col ") || dispatcherArgsLower.starts_with("swap -col,"));
-    const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher &&
-        (dispatcherArgsLower == "movecol" || dispatcherArgsLower.starts_with("movecol ") || dispatcherArgsLower.starts_with("movecol,") ||
-         dispatcherArgsLower == "move +col" || dispatcherArgsLower.starts_with("move +col ") || dispatcherArgsLower.starts_with("move +col,") ||
-         dispatcherArgsLower == "move col" || dispatcherArgsLower.starts_with("move col ") || dispatcherArgsLower.starts_with("move col,") ||
-         dispatcherArgsLower == "move -col" || dispatcherArgsLower.starts_with("move -col ") || dispatcherArgsLower.starts_with("move -col,"));
+    const bool isMoveColumnLayoutMessage = isLayoutMessageDispatcher && layoutMessageArgsMoveColumn(dispatcherArgsLower);
     const bool isResizeColumnLayoutMessage = isLayoutMessageDispatcher &&
         (dispatcherArgsLower == "resizecol" || dispatcherArgsLower.starts_with("resizecol ") || dispatcherArgsLower.starts_with("resizecol,") ||
          dispatcherArgsLower == "resize +col" || dispatcherArgsLower.starts_with("resize +col ") || dispatcherArgsLower.starts_with("resize +col,") ||
@@ -4712,10 +4733,13 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         edgeLeafCandidateBefore != selectedBefore &&
         moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, edgeLeafCandidateBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool leafMoveColumnTowardEdge = selectedLeafMoveColumnTowardEdge || candidateLeafMoveColumnTowardEdge;
+    const bool moveColumnPrefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
+    const bool moveColumnPrefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
+    const bool leafMoveColumnTowardBeforeFirst = leafMoveColumnTowardEdge && moveColumnPrefersPrevious && !moveColumnPrefersNext;
     const bool interruptedLeafNativeGeometryInFlight = !directEdgeCameraBefore && moveColumnDispatcherForEdge &&
         (m_state.relayoutActive || scrollingNativeGeometryInFlight(edgeCameraScrollingBefore));
     const bool handOffInterruptedLeafToNativeEdge = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
-        interruptedLeafNativeGeometryInFlight && leafMoveColumnTowardEdge;
+        interruptedLeafNativeGeometryInFlight && leafMoveColumnTowardEdge && !leafMoveColumnTowardBeforeFirst;
     const bool preserveNativeEdgeCameraFocusRelease = directEdgeCameraBefore && moveColumnDispatcherForEdge && !edgeMoveColumnAwayFromEdge;
     const bool nativeEdgeCameraTransition = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (leafMoveColumnTowardEdge || edgeMoveColumnAwayFromEdge || handOffInterruptedLeafToNativeEdge);
@@ -4743,6 +4767,22 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     if (directEdgeCameraBefore && (isMoveFocusDispatcher || edgeMoveColumnTowardEdge)) {
         clearDirectNiriEdgeCameraFocusState(edgeMoveColumnTowardEdge ? "movecol-edge-noop" : "movefocus-edge-noop");
+        damageOwnedMonitors();
+        return {};
+    }
+
+    if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && leafMoveColumnTowardBeforeFirst) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] blocked niri movecol before-first scroll-past"
+                << " dispatcher=" << dispatcherNameLower
+                << " args=" << dispatcherArgsLower
+                << " selected=" << debugWindowLabel(selectedBefore)
+                << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore)
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+                << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(edgeCameraScrollingBefore) ? 1 : 0);
+            debugLog(out.str());
+        }
         damageOwnedMonitors();
         return {};
     }
