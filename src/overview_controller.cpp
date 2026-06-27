@@ -14751,6 +14751,17 @@ void OverviewController::renderSelectionChrome() const {
 const OverviewController::ManagedWindow* OverviewController::focusedManagedForBorder(const State& state, const PHLMONITOR& renderMonitor) const {
     const bool edgeCameraActive = directNiriOwnerEdgeCameraActive(state);
 
+    const bool transitionTargetState = m_workspaceTransition.active && state.ownerWorkspace &&
+        state.ownerWorkspace->m_id == m_workspaceTransition.targetWorkspaceId &&
+        (!m_workspaceTransition.targetState.ownerWorkspace || state.ownerWorkspace == m_workspaceTransition.targetState.ownerWorkspace);
+    if (transitionTargetState && !m_workspaceTransition.targetEdgeCameraPreserved && state.focusDuringOverview &&
+        state.focusDuringOverview->m_isMapped && !state.focusDuringOverview->m_fadingOut && !state.focusDuringOverview->m_pinned &&
+        state.focusDuringOverview->m_workspace == state.ownerWorkspace) {
+        if (const auto* transitionFocusManaged = managedWindowFor(state, state.focusDuringOverview, true);
+            transitionFocusManaged && transitionFocusManaged->targetMonitor == renderMonitor)
+            return transitionFocusManaged;
+    }
+
     auto focusedWindow = directNiriFocusedOverviewWindow(state);
     if (!focusedWindow && !edgeCameraActive)
         focusedWindow = state.focusDuringOverview;
