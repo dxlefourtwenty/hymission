@@ -1944,6 +1944,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         sourceView.find("before") != std::string_view::npos;
     const bool edgeRetargetNext = !edgeRetargetPrevious;
     const bool afterLastEdgeReleaseRetarget = edgeReleaseRetargetSource && edgeRetargetNext;
+    const bool afterLastNativeEdgeRetarget = afterLastEdgeReleaseRetarget && scrollingEdgeCameraActive(scrolling);
 
     // Leaf -> empty-column is a camera pan, not a focus change to another real
     // tiled window.  Hyprland can represent this as a scroll-past/edge-camera
@@ -1952,7 +1953,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     // buildState target stays at the previous leaf.  Derive the missing target
     // directly from the existing overview column spacing: previous animation
     // destination + one more column step.
-    if (afterLastEdgeReleaseRetarget && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && scrolling && scrolling->m_scrollingData &&
+    if (afterLastEdgeReleaseRetarget && !afterLastNativeEdgeRetarget && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) && scrolling && scrolling->m_scrollingData &&
         scrolling->m_scrollingData->columns.size() >= 2 && workspace) {
         const bool horizontal = scrolling->m_scrollingData->controller ? scrolling->m_scrollingData->controller->isPrimaryHorizontal() : true;
         struct PreviousColumnOverviewBounds {
@@ -2039,6 +2040,19 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         }
     }
 
+    if (debugLogsEnabled() && afterLastEdgeReleaseRetarget && previousPreviewRects && usesDirectNiriScrollingOverview(m_state)) {
+        std::ostringstream out;
+        out << "[hymission] niri edge target source resolve"
+            << " source=" << (source ? source : "?")
+            << " workspace=" << debugWorkspaceLabel(workspace)
+            << " columns=" << columnCount
+            << " nativeEdgeCamera=" << (afterLastNativeEdgeRetarget ? 1 : 0)
+            << " syntheticDelta=" << (edgeCameraViewportDelta ? 1 : 0)
+            << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+            << " previousRects=" << previousPreviewRects->size();
+        debugLog(out.str());
+    }
+
     const bool edgeRetargetCameraActive = edgeRetargetSource && previousPreviewRects && usesDirectNiriScrollingOverview(m_state) &&
         scrollingEdgeCameraActive(scrolling);
     if (!edgeCameraViewportDelta && edgeRetargetCameraActive && workspace && m_state.ownerMonitor) {
@@ -2105,14 +2119,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             const Rect previousRect = currentWorkspaceStripRect(*previous);
             nextEntry.relayoutFromRect = previousRect;
-            if (afterLastEdgeReleaseRetarget && edgeCameraViewportDelta && nextEntry.monitor == m_state.ownerMonitor && nextEntry.workspaceId != WORKSPACE_INVALID) {
-                const Vector2D delta = *edgeCameraViewportDelta;
-                nextEntry.rect = translateRect(previous->rect, delta.x, delta.y);
-                for (auto& windowPreview : nextEntry.windows) {
-                    windowPreview.naturalGlobal = translateRect(windowPreview.naturalGlobal, delta.x, delta.y);
-                }
-                edgeCameraViewportDeltaUsed = true;
-            }
             nextEntry.hasRelayoutFromRect = !rectApproxEqual(previousRect, nextEntry.rect, 0.5);
             if (nextEntry.hasRelayoutFromRect) {
                 stripRelayoutChanged = true;
@@ -2163,7 +2169,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
         managed.relayoutFromGlobal = animateRefresh ? currentRect : managed.targetGlobal;
         managed.isNiriFloatingOverlay = it->isNiriFloatingOverlay;
 
-        const bool edgeViewportCameraPanWindow = edgeCameraViewportDelta && managed.window && managed.window->m_isMapped && workspace &&
+        const bool edgeViewportCameraPanWindow = edgeCameraViewportDelta && !afterLastNativeEdgeRetarget && managed.window && managed.window->m_isMapped && workspace &&
             managed.window->m_workspace == workspace && !managed.window->m_pinned && !isFloatingOverviewWindow(managed.window) &&
             managed.window->layoutTarget() && !managed.window->layoutTarget()->floating() && afterLastEdgeReleaseRetarget;
         if (edgeViewportCameraPanWindow) {
@@ -2193,6 +2199,17 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
                     << " targetDelta=(" << delta.x << "," << delta.y << ")";
                 debugLog(out.str());
             }
+        } else if (debugLogsEnabled() && afterLastNativeEdgeRetarget && managed.window && managed.window->m_workspace == workspace &&
+                   edgeCameraViewportWindowLogs < 8) {
+            ++edgeCameraViewportWindowLogs;
+            std::ostringstream out;
+            out << "[hymission] niri edge native-retarget window target"
+                << " source=" << (source ? source : "?")
+                << " window=" << debugWindowLabel(managed.window)
+                << " from=" << rectToString(managed.relayoutFromGlobal)
+                << " previousTarget=" << rectToString(previousTarget)
+                << " nativeTarget=" << rectToString(it->targetGlobal);
+            debugLog(out.str());
         }
         if (carriedFrozenSwapColumnLayout)
             (void)carryFrozenSwapColumnBackendPreviewLayout(managed, static_cast<std::size_t>(&managed - m_state.windows.data()), workspace);
@@ -2290,11 +2307,6 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
 
             if (previous != previousPlaceholderRects.end()) {
                 placeholder.relayoutFromGlobal = previous->rect;
-                if (afterLastEdgeReleaseRetarget && edgeCameraViewportDelta && placeholder.monitor == m_state.ownerMonitor) {
-                    const Vector2D delta = *edgeCameraViewportDelta;
-                    placeholder.targetGlobal = translateRect(previous->target, delta.x, delta.y);
-                    edgeCameraViewportDeltaUsed = true;
-                }
                 if (!rectApproxEqual(previous->rect, placeholder.targetGlobal, 0.5))
                     placeholderTargetChanged = true;
 
@@ -4863,35 +4875,20 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
         ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
-    // Normal direct-Niri relayouts commit the active overview animation to the
-    // current visual position before rebuilding targets.  Leaf -> empty-column
-    // edge release is different: the final target may only become knowable after
-    // the native movecol dispatcher runs.  If we commit a still-running movecol
-    // relayout before dispatch, we erase the previous animation destination that
-    // the edge release needs to extend by one more empty-column pan.  Preserve the
-    // active target for every interrupted movecol, but still sample the live
-    // animation progress so the new relayout starts from the current visual strip.
-    const bool preserveActiveTargetForMovecolRetarget = moveColumnDispatcherForEdge && overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+    const bool commitInterruptedMovecolRelayout = moveColumnDispatcherForEdge && overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         m_state.phase == Phase::Active && m_state.relayoutActive;
-    if (preserveActiveTargetForMovecolRetarget && m_relayoutProgressAnimation) {
-        const double previousRelayoutProgress = m_state.relayoutProgress;
-        const double liveRelayoutProgress = clampUnit(m_relayoutProgressAnimation->value());
-        m_state.relayoutProgress = liveRelayoutProgress;
-
-        if (debugLogsEnabled()) {
-            std::ostringstream out;
-            out << "[hymission] synced active relayout progress for interrupted movecol retarget"
-                << " previousProgress=" << previousRelayoutProgress
-                << " liveProgress=" << liveRelayoutProgress
-                << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
-                << " selectedBefore=" << debugWindowLabel(selectedBefore)
-                << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore);
-            debugLog(out.str());
-        }
+    if (commitInterruptedMovecolRelayout && debugLogsEnabled()) {
+        const double liveRelayoutProgress = m_relayoutProgressAnimation ? clampUnit(m_relayoutProgressAnimation->value()) : m_state.relayoutProgress;
+        std::ostringstream out;
+        out << "[hymission] commit active relayout before interrupted movecol retarget"
+            << " previousProgress=" << m_state.relayoutProgress
+            << " liveProgress=" << liveRelayoutProgress
+            << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
+            << " selectedBefore=" << debugWindowLabel(selectedBefore)
+            << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore);
+        debugLog(out.str());
     }
-    const bool commitActiveStripRelayout = animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive &&
-        !preserveActiveTargetForMovecolRetarget;
-
+    const bool commitActiveStripRelayout = animateDirectStripRelayout && m_state.phase == Phase::Active && m_state.relayoutActive;
     const auto captureDirectNiriRetargetOrigins = [&]() {
         PreviewRectSnapshot rects;
         rects.reserve(m_state.windows.size());
@@ -4911,29 +4908,34 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             }
         }
 
-        if (debugLogsEnabled() && activeDirectNiriSingleWorkspaceOverview() &&
-            (directNiriFocusOrColumnRelayout || directNiriColumnRelayout)) {
-            const auto workspace = activeLayoutWorkspace();
-            auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+        if (debugLogsEnabled()) {
             std::ostringstream out;
             out << "[hymission] captured direct niri retarget origins"
                 << " live=" << liveOrigins
                 << " fallback=" << fallbackOrigins
-                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
-                << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(scrolling) ? 1 : 0)
-                << " edgeCamera=" << (scrollingEdgeCameraActive(scrolling) ? 1 : 0);
+                << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
             debugLog(out.str());
 
-            std::size_t logged = 0;
-            for (const auto& entry : rects) {
-                if (!entry.first || logged >= 4)
-                    continue;
-                std::ostringstream winOut;
-                winOut << "[hymission] direct niri retarget origin"
-                    << " window=" << debugWindowLabel(entry.first)
-                    << " rect=" << rectToString(entry.second);
-                debugLog(winOut.str());
-                ++logged;
+            if (activeDirectNiriSingleWorkspaceOverview() && (directNiriFocusOrColumnRelayout || directNiriColumnRelayout)) {
+                const auto workspace = activeLayoutWorkspace();
+                auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
+                std::ostringstream stateOut;
+                stateOut << "[hymission] captured direct niri retarget state"
+                    << " nativeGeometryInFlight=" << (scrollingNativeGeometryInFlight(scrolling) ? 1 : 0)
+                    << " edgeCamera=" << (scrollingEdgeCameraActive(scrolling) ? 1 : 0);
+                debugLog(stateOut.str());
+
+                std::size_t logged = 0;
+                for (const auto& entry : rects) {
+                    if (!entry.first || logged >= 4)
+                        continue;
+                    std::ostringstream winOut;
+                    winOut << "[hymission] direct niri retarget origin"
+                        << " window=" << debugWindowLabel(entry.first)
+                        << " rect=" << rectToString(entry.second);
+                    debugLog(winOut.str());
+                    ++logged;
+                }
             }
         }
 
@@ -4941,19 +4943,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     };
 
     const auto directStripPreviewRects = commitActiveStripRelayout ? commitActiveNiriRelayoutForRetarget() :
-        (preserveActiveTargetForMovecolRetarget ? captureCurrentPreviewRects() :
-         (animateDirectStripRelayout ? captureDirectNiriRetargetOrigins() : PreviewRectSnapshot{}));
+        (animateDirectStripRelayout ? captureDirectNiriRetargetOrigins() : PreviewRectSnapshot{});
     const auto* const directStripRelayoutOrigins = animateDirectStripRelayout ? &directStripPreviewRects : nullptr;
-    if (debugLogsEnabled() && preserveActiveTargetForMovecolRetarget) {
-        std::ostringstream out;
-        out << "[hymission] preserving active relayout target for interrupted movecol retarget"
-            << " origins=" << directStripPreviewRects.size()
-            << " relayoutProgress=" << m_state.relayoutProgress
-            << " predictedLeafEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
-            << " selectedBefore=" << debugWindowLabel(selectedBefore)
-            << " edgeCandidate=" << debugWindowLabel(edgeLeafCandidateBefore);
-        debugLog(out.str());
-    }
 
     const auto retainVisibleDirectNiriWorkspaceLanes = [&] {
         if (!overviewActive || !usesDirectNiriScrollingOverview(m_state))
