@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cctype>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <sstream>
 #include <string_view>
@@ -1273,7 +1274,12 @@ void clearRetainedDirectNiriWorkspaceLanes() {
     g_retainedDirectNiriWorkspaceLanes.clear();
 }
 
-std::unordered_map<const void*, PHLWINDOWREF> g_fit1EdgeReturnLeafFocusByWorkspace;
+struct Fit1EdgeReturnLeafFocusState {
+    PHLWINDOWREF window;
+    double       offsetWhenRemembered = std::numeric_limits<double>::quiet_NaN();
+};
+
+std::unordered_map<const void*, Fit1EdgeReturnLeafFocusState> g_fit1EdgeReturnLeafFocusByWorkspace;
 
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
@@ -1288,7 +1294,7 @@ void retainDirectNiriWorkspaceLaneForDrag(const PHLMONITOR& monitor, const PHLWO
 
 namespace {
 
-bool validFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+bool validFit1TiledWorkspaceWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
     if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 1)
         return false;
 
@@ -1301,10 +1307,19 @@ bool validFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW
         return false;
 
     const auto target = window->layoutTarget();
-    if (!target || target->floating())
+    return target && !target->floating() && scrolling->dataFor(target);
+}
+
+bool validFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+    if (!validFit1TiledWorkspaceWindow(workspace, window))
         return false;
 
-    const auto targetData = scrolling->dataFor(target);
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.empty())
+        return false;
+
+    const auto target = window->layoutTarget();
+    const auto targetData = target ? scrolling->dataFor(target) : nullptr;
     const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
     if (!column)
         return false;
@@ -1313,7 +1328,84 @@ bool validFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW
     return column == columns.front() || column == columns.back();
 }
 
+std::optional<std::size_t> fit1ColumnIndexForWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+    if (!workspace || !window)
+        return std::nullopt;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData)
+        return std::nullopt;
+
+    const auto target = window->layoutTarget();
+    if (!target || target->floating())
+        return std::nullopt;
+
+    const auto targetData = scrolling->dataFor(target);
+    const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+    if (!column)
+        return std::nullopt;
+
+    const auto& columns = scrolling->m_scrollingData->columns;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        if (columns[index] == column)
+            return index;
+    }
+
+    return std::nullopt;
+}
+
+bool fit1WindowCameraAligned(const PHLWORKSPACE& workspace, const PHLWINDOW& window, std::optional<double> rememberedOffset = std::nullopt) {
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 1)
+        return false;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    const auto columnIndex = fit1ColumnIndexForWindow(workspace, window);
+    if (!columnIndex || *columnIndex >= scrolling->m_scrollingData->columns.size())
+        return false;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const CBox usable = scrolling->usableArea();
+    const double viewportLength = std::max(1.0, controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h));
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double stripStart = controller->calculateStripStart(*columnIndex, usable, fullscreenOnOne);
+    const double stripSize = controller->calculateStripSize(*columnIndex, usable, fullscreenOnOne);
+    if (stripSize <= 1.0)
+        return false;
+
+    const double currentOffset = controller->getOffset();
+    constexpr double CAMERA_EPSILON = 2.0;
+    const auto offsetMatches = [&](double target) {
+        return std::isfinite(target) && std::abs(currentOffset - target) <= CAMERA_EPSILON;
+    };
+
+    if (rememberedOffset && offsetMatches(*rememberedOffset))
+        return true;
+
+    const double fitOffset = stripStart;
+    const double centeredOffset = stripStart - (viewportLength - stripSize) * 0.5;
+    return offsetMatches(fitOffset) || offsetMatches(centeredOffset);
+}
+
 } // namespace
+
+void clearFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& exceptWindow) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return;
+
+    const auto it = g_fit1EdgeReturnLeafFocusByWorkspace.find(key);
+    if (it == g_fit1EdgeReturnLeafFocusByWorkspace.end())
+        return;
+
+    const auto remembered = it->second.window.lock();
+    if (exceptWindow && remembered == exceptWindow)
+        return;
+
+    g_fit1EdgeReturnLeafFocusByWorkspace.erase(it);
+}
 
 void rememberFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
     const void* const key = workspaceIdentityKey(workspace);
@@ -1325,7 +1417,14 @@ void rememberFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWIN
         return;
     }
 
-    g_fit1EdgeReturnLeafFocusByWorkspace[key] = window;
+    double rememberedOffset = std::numeric_limits<double>::quiet_NaN();
+    if (auto* const scrolling = scrollingAlgorithmForWorkspace(workspace); scrolling && scrolling->m_scrollingData && scrolling->m_scrollingData->controller)
+        rememberedOffset = scrolling->m_scrollingData->controller->getOffset();
+
+    Fit1EdgeReturnLeafFocusState state;
+    state.window = window;
+    state.offsetWhenRemembered = rememberedOffset;
+    g_fit1EdgeReturnLeafFocusByWorkspace[key] = state;
     workspace->m_lastFocusedWindow = window;
 }
 
@@ -1338,8 +1437,24 @@ PHLWINDOW fit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace) {
     if (it == g_fit1EdgeReturnLeafFocusByWorkspace.end())
         return {};
 
-    const auto window = it->second.lock();
+    const auto window = it->second.window.lock();
     if (!validFit1EdgeReturnLeafFocus(workspace, window)) {
+        g_fit1EdgeReturnLeafFocusByWorkspace.erase(it);
+        return {};
+    }
+
+    // The edge-return memory is only a handoff guard for the exact native camera
+    // position created by leaf -> empty column/scroll-past -> leaf.  Once the
+    // workspace's real camera is aligned with any other focused column, the memory
+    // must stop winning or that old leaf will steal focus every time the workspace
+    // is rebuilt or switched to.
+    if (const auto active = Desktop::focusState()->window(); active && active != window && active->m_workspace == workspace &&
+        validFit1TiledWorkspaceWindow(workspace, active) && fit1WindowCameraAligned(workspace, active)) {
+        g_fit1EdgeReturnLeafFocusByWorkspace.erase(it);
+        return {};
+    }
+
+    if (!fit1WindowCameraAligned(workspace, window, it->second.offsetWhenRemembered)) {
         g_fit1EdgeReturnLeafFocusByWorkspace.erase(it);
         return {};
     }
@@ -4184,6 +4299,9 @@ void OverviewController::syncFocusDuringOverviewFromSelection(bool syncScrolling
     const auto selected = selectedWindow();
     if (!selected)
         return;
+
+    if (selected->m_workspace)
+        niri_scrolling_detail::clearFit1EdgeReturnLeafFocus(selected->m_workspace, selected);
 
     const auto previousSelected = m_state.focusDuringOverview;
     const bool capturePreviousRects = syncScrollingSpot && shouldSyncScrollingLayoutDuringOverviewFocus();
