@@ -2472,6 +2472,24 @@ bool scrollingWorkspaceHasSingleColumn(const PHLWORKSPACE& workspace) {
     return scrollingWorkspaceColumnCount(workspace) == 1;
 }
 
+PHLWINDOW centeredWorkspaceTransitionFocus(const PHLWORKSPACE& workspace) {
+    if (scrollingWorkspaceColumnCount(workspace) == 0)
+        return {};
+
+    const long focusFitMethod = getConfigInt(nullptr, "scrolling:focus_fit_method", 0);
+    if (focusFitMethod == 0)
+        return centeredFocusFit0WindowForScrollingWorkspace(workspace);
+
+    if (focusFitMethod == 1 && scrollingWorkspaceHasSingleColumn(workspace))
+        return centeredFocusFit0WindowForScrollingWorkspace(workspace);
+
+    return {};
+}
+
+bool isStableCenteredWorkspaceTransitionFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+    return window && workspace && centeredWorkspaceTransitionFocus(workspace) == window;
+}
+
 std::optional<Vector2D> expectedSurfaceSizeForUV(const PHLWINDOW& window, const SP<CWLSurfaceResource>& surface, const PHLMONITOR& monitor, bool main) {
     if (!surface || !monitor)
         return std::nullopt;
@@ -7133,12 +7151,12 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     const long scrollingFocusFitMethod = getConfigInt(m_handle, "scrolling:focus_fit_method", 0);
     const bool shouldResolveCenteredScrollingFocus = !preferredTargetFocus && workspace && m_state.collectionPolicy.onlyActiveWorkspace &&
         niriModeAppliesToState(m_state) && isScrollingWorkspace(workspace) && !syntheticEmpty;
-    const auto centeredScrollingFocus = shouldResolveCenteredScrollingFocus ? centeredFocusFit0WindowForScrollingWorkspace(workspace) : PHLWINDOW{};
+    const auto centeredScrollingFocus = shouldResolveCenteredScrollingFocus ? centeredWorkspaceTransitionFocus(workspace) : PHLWINDOW{};
     const bool preserveScrollPastCamera = shouldResolveCenteredScrollingFocus && !centeredScrollingFocus && focusFit0NativeEdgeCameraActive(workspace);
     const auto fallbackTargetFocus = preserveScrollPastCamera ? PHLWINDOW{} : focusCandidateForWorkspace(workspace);
     const auto targetFocus = preferredTargetFocus && preferredTargetFocus->m_isMapped && preferredTargetFocus->m_workspace == workspace ?
         preferredTargetFocus :
-        (scrollingFocusFitMethod == 0 && centeredScrollingFocus) ? centeredScrollingFocus : fallbackTargetFocus;
+        centeredScrollingFocus ? centeredScrollingFocus : fallbackTargetFocus;
 
     if (debugLogsEnabled() && shouldResolveCenteredScrollingFocus) {
         std::ostringstream out;
@@ -7167,8 +7185,10 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     const bool targetWorkspaceHasSingleScrollingColumn = scrollingWorkspaceHasSingleColumn(workspace);
     const bool targetOwnerEdgeCameraActive = target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) &&
         directNiriOwnerEdgeCameraActive(target);
-    const bool targetHasResolvedFocus = target.focusDuringOverview && target.focusDuringOverview->m_isMapped && workspace &&
+    const bool targetStateHasResolvedFocus = target.focusDuringOverview && target.focusDuringOverview->m_isMapped && workspace &&
         target.focusDuringOverview->m_workspace == workspace;
+    const bool targetFocusMatchesWorkspace = targetFocus && targetFocus->m_isMapped && workspace && targetFocus->m_workspace == workspace;
+    const bool targetHasResolvedFocus = targetStateHasResolvedFocus || targetFocusMatchesWorkspace;
     const bool preserveTargetEdgeCamera = targetOwnerEdgeCameraActive && !targetWorkspaceHasSingleScrollingColumn &&
         (preserveScrollPastCamera || !targetHasResolvedFocus);
     if (debugLogsEnabled() && target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) && workspace && isScrollingWorkspace(workspace)) {
@@ -7189,11 +7209,13 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
     }
     if (preserveTargetEdgeCamera) {
         // A multi-column scrolling workspace in Hyprland's edge-camera range is
-        // the scroll-past empty viewport.  Do not preserve that focusless state
-        // when focus_fit_method=0 has resolved a visible centered partial column;
-        // that case is a real focused strip position, not an empty edge camera.
+        // the scroll-past empty viewport. A resolved centered partial column is
+        // a real focused strip position, not an empty edge camera.
         target.selectedIndex.reset();
         target.focusDuringOverview.reset();
+    } else if (targetFocus && target.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(target) && workspace && isScrollingWorkspace(workspace)) {
+        selectWindowInState(target, targetFocus);
+        target.focusDuringOverview = targetFocus;
     }
 
     target.phase = Phase::Active;
@@ -7631,16 +7653,17 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
     if (targetIsEmptyNiriWorkspace)
         targetFocus = PHLWINDOW{};
     else if (!preserveTargetEdgeCamera && !targetFocus) {
-        const bool shouldResolveCenteredFit0Focus = targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
-            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-        const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) : PHLWINDOW{};
+        const bool shouldResolveCenteredFocus = targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+            isScrollingWorkspace(targetWorkspace);
+        const auto centeredFocus = shouldResolveCenteredFocus ? centeredWorkspaceTransitionFocus(targetWorkspace) : PHLWINDOW{};
         const auto fallbackTargetFocus = focusCandidateForWorkspace(targetWorkspace);
-        targetFocus = centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
-        if (debugLogsEnabled() && shouldResolveCenteredFit0Focus) {
+        targetFocus = centeredFocus ? centeredFocus : fallbackTargetFocus;
+        if (debugLogsEnabled() && shouldResolveCenteredFocus) {
             std::ostringstream out;
-            out << "[hymission] focus-fit0 early activation focus resolve"
+            out << "[hymission] centered early activation focus resolve"
+                << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
                 << " workspace=" << debugWorkspaceLabel(targetWorkspace)
-                << " centered=" << debugWindowLabel(centeredFit0Focus)
+                << " centered=" << debugWindowLabel(centeredFocus)
                 << " fallback=" << debugWindowLabel(fallbackTargetFocus)
                 << " chosen=" << debugWindowLabel(targetFocus);
             debugLog(out.str());
@@ -7680,9 +7703,8 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
         Event::bus()->m_events.workspace.active.emit(targetWorkspace);
     }
 
-    const bool targetFocusIsStableCenteredFit0 = targetFocus && targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
-        isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
-        centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) == targetFocus;
+    const bool targetFocusIsStableCentered = targetFocus && targetWorkspace && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        isScrollingWorkspace(targetWorkspace) && isStableCenteredWorkspaceTransitionFocus(targetWorkspace, targetFocus);
 
     if (targetFocus) {
         targetWorkspace->m_lastFocusedWindow = targetFocus;
@@ -7692,7 +7714,7 @@ bool OverviewController::activateTimedNiriWorkspaceTransitionTarget() {
             if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == targetFocus)
                 m_pendingLiveFocusWorkspaceChangeTarget.reset();
         }
-        if (!targetFocusIsStableCenteredFit0)
+        if (!targetFocusIsStableCentered)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
     } else {
         clearWindowFocusCompat(transitionMonitor);
@@ -7852,16 +7874,17 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         else if (preserveDirectNiriFocus && intendedTargetFocus && intendedTargetFocus->m_isMapped)
             targetFocus = intendedTargetFocus;
         else if (!preserveTargetEdgeCamera) {
-            const bool shouldResolveCenteredFit0Focus = targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
-                isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0;
-            const auto centeredFit0Focus = shouldResolveCenteredFit0Focus ? centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) : PHLWINDOW{};
+            const bool shouldResolveCenteredFocus = targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
+                isScrollingWorkspace(targetWorkspace);
+            const auto centeredFocus = shouldResolveCenteredFocus ? centeredWorkspaceTransitionFocus(targetWorkspace) : PHLWINDOW{};
             const auto fallbackTargetFocus = focusCandidateForWorkspace(targetWorkspace);
-            targetFocus = centeredFit0Focus ? centeredFit0Focus : fallbackTargetFocus;
-            if (debugLogsEnabled() && shouldResolveCenteredFit0Focus) {
+            targetFocus = centeredFocus ? centeredFocus : fallbackTargetFocus;
+            if (debugLogsEnabled() && shouldResolveCenteredFocus) {
                 std::ostringstream out;
-                out << "[hymission] focus-fit0 commit focus resolve"
+                out << "[hymission] centered commit focus resolve"
+                    << " focusFit=" << getConfigInt(m_handle, "scrolling:focus_fit_method", 0)
                     << " workspace=" << debugWorkspaceLabel(targetWorkspace)
-                    << " centered=" << debugWindowLabel(centeredFit0Focus)
+                    << " centered=" << debugWindowLabel(centeredFocus)
                     << " fallback=" << debugWindowLabel(fallbackTargetFocus)
                     << " chosen=" << debugWindowLabel(targetFocus);
                 debugLog(out.str());
@@ -7870,9 +7893,8 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         const bool deferTargetFocusScrollSyncForEdgeRelease = targetStartedEdgeCamera && targetFocus && !preserveTargetEdgeCamera &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace) &&
             !scrollingWorkspaceHasSingleColumn(targetWorkspace);
-        const bool targetFocusIsStableCenteredFit0 = targetFocus && targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
-            isScrollingWorkspace(targetWorkspace) && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 0 &&
-            centeredFocusFit0WindowForScrollingWorkspace(targetWorkspace) == targetFocus;
+        const bool targetFocusIsStableCentered = targetFocus && targetWorkspace && next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) &&
+            isScrollingWorkspace(targetWorkspace) && isStableCenteredWorkspaceTransitionFocus(targetWorkspace, targetFocus);
         if (targetFocus) {
             targetWorkspace->m_lastFocusedWindow = targetFocus;
             if (Desktop::focusState()->window() != targetFocus) {
@@ -7882,7 +7904,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
                     m_pendingLiveFocusWorkspaceChangeTarget.reset();
             }
         }
-        if (targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCenteredFit0)
+        if (targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCentered)
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         else if (!targetFocus)
             clearWindowFocusCompat(transitionMonitor);
@@ -7890,7 +7912,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
             g_pAnimationManager->frameTick();
 
         const bool edgeCameraRepositioned = targetStartedEdgeCamera && !directNiriOwnerEdgeCameraActive(next);
-        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCenteredFit0 &&
+        const bool rebuildDirectNiriTargetAfterFocusSync = targetFocus && !deferTargetFocusScrollSyncForEdgeRelease && !targetFocusIsStableCentered &&
             next.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(next) && isScrollingWorkspace(targetWorkspace);
         if (rebuildDirectNiriTargetAfterFocusSync || edgeCameraRepositioned || targetWorkspaceSyntheticEmpty ||
             !containsHandle(next.managedWorkspaces, targetWorkspace) || next.ownerWorkspace != targetWorkspace) {
@@ -7978,7 +8000,7 @@ void OverviewController::commitOverviewWorkspaceTransition(bool followGesture, b
         // forceFinalLayoutBox and animate relayoutFromGlobal -> targetGlobal.
         if (deferTargetFocusScrollSyncForEdgeRelease) {
             refreshNiriScrollingOverviewAfterFocusDispatcher("edge-release", targetFocus, true);
-        } else if (targetFocus && !targetFocusIsStableCenteredFit0 && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+        } else if (targetFocus && !targetFocusIsStableCentered && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
                    isScrollingWorkspace(targetFocus->m_workspace)) {
             (void)syncScrollingWorkspaceSpotOnWindow(targetFocus);
         }
