@@ -531,6 +531,47 @@ bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     return scrollingEdgeCameraSide(scrolling) != ScrollingEdgeCameraSide::None;
 }
 
+
+PHLWINDOW edgeCameraReturnLeafForWorkspace(const PHLWORKSPACE& workspace, ScrollingEdgeCameraSide side) {
+    if (!workspace || side == ScrollingEdgeCameraSide::None)
+        return {};
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.empty())
+        return {};
+
+    const auto& columns = scrolling->m_scrollingData->columns;
+    const auto& edgeColumn = side == ScrollingEdgeCameraSide::BeforeFirst ? columns.front() : columns.back();
+    if (!edgeColumn || edgeColumn->targetDatas.empty())
+        return {};
+
+    const auto validWindowForTargetData = [&](const auto& targetData) -> PHLWINDOW {
+        if (!targetData || !targetData->target)
+            return {};
+
+        const auto target = targetData->target.lock();
+        const auto window = target ? target->window() : PHLWINDOW{};
+        if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() || window->m_workspace != workspace)
+            return {};
+        if (!target || target->floating() || isFloatingOverviewWindow(window))
+            return {};
+
+        return window;
+    };
+
+    if (const auto lastFocusedTarget = edgeColumn->lastFocusedTarget.lock()) {
+        if (const auto window = validWindowForTargetData(lastFocusedTarget); window)
+            return window;
+    }
+
+    for (const auto& targetData : edgeColumn->targetDatas) {
+        if (const auto window = validWindowForTargetData(targetData); window)
+            return window;
+    }
+
+    return {};
+}
+
 bool moveColumnCommandPrefersPrevious(std::string_view dispatcherNameLower, std::string_view dispatcherArgsLower) {
     if (dispatcherArgsLower.find("-col") != std::string_view::npos || dispatcherArgsLower.find("prev") != std::string_view::npos ||
         dispatcherArgsLower.find("left") != std::string_view::npos || dispatcherArgsLower == "l" || dispatcherArgsLower == "-1")
@@ -5352,6 +5393,11 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             return !window->m_pinned && window->m_workspace == preferredWorkspace;
         };
         if (!nativeEdgeCameraFocusReleased) {
+            const bool fitModeEdgeReturn = edgeMoveColumnAwayFromEdge && getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1;
+            const auto edgeReturnFocus = fitModeEdgeReturn ? edgeCameraReturnLeafForWorkspace(preferredWorkspace, rawEdgeCameraSideBefore) : PHLWINDOW{};
+
+            if (validPreferred(edgeReturnFocus))
+                preferred = edgeReturnFocus;
             if (!validPreferred(preferred))
                 preferred = validPreferred(dispatchFocus) ? dispatchFocus : PHLWINDOW{};
             if (!validPreferred(preferred) && preferredWorkspace)
@@ -5360,6 +5406,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
             if (edgeMoveColumnAwayFromEdge && validPreferred(preferred)) {
                 if (Desktop::focusState()->window() != preferred)
                     focusWindowCompat(preferred, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+                if (preferred->m_workspace)
+                    preferred->m_workspace->m_lastFocusedWindow = preferred;
                 selectWindowInState(m_state, preferred);
                 m_state.focusDuringOverview = preferred;
                 g_multiColumnEdgeFocusOverrideUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(320);
@@ -5369,7 +5417,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                     out << "[hymission] niri edge camera restored leaf focus"
                         << " dispatcher=" << dispatcherName
                         << " workspace=" << debugWorkspaceLabel(preferredWorkspace)
-                        << " focus=" << debugWindowLabel(preferred);
+                        << " focus=" << debugWindowLabel(preferred)
+                        << " fitModeEdgeReturn=" << (fitModeEdgeReturn ? 1 : 0)
+                        << " edgeReturn=" << debugWindowLabel(edgeReturnFocus)
+                        << " edgeSideBefore=" << static_cast<int>(rawEdgeCameraSideBefore);
                     debugLog(out.str());
                 }
             }
