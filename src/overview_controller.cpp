@@ -1819,10 +1819,6 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         if (!focusWindow || !columnBounds || columnBounds->width <= 1.0 || columnBounds->height <= 1.0)
             continue;
 
-        const double overlap = primaryOverlap(*columnBounds);
-        if (overlap <= 0.5)
-            continue;
-
         const double start = rectPrimaryStart(*columnBounds);
         const double end = start + rectPrimarySize(*columnBounds);
         const bool centerInside = viewportCenter >= start - 0.5 && viewportCenter <= end + 0.5;
@@ -1838,6 +1834,10 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
             const double stripOffsetTolerance = std::clamp(rectPrimarySize(*columnBounds) * 0.08, 16.0, 96.0);
             offsetAligned = offsetDistance <= stripOffsetTolerance;
         }
+
+        const double overlap = primaryOverlap(*columnBounds);
+        if (overlap <= 0.5 && !offsetAligned)
+            continue;
 
         // First decide by the native camera geometry, not by MRU/last focus.
         // For focus_fit_method=0, the selected column is most reliably described

@@ -2851,6 +2851,13 @@ bool focusFit0NativeOffsetSelectsWindowColumn(const PHLWINDOW& window, const PHL
     if (offsetDistance > offsetTolerance)
         return false;
 
+    // Once the native controller offset matches the centered offset for this
+    // column, this is the selected focus_fit_method=0 strip.  Do not require
+    // an additional overlap test: the first partial column can be temporarily
+    // outside the stale inactive-workspace viewport while a workspace handoff is
+    // being built, which is exactly the case that delayed the active border.
+    return true;
+
     CBox viewportBox = usable;
     if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
         viewportBox = window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
@@ -9475,6 +9482,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         Rect      bestViewport{};
         bool      bestCenterInside = false;
         bool      bestCenterAligned = false;
+        bool      bestOffsetAligned = false;
         double    bestCenterDistance = std::numeric_limits<double>::infinity();
 
         for (const auto& managed : state.windows) {
@@ -9492,8 +9500,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             if (viewport.width <= 1.0 || viewport.height <= 1.0 || managed.targetGlobal.width <= 1.0 || managed.targetGlobal.height <= 1.0)
                 continue;
 
+            const bool offsetAligned = scrollingFocusFitMethod == 0 && focusFit0NativeOffsetSelectsWindowColumn(window, state.ownerMonitor);
             const double overlap = primaryOverlap(managed.targetGlobal, viewport);
-            if (overlap <= 0.5)
+            if (overlap <= 0.5 && !offsetAligned)
                 continue;
 
             const double viewportCenter = primaryCenter(viewport);
@@ -9504,8 +9513,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const double secondaryDistance = std::abs(secondaryCenter(managed.targetGlobal) - secondaryCenter(viewport));
             const double centerAlignmentTolerance = std::clamp(primarySize(managed.targetGlobal) * 0.08, 16.0, 96.0);
             const bool centerAligned = centerInside && primaryDistance <= centerAlignmentTolerance;
-            const double score = primaryDistance + secondaryDistance * 0.02 - (centerInside ? 10000.0 : 0.0) - (centerAligned ? 5000.0 : 0.0) -
-                std::min(overlap, 512.0) * 0.01;
+            const double score = primaryDistance + secondaryDistance * 0.02 - (offsetAligned ? 20000.0 : 0.0) -
+                (centerInside ? 10000.0 : 0.0) - (centerAligned ? 5000.0 : 0.0) - std::min(overlap, 512.0) * 0.01;
             if (!bestWindow || score < bestScore) {
                 bestWindow = window;
                 bestScore = score;
@@ -9513,6 +9522,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 bestViewport = viewport;
                 bestCenterInside = centerInside;
                 bestCenterAligned = centerAligned;
+                bestOffsetAligned = offsetAligned;
                 bestCenterDistance = primaryDistance;
             }
         }
@@ -9528,6 +9538,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 << " viewport=" << rectToString(bestViewport)
                 << " centerInside=" << (bestCenterInside ? 1 : 0)
                 << " centerAligned=" << (bestCenterAligned ? 1 : 0)
+                << " offsetAligned=" << (bestOffsetAligned ? 1 : 0)
                 << " centerDistance=" << bestCenterDistance
                 << " windows=" << state.windows.size();
             debugLog(out.str());
@@ -9538,7 +9549,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         // center.  Center mode uses this window as the real focus target; fit
         // mode only uses its presence to avoid mistaking a normal edge-aligned
         // focused column for scroll-past.
-        return bestCenterInside ? bestWindow : PHLWINDOW{};
+        return (bestCenterInside || bestOffsetAligned) ? bestWindow : PHLWINDOW{};
     }();
 
     const bool directEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && state.collectionPolicy.onlyActiveWorkspace &&
