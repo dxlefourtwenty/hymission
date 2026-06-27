@@ -82,6 +82,7 @@ extern std::chrono::steady_clock::time_point overviewOpenInputBlockUntil;
 extern std::chrono::steady_clock::time_point overviewHeavyEditInputBlockUntil;
 extern bool workspaceSwitchDispatcherBlockRelayout;
 bool directNiriWorkspaceTransferRenderGuardActive(const PHLWINDOW& window);
+PHLWINDOW fit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace);
 }
 
 class OverviewOverlayPassElement final : public IPassElement {
@@ -2513,8 +2514,18 @@ PHLWINDOW centeredWorkspaceTransitionFocus(const PHLWORKSPACE& workspace) {
     if (focusFitMethod == 0)
         return centeredFocusFit0WindowForScrollingWorkspace(workspace);
 
-    if (focusFitMethod == 1 && scrollingWorkspaceHasSingleColumn(workspace))
-        return centeredFocusFit0WindowForScrollingWorkspace(workspace);
+    if (focusFitMethod == 1) {
+        // In fit mode, a leaf -> empty-column(scroll-past) -> leaf return can
+        // intentionally leave the edge leaf centered even though the normal fit
+        // camera would focus the neighboring partial column.  Remember that
+        // returned leaf across workspace switches and let the transition resolver
+        // restore it before Hyprland's stale per-workspace focus candidate wins.
+        if (const auto rememberedEdgeLeaf = niri_scrolling_detail::fit1EdgeReturnLeafFocus(workspace); rememberedEdgeLeaf)
+            return rememberedEdgeLeaf;
+
+        if (scrollingWorkspaceHasSingleColumn(workspace))
+            return centeredFocusFit0WindowForScrollingWorkspace(workspace);
+    }
 
     return {};
 }
@@ -11256,6 +11267,11 @@ void OverviewController::commitOverviewExitFocus(const PHLWINDOW& window) {
 PHLWINDOW OverviewController::focusCandidateForWorkspace(const PHLWORKSPACE& workspace) const {
     if (!workspace)
         return {};
+
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) == 1) {
+        if (const auto rememberedEdgeLeaf = niri_scrolling_detail::fit1EdgeReturnLeafFocus(workspace); rememberedEdgeLeaf)
+            return rememberedEdgeLeaf;
+    }
 
     if (const auto focused = Desktop::focusState()->window(); focused && focused->m_workspace == workspace && focused->m_isMapped)
         return focused;

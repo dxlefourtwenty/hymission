@@ -531,7 +531,6 @@ bool scrollingEdgeCameraActive(Layout::Tiled::CScrollingAlgorithm* scrolling) {
     return scrollingEdgeCameraSide(scrolling) != ScrollingEdgeCameraSide::None;
 }
 
-
 PHLWINDOW edgeCameraReturnLeafForWorkspace(const PHLWORKSPACE& workspace, ScrollingEdgeCameraSide side) {
     if (!workspace || side == ScrollingEdgeCameraSide::None)
         return {};
@@ -1274,6 +1273,8 @@ void clearRetainedDirectNiriWorkspaceLanes() {
     g_retainedDirectNiriWorkspaceLanes.clear();
 }
 
+std::unordered_map<const void*, PHLWINDOWREF> g_fit1EdgeReturnLeafFocusByWorkspace;
+
 const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
     return workspace ? workspace.get() : nullptr;
 }
@@ -1283,6 +1284,67 @@ const void* workspaceIdentityKey(const PHLWORKSPACE& workspace) {
 
 void retainDirectNiriWorkspaceLaneForDrag(const PHLMONITOR& monitor, const PHLWORKSPACE& workspace) {
     retainDirectNiriWorkspaceLane(monitor, workspace);
+}
+
+namespace {
+
+bool validFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 1)
+        return false;
+
+    if (!workspace || !window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || window->onSpecialWorkspace() ||
+        window->m_workspace != workspace || isFloatingOverviewWindow(window))
+        return false;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(workspace);
+    if (!scrolling || !scrolling->m_scrollingData || scrolling->m_scrollingData->columns.empty())
+        return false;
+
+    const auto target = window->layoutTarget();
+    if (!target || target->floating())
+        return false;
+
+    const auto targetData = scrolling->dataFor(target);
+    const auto column = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+    if (!column)
+        return false;
+
+    const auto& columns = scrolling->m_scrollingData->columns;
+    return column == columns.front() || column == columns.back();
+}
+
+} // namespace
+
+void rememberFit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace, const PHLWINDOW& window) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return;
+
+    if (!validFit1EdgeReturnLeafFocus(workspace, window)) {
+        g_fit1EdgeReturnLeafFocusByWorkspace.erase(key);
+        return;
+    }
+
+    g_fit1EdgeReturnLeafFocusByWorkspace[key] = window;
+    workspace->m_lastFocusedWindow = window;
+}
+
+PHLWINDOW fit1EdgeReturnLeafFocus(const PHLWORKSPACE& workspace) {
+    const void* const key = workspaceIdentityKey(workspace);
+    if (!key)
+        return {};
+
+    const auto it = g_fit1EdgeReturnLeafFocusByWorkspace.find(key);
+    if (it == g_fit1EdgeReturnLeafFocusByWorkspace.end())
+        return {};
+
+    const auto window = it->second.lock();
+    if (!validFit1EdgeReturnLeafFocus(workspace, window)) {
+        g_fit1EdgeReturnLeafFocusByWorkspace.erase(it);
+        return {};
+    }
+
+    return window;
 }
 
 bool overviewOpenInputBarrierActive() {
@@ -5404,6 +5466,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 preferred = focusCandidateForWorkspace(preferredWorkspace);
 
             if (edgeMoveColumnAwayFromEdge && validPreferred(preferred)) {
+                if (fitModeEdgeReturn)
+                    niri_scrolling_detail::rememberFit1EdgeReturnLeafFocus(preferredWorkspace, preferred);
                 if (Desktop::focusState()->window() != preferred)
                     focusWindowCompat(preferred, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
                 if (preferred->m_workspace)
@@ -8129,7 +8193,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         });
     }
 
-    const auto focusedWindow = Desktop::focusState()->window();
+    const auto rawFocusedWindow = Desktop::focusState()->window();
+    const auto rememberedFit1EdgeLeaf = !preferredSelectedWindow && niriDirectSingleWorkspaceOverview && state.ownerWorkspace ?
+        niri_scrolling_detail::fit1EdgeReturnLeafFocus(state.ownerWorkspace) : PHLWINDOW{};
+    const auto focusedWindow = rememberedFit1EdgeLeaf ? rememberedFit1EdgeLeaf : rawFocusedWindow;
     const auto scopedFocusedWindow = windowMatchesOverviewScope(focusedWindow, state, false) ? focusedWindow : PHLWINDOW{};
     const auto scopedPreferredWindow = windowMatchesOverviewScope(preferredSelectedWindow, state, false) ? preferredSelectedWindow : PHLWINDOW{};
     state.focusBeforeOpen = scopedFocusedWindow;
@@ -9606,8 +9673,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const bool directEdgeCameraWithoutCenteredFocus = !preferredSelectedWindow && state.collectionPolicy.onlyActiveWorkspace &&
         usesDirectNiriScrollingOverview(state) && directNiriOwnerEdgeCameraActive(state) && !centeredEdgeCameraSelectionTarget;
     const auto centeredFit0SelectionTarget = scrollingFocusFitMethod == 0 ? centeredEdgeCameraSelectionTarget : PHLWINDOW{};
+    const auto rememberedFit1SelectionTarget = scrollingFocusFitMethod == 1 && state.ownerWorkspace ?
+        niri_scrolling_detail::fit1EdgeReturnLeafFocus(state.ownerWorkspace) : PHLWINDOW{};
     const auto selectionTarget = preferredSelectedWindow ? preferredSelectedWindow :
-        (centeredFit0SelectionTarget ? centeredFit0SelectionTarget : (directEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : focusedWindow));
+        (centeredFit0SelectionTarget ? centeredFit0SelectionTarget :
+         (directEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} :
+          (rememberedFit1SelectionTarget ? rememberedFit1SelectionTarget : focusedWindow)));
     const auto* centeredEmptyPlaceholder = centeredEmptyWorkspacePlaceholder(state);
     const auto  centeredEmptyWorkspace = centeredEmptyPlaceholder ? centeredEmptyPlaceholder->workspace : PHLWORKSPACE{};
     const auto edgeCameraFocusCandidate = directEdgeCameraWithoutCenteredFocus ? PHLWINDOW{} : (selectionTarget ? selectionTarget : focusedWindow);
