@@ -4735,18 +4735,25 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (!edgeLeafCandidateBefore && validEdgeWorkspaceTiledWindow(nativeFocusBefore))
         edgeLeafCandidateBefore = nativeFocusBefore;
 
-    const bool directEdgeCameraBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() && scrollingEdgeCameraActive(edgeCameraScrollingBefore);
+    const bool moveColumnPrefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
+    const bool moveColumnPrefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
+    const auto rawEdgeCameraSideBefore = overviewActive && activeDirectNiriSingleWorkspaceOverview() ?
+        scrollingEdgeCameraSide(edgeCameraScrollingBefore) : ScrollingEdgeCameraSide::None;
+    const bool rawDirectEdgeCameraBefore = rawEdgeCameraSideBefore != ScrollingEdgeCameraSide::None;
+    const bool selectedLeafWouldMoveColumnTowardEdge = moveColumnDispatcherForEdge &&
+        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool candidateLeafWouldMoveColumnTowardEdge = moveColumnDispatcherForEdge && edgeLeafCandidateBefore &&
+        edgeLeafCandidateBefore != selectedBefore &&
+        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, edgeLeafCandidateBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool staleAfterLastEdgeCameraWithLeafFocus = rawDirectEdgeCameraBefore && rawEdgeCameraSideBefore == ScrollingEdgeCameraSide::AfterLast &&
+        (selectedLeafWouldMoveColumnTowardEdge || candidateLeafWouldMoveColumnTowardEdge) && moveColumnPrefersNext && !moveColumnPrefersPrevious;
+    const bool directEdgeCameraBefore = rawDirectEdgeCameraBefore && !staleAfterLastEdgeCameraWithLeafFocus;
     const bool edgeMoveColumnTowardEdge = directEdgeCameraBefore && moveColumnDispatcherForEdge &&
         moveColumnCommandTargetsEdge(edgeCameraScrollingBefore, dispatcherNameLower, dispatcherArgsLower);
     const bool edgeMoveColumnAwayFromEdge = directEdgeCameraBefore && moveColumnDispatcherForEdge && !edgeMoveColumnTowardEdge;
-    const bool selectedLeafMoveColumnTowardEdge = !directEdgeCameraBefore && moveColumnDispatcherForEdge &&
-        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, selectedBefore, dispatcherNameLower, dispatcherArgsLower);
-    const bool candidateLeafMoveColumnTowardEdge = !directEdgeCameraBefore && moveColumnDispatcherForEdge && edgeLeafCandidateBefore &&
-        edgeLeafCandidateBefore != selectedBefore &&
-        moveColumnCommandLeavesFocusedColumn(edgeCameraScrollingBefore, edgeLeafCandidateBefore, dispatcherNameLower, dispatcherArgsLower);
+    const bool selectedLeafMoveColumnTowardEdge = !directEdgeCameraBefore && selectedLeafWouldMoveColumnTowardEdge;
+    const bool candidateLeafMoveColumnTowardEdge = !directEdgeCameraBefore && candidateLeafWouldMoveColumnTowardEdge;
     const bool leafMoveColumnTowardEdge = selectedLeafMoveColumnTowardEdge || candidateLeafMoveColumnTowardEdge;
-    const bool moveColumnPrefersPrevious = moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower);
-    const bool moveColumnPrefersNext = moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower);
     const bool leafMoveColumnTowardBeforeFirst = leafMoveColumnTowardEdge && moveColumnPrefersPrevious && !moveColumnPrefersNext;
     const bool interruptedLeafNativeGeometryInFlight = !directEdgeCameraBefore && moveColumnDispatcherForEdge &&
         (m_state.relayoutActive || scrollingNativeGeometryInFlight(edgeCameraScrollingBefore));
@@ -4761,6 +4768,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         std::ostringstream out;
         out << "[hymission] niri movecol edge classification"
             << " directEdgeBefore=" << (directEdgeCameraBefore ? 1 : 0)
+            << " rawDirectEdgeBefore=" << (rawDirectEdgeCameraBefore ? 1 : 0)
+            << " rawEdgeSide=" << static_cast<int>(rawEdgeCameraSideBefore)
+            << " staleLeafEdge=" << (staleAfterLastEdgeCameraWithLeafFocus ? 1 : 0)
             << " leafTowardEdge=" << (leafMoveColumnTowardEdge ? 1 : 0)
             << " selectedLeafTowardEdge=" << (selectedLeafMoveColumnTowardEdge ? 1 : 0)
             << " candidateLeafTowardEdge=" << (candidateLeafMoveColumnTowardEdge ? 1 : 0)
