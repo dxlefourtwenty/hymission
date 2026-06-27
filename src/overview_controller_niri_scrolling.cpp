@@ -2795,11 +2795,11 @@ std::size_t directNiriScrollingColumnCount(const PHLWORKSPACE& workspace) {
     return scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
 }
 
-bool focusFit0WindowOwnsNativeViewportCenter(const PHLWINDOW& window, const PHLMONITOR& ownerMonitor) {
+bool focusFit0NativeOffsetSelectsWindowColumn(const PHLWINDOW& window, const PHLMONITOR& ownerMonitor) {
     if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
         return false;
 
-    if (!window || !window->m_isMapped || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace ||
+    if (!window || !window->m_isMapped || window->m_fadingOut || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace ||
         window->m_pinned || window->onSpecialWorkspace() || isFloatingOverviewWindow(window))
         return false;
 
@@ -2816,19 +2816,49 @@ bool focusFit0WindowOwnsNativeViewportCenter(const PHLWINDOW& window, const PHLM
 
     const auto targetData = scrolling->dataFor(target);
     const auto targetColumn = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
-    if (!targetColumn || targetColumn->targetDatas.empty())
+    if (!targetColumn)
         return false;
 
-    CBox viewportBox = scrolling->usableArea();
-    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
-        viewportBox = window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
-    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+    std::optional<std::size_t> columnIndex;
+    const auto& columns = scrolling->m_scrollingData->columns;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        if (columns[index] == targetColumn) {
+            columnIndex = index;
+            break;
+        }
+    }
+    if (!columnIndex)
         return false;
 
     auto* const controller = scrolling->m_scrollingData->controller.get();
+    if (*columnIndex >= controller->stripCount())
+        return false;
+
+    const CBox usable = scrolling->usableArea();
+    const double viewportLength = std::max(1.0, controller->isPrimaryHorizontal() ? static_cast<double>(usable.w) : static_cast<double>(usable.h));
+    if (viewportLength <= 1.0)
+        return false;
+
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double stripStart = controller->calculateStripStart(*columnIndex, usable, fullscreenOnOne);
+    const double stripSize = controller->calculateStripSize(*columnIndex, usable, fullscreenOnOne);
+    if (stripSize <= 1.0)
+        return false;
+
+    const double centeredOffset = stripStart - (viewportLength - stripSize) * 0.5;
+    const double offsetDistance = std::abs(controller->getOffset() - centeredOffset);
+    const double offsetTolerance = std::clamp(stripSize * 0.08, 16.0, 96.0);
+    if (offsetDistance > offsetTolerance)
+        return false;
+
+    CBox viewportBox = usable;
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        viewportBox = window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        return true;
+
     const bool horizontal = controller->isPrimaryHorizontal();
     const double nativeOffset = controller->getOffset();
-
     const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
     const auto primarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
     const auto shiftThroughCamera = [&](Rect rect) {
@@ -2840,34 +2870,39 @@ bool focusFit0WindowOwnsNativeViewportCenter(const PHLWINDOW& window, const PHLM
     };
 
     std::optional<Rect> columnBounds;
+    const auto mergeBounds = [&](const Rect& rect) {
+        if (rect.width <= 1.0 || rect.height <= 1.0)
+            return;
+        if (!columnBounds) {
+            columnBounds = rect;
+            return;
+        }
+
+        const double minX = std::min(columnBounds->x, rect.x);
+        const double minY = std::min(columnBounds->y, rect.y);
+        const double maxX = std::max(columnBounds->x + columnBounds->width, rect.x + rect.width);
+        const double maxY = std::max(columnBounds->y + columnBounds->height, rect.y + rect.height);
+        columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+    };
+
     for (const auto& candidateData : targetColumn->targetDatas) {
         if (!scrollingTargetDataBelongsToWorkspace(candidateData, window->m_workspace) ||
             candidateData->layoutBox.width <= 1.0 || candidateData->layoutBox.height <= 1.0)
             continue;
 
-        const Rect candidateRect = shiftThroughCamera(makeRect(candidateData->layoutBox.x, candidateData->layoutBox.y,
-                                                              candidateData->layoutBox.width, candidateData->layoutBox.height));
-        if (!columnBounds) {
-            columnBounds = candidateRect;
-            continue;
-        }
-
-        const double minX = std::min(columnBounds->x, candidateRect.x);
-        const double minY = std::min(columnBounds->y, candidateRect.y);
-        const double maxX = std::max(columnBounds->x + columnBounds->width, candidateRect.x + candidateRect.width);
-        const double maxY = std::max(columnBounds->y + columnBounds->height, candidateRect.y + candidateRect.height);
-        columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+        mergeBounds(shiftThroughCamera(makeRect(candidateData->layoutBox.x, candidateData->layoutBox.y,
+                                               candidateData->layoutBox.width, candidateData->layoutBox.height)));
     }
 
-    if (!columnBounds || columnBounds->width <= 1.0 || columnBounds->height <= 1.0)
-        return false;
+    if (!columnBounds)
+        return true;
 
     const Rect viewport = makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height);
-    const double viewportCenter = primaryStart(viewport) + primarySize(viewport) * 0.5;
     const double start = primaryStart(*columnBounds);
     const double end = start + primarySize(*columnBounds);
-
-    return viewportCenter >= start - 0.5 && viewportCenter <= end + 0.5;
+    const double viewportStart = primaryStart(viewport);
+    const double viewportEnd = viewportStart + primarySize(viewport);
+    return std::min(end, viewportEnd) - std::max(start, viewportStart) > 0.5;
 }
 
 PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state) const {
@@ -2915,26 +2950,26 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
             return {};
         }
 
-        // A focus_fit_method=0 centered first/last partial column can put Hyprland's
-        // native scrolling offset in the same numeric range as scroll-past.  The
-        // state builder already clears focusDuringOverview for true scroll-past,
-        // so when the overview-selected column still owns the viewport center,
-        // let it drive the active border immediately instead of waiting for
-        // Hyprland's live focus to catch up after the workspace handoff.
+        // Multi-column edge-camera is usually the real scroll-past state.  The
+        // exception is focus_fit_method=0 at a real first/last partial column: the
+        // controller offset can live in the edge range while the selected column is
+        // still a normal focused leaf.  Trust the overview-selected/live leaf only
+        // when its native column owns the current centered strip offset; stale
+        // scroll-past focus has no such offset-aligned column and remains focusless.
         if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus &&
-            focusFit0WindowOwnsNativeViewportCenter(overviewFocus, state.ownerMonitor))
+            focusFit0NativeOffsetSelectsWindowColumn(overviewFocus, state.ownerMonitor))
             return overviewFocus;
 
         if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
             if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected &&
-                focusFit0WindowOwnsNativeViewportCenter(selected, state.ownerMonitor))
+                focusFit0NativeOffsetSelectsWindowColumn(selected, state.ownerMonitor))
                 return selected;
         }
 
-        // Multi-column edge-camera is the real scroll-past state.  Do not borrow
-        // Hyprland's stale live/last leaf focus here.  A focused edge-camera leaf
-        // is only valid during the short reverse-scroll handoff window that
-        // Hymission arms after moving back from scroll-past toward the strip.
+        if (const auto liveFocus = validManagedFocus(Desktop::focusState()->window()); liveFocus &&
+            focusFit0NativeOffsetSelectsWindowColumn(liveFocus, state.ownerMonitor))
+            return liveFocus;
+
         if (multiColumnEdgeFocusOverrideActive()) {
             if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus)
                 return overviewFocus;

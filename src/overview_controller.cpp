@@ -1711,6 +1711,20 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         return rect;
     };
 
+    const bool fullscreenOnOne = getConfigInt(nullptr, "scrolling:fullscreen_on_one_column", 1) != 0;
+    const double viewportLength = std::max(1.0, rectPrimarySize(viewport));
+    const auto centeredStripOffsetFor = [&](std::size_t index) -> std::optional<double> {
+        if (index >= controller->stripCount())
+            return std::nullopt;
+
+        const double stripStart = controller->calculateStripStart(index, usable, fullscreenOnOne);
+        const double stripSize = controller->calculateStripSize(index, usable, fullscreenOnOne);
+        if (stripSize <= 1.0)
+            return std::nullopt;
+
+        return stripStart - (viewportLength - stripSize) * 0.5;
+    };
+
     const double viewportStart = rectPrimaryStart(viewport);
     const double viewportEnd = viewportStart + rectPrimarySize(viewport);
     const double viewportCenter = (viewportStart + viewportEnd) * 0.5;
@@ -1743,8 +1757,10 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         double    score = std::numeric_limits<double>::infinity();
         bool      centerInside = false;
         bool      centerAligned = false;
+        bool      offsetAligned = false;
         double    overlap = 0.0;
         double    centerDistance = std::numeric_limits<double>::infinity();
+        double    offsetDistance = std::numeric_limits<double>::infinity();
         std::size_t columnIndex = 0;
     };
 
@@ -1815,13 +1831,27 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
         const double centerAlignmentTolerance = std::clamp(rectPrimarySize(*columnBounds) * 0.08, 16.0, 96.0);
         const bool centerAligned = centerInside && centerDistance <= centerAlignmentTolerance;
 
+        double offsetDistance = std::numeric_limits<double>::infinity();
+        bool offsetAligned = false;
+        if (const auto centeredOffset = centeredStripOffsetFor(columnIndex)) {
+            offsetDistance = std::abs(nativeOffset - *centeredOffset);
+            const double stripOffsetTolerance = std::clamp(rectPrimarySize(*columnBounds) * 0.08, 16.0, 96.0);
+            offsetAligned = offsetDistance <= stripOffsetTolerance;
+        }
+
         // First decide by the native camera geometry, not by MRU/last focus.
-        // A centered partial column should always win over a merely visible
-        // neighboring partial.  Last-focused target is used only after the column
+        // For focus_fit_method=0, the selected column is most reliably described
+        // by the controller offset that would center that strip.  This matters for
+        // the first partial column: it can be the real selected strip even while
+        // the viewport center is numerically closer to its neighbor during a
+        // workspace handoff.  Last-focused target is used only after the column
         // has been selected, to choose a tile inside that selected column.
+        const double offsetAlignmentPenalty = offsetAligned ? 0.0 : 200000.0;
         const double outsideCenterPenalty = centerInside ? 0.0 : 100000.0;
         const double misalignedCenterPenalty = centerAligned ? 0.0 : 50000.0;
-        const double score = outsideCenterPenalty + misalignedCenterPenalty + centerDistance + secondaryDistance * 0.01 - std::min(overlap, 1024.0) * 0.001;
+        const double offsetScore = std::isfinite(offsetDistance) ? offsetDistance : 0.0;
+        const double score = offsetAlignmentPenalty + outsideCenterPenalty + misalignedCenterPenalty + offsetScore * 0.25 + centerDistance +
+            secondaryDistance * 0.01 - std::min(overlap, 1024.0) * 0.001;
         if (!best.window || score < best.score) {
             best = Candidate{
                 .window = focusWindow,
@@ -1829,21 +1859,24 @@ PHLWINDOW centeredFocusFit0WindowForScrollingWorkspace(const PHLWORKSPACE& works
                 .score = score,
                 .centerInside = centerInside,
                 .centerAligned = centerAligned,
+                .offsetAligned = offsetAligned,
                 .overlap = overlap,
                 .centerDistance = centerDistance,
+                .offsetDistance = offsetDistance,
                 .columnIndex = columnIndex,
             };
         }
     }
 
     // The distinction that matters for focus_fit_method=0 is whether the native
-    // viewport center is inside a real tiled column.  A centered 0.5 column can
-    // have a small alignment mismatch while the target workspace is being built,
-    // but the center is still inside that column and it should receive focus.
-    // A scroll-past edge-camera state has no column under the viewport center;
-    // preserve that focusless camera instead of falling back to a visible edge
-    // leaf and snapping the strip back.
-    return best.centerInside ? best.window : PHLWINDOW{};
+    // controller offset selects a real tiled column, or, as a fallback, whether
+    // the viewport center is inside a real tiled column.  The offset check is what
+    // makes column index 0 work: when the first partial column is selected, the
+    // focused strip can be edge-constrained during workspace handoff before the
+    // center-inside heuristic alone would pick it.  A scroll-past edge-camera
+    // state has no offset-aligned real column and no column under the viewport
+    // center, so it remains focusless instead of snapping to a stale leaf.
+    return (best.offsetAligned || best.centerInside) ? best.window : PHLWINDOW{};
 }
 
 Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal) {
@@ -7259,8 +7292,10 @@ bool OverviewController::beginOverviewWorkspaceTransition(const PHLMONITOR& moni
         m_workspaceTransition.animationToDelta = static_cast<double>(m_workspaceTransition.step) * m_workspaceTransition.distance;
 
     refreshWorkspaceStripActivity(m_state, monitor, workspaceId);
-    if (targetFocus && !preserveTargetEdgeCamera)
+    if (targetFocus && !preserveTargetEdgeCamera) {
+        selectWindowInState(m_state, targetFocus);
         m_state.focusDuringOverview = targetFocus;
+    }
     if (usesDirectNiriScrollingOverview(m_state) && workspaceStripEnabled(m_state)) {
         const bool animateStripRelayout = niriOverviewAnimationsEnabled();
         bool stripRelayoutChanged = false;
@@ -14211,7 +14246,10 @@ void OverviewController::activateStripTarget(std::size_t index) {
 
     if (targetWorkspace && entry.monitor->m_activeWorkspace == targetWorkspace) {
         m_state.hoveredStripIndex = index;
-        if (const auto targetFocus = focusCandidateForWorkspace(targetWorkspace)) {
+        const bool shouldResolveCenteredFocus = m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state) &&
+            isScrollingWorkspace(targetWorkspace);
+        const auto centeredFocus = shouldResolveCenteredFocus ? centeredWorkspaceTransitionFocus(targetWorkspace) : PHLWINDOW{};
+        if (const auto targetFocus = centeredFocus ? centeredFocus : focusCandidateForWorkspace(targetWorkspace)) {
             m_state.focusDuringOverview = targetFocus;
             selectWindowInState(m_state, targetFocus);
             m_stripSnapshotsDirty = true;
