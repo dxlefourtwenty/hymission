@@ -2795,6 +2795,81 @@ std::size_t directNiriScrollingColumnCount(const PHLWORKSPACE& workspace) {
     return scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
 }
 
+bool focusFit0WindowOwnsNativeViewportCenter(const PHLWINDOW& window, const PHLMONITOR& ownerMonitor) {
+    if (getConfigInt(nullptr, "scrolling:focus_fit_method", 0) != 0)
+        return false;
+
+    if (!window || !window->m_isMapped || !window->m_workspace || window->m_workspace->m_isSpecialWorkspace ||
+        window->m_pinned || window->onSpecialWorkspace() || isFloatingOverviewWindow(window))
+        return false;
+
+    if (ownerMonitor && window->m_workspace->m_monitor.lock() != ownerMonitor)
+        return false;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    const auto target = window->layoutTarget();
+    if (!target || target->floating())
+        return false;
+
+    const auto targetData = scrolling->dataFor(target);
+    const auto targetColumn = targetData ? targetData->column.lock() : SP<Layout::Tiled::SColumnData>{};
+    if (!targetColumn || targetColumn->targetDatas.empty())
+        return false;
+
+    CBox viewportBox = scrolling->usableArea();
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        viewportBox = window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
+    if (viewportBox.width <= 1.0 || viewportBox.height <= 1.0)
+        return false;
+
+    auto* const controller = scrolling->m_scrollingData->controller.get();
+    const bool horizontal = controller->isPrimaryHorizontal();
+    const double nativeOffset = controller->getOffset();
+
+    const auto primaryStart = [&](const Rect& rect) { return horizontal ? rect.x : rect.y; };
+    const auto primarySize = [&](const Rect& rect) { return horizontal ? rect.width : rect.height; };
+    const auto shiftThroughCamera = [&](Rect rect) {
+        if (horizontal)
+            rect.x -= nativeOffset;
+        else
+            rect.y -= nativeOffset;
+        return rect;
+    };
+
+    std::optional<Rect> columnBounds;
+    for (const auto& candidateData : targetColumn->targetDatas) {
+        if (!scrollingTargetDataBelongsToWorkspace(candidateData, window->m_workspace) ||
+            candidateData->layoutBox.width <= 1.0 || candidateData->layoutBox.height <= 1.0)
+            continue;
+
+        const Rect candidateRect = shiftThroughCamera(makeRect(candidateData->layoutBox.x, candidateData->layoutBox.y,
+                                                              candidateData->layoutBox.width, candidateData->layoutBox.height));
+        if (!columnBounds) {
+            columnBounds = candidateRect;
+            continue;
+        }
+
+        const double minX = std::min(columnBounds->x, candidateRect.x);
+        const double minY = std::min(columnBounds->y, candidateRect.y);
+        const double maxX = std::max(columnBounds->x + columnBounds->width, candidateRect.x + candidateRect.width);
+        const double maxY = std::max(columnBounds->y + columnBounds->height, candidateRect.y + candidateRect.height);
+        columnBounds = makeRect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    if (!columnBounds || columnBounds->width <= 1.0 || columnBounds->height <= 1.0)
+        return false;
+
+    const Rect viewport = makeRect(viewportBox.x, viewportBox.y, viewportBox.width, viewportBox.height);
+    const double viewportCenter = primaryStart(viewport) + primarySize(viewport) * 0.5;
+    const double start = primaryStart(*columnBounds);
+    const double end = start + primarySize(*columnBounds);
+
+    return viewportCenter >= start - 0.5 && viewportCenter <= end + 0.5;
+}
+
 PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state) const {
     if (!usesDirectNiriScrollingOverview(state))
         return {};
@@ -2838,6 +2913,22 @@ PHLWINDOW OverviewController::directNiriFocusedOverviewWindow(const State& state
                 return liveFocus;
 
             return {};
+        }
+
+        // A focus_fit_method=0 centered first/last partial column can put Hyprland's
+        // native scrolling offset in the same numeric range as scroll-past.  The
+        // state builder already clears focusDuringOverview for true scroll-past,
+        // so when the overview-selected column still owns the viewport center,
+        // let it drive the active border immediately instead of waiting for
+        // Hyprland's live focus to catch up after the workspace handoff.
+        if (const auto overviewFocus = validManagedFocus(state.focusDuringOverview); overviewFocus &&
+            focusFit0WindowOwnsNativeViewportCenter(overviewFocus, state.ownerMonitor))
+            return overviewFocus;
+
+        if (state.selectedIndex && *state.selectedIndex < state.windows.size()) {
+            if (const auto selected = validManagedFocus(state.windows[*state.selectedIndex].window); selected &&
+                focusFit0WindowOwnsNativeViewportCenter(selected, state.ownerMonitor))
+                return selected;
         }
 
         // Multi-column edge-camera is the real scroll-past state.  Do not borrow
