@@ -345,6 +345,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     INT_CONF("niri_mode_show_empty_workspaces_btwn", 1);
     INT_CONF("niri_mode_wallpaper_zoom", 0);
     STRING_CONF("niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
+    INT_CONF("niri_mode_wallpaper_zoom_shadow", 1);
+    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_softness", 40.0F);
+    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_spread", 10.0F);
+    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_offset_x", 0.0F);
+    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_offset_y", 10.0F);
+    STRING_CONF("niri_mode_wallpaper_zoom_shadow_color", "#00000050");
     STRING_CONF("niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
     INT_CONF("niri_mode_wallpaper_zoom_layer_refresh_ms", 100);
     INT_CONF("niri_preview_disabled", 0);

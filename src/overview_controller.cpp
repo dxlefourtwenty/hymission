@@ -600,6 +600,16 @@ uint64_t layoutAffectingConfigSignature(HANDLE handle) {
     mixFloat("plugin:hymission:niri_strip_workspace_scale", 1.30);
     mixFloat("plugin:hymission:niri_strip_workspace_zoom", 2.0);
     mixInt("plugin:hymission:niri_mode_show_empty_workspaces_btwn", 1);
+    mixInt("plugin:hymission:niri_mode_wallpaper_zoom", 0);
+    mixString("plugin:hymission:niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
+    mixInt("plugin:hymission:niri_mode_wallpaper_zoom_shadow", 1);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 40.0);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_spread", 10.0);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0);
+    mixString("plugin:hymission:niri_mode_wallpaper_zoom_shadow_color", "#00000050");
+    mixString("plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
+    mixInt("plugin:hymission:niri_mode_wallpaper_zoom_layer_refresh_ms", 100);
     mixInt("plugin:hymission:niri_preview_disabled", 0);
     mixInt("plugin:hymission:niri_overview_animations", 1);
     mixFloat("plugin:hymission:niri_overview_open_close_speed_multiplier", 1.5);

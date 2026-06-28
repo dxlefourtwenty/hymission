@@ -855,68 +855,85 @@ CBox toBox(const Rect& rect) {
 
 struct NiriWallpaperViewportShadowConfig {
     bool       enabled = false;
-    int        range = 0;
-    int        rounding = 0;
-    float      roundingPower = 2.0F;
-    double     scale = 1.0;
+    int        extent = 0;
+    int        spread = 0;
+    double     sigma = 0.0;
     Vector2D   offset;
     CHyprColor color;
 };
 
-NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(double monitorScale) {
-    static auto PSHADOWS      = CConfigValue<Config::INTEGER>("decoration:shadow:enabled");
-    static auto PSHADOWSIZE   = CConfigValue<Config::INTEGER>("decoration:shadow:range");
-    static auto PSHADOWSCALE  = CConfigValue<Config::FLOAT>("decoration:shadow:scale");
-    static auto PSHADOWOFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
-    static auto PSHADOWCOLOR  = CConfigValue<Config::INTEGER>("decoration:shadow:color");
-    static auto PROUNDING     = CConfigValue<Config::INTEGER>("decoration:rounding");
-    static auto PROUNDINGPOWER = CConfigValue<Config::FLOAT>("decoration:rounding_power");
-
-    monitorScale = monitorScale > 0.0 ? monitorScale : 1.0;
-
-    const int layoutRange = std::max(0, static_cast<int>(*PSHADOWSIZE));
-    if (*PSHADOWS != 1 || layoutRange <= 0)
+NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(HANDLE handle, const Rect& renderRect) {
+    if (getConfigInt(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow", 1) == 0)
         return {};
 
-    const auto offset = *PSHADOWOFFSET;
+    constexpr uint64_t FALLBACK_COLOR = 0x50000000;
+    const auto         configuredColor =
+        getConfigString(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_color", "#00000050");
+    const auto parsedColor = Config::ParserUtils::parseColor(configuredColor);
+
+    const double normalizedScale = std::max(0.0, renderRect.height) / 1080.0;
+    const double softness = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 40.0), 0.0, 1024.0);
+    const double spread = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_spread", 10.0), -1024.0, 1024.0);
+    const double offsetX = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0), -65535.0, 65535.0);
+    const double offsetY = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0), -65535.0, 65535.0);
+
+    const double sigma = (softness * 0.5) * normalizedScale;
+    const int    range = std::max(0, static_cast<int>(std::ceil(sigma * 3.0)));
+    const int    spreadPx = static_cast<int>(std::lround(spread * normalizedScale));
+    const int    extent = std::max(0, range + spreadPx);
+    if (extent <= 0 || sigma <= 0.0)
+        return {};
+
     return {
         .enabled = true,
-        .range = std::max(1, static_cast<int>(std::lround(static_cast<double>(layoutRange) * monitorScale))),
-        .rounding = std::max(0, static_cast<int>(std::lround(static_cast<double>(*PROUNDING) * monitorScale))),
-        .roundingPower = std::clamp(static_cast<float>(*PROUNDINGPOWER), 2.0F, 10.0F),
-        .scale = std::clamp(static_cast<double>(*PSHADOWSCALE), 0.0, 1.0),
-        .offset = Vector2D{static_cast<double>(offset.x) * monitorScale, static_cast<double>(offset.y) * monitorScale},
-        .color = CHyprColor(static_cast<uint64_t>(*PSHADOWCOLOR)),
+        .extent = extent,
+        .spread = spreadPx,
+        .sigma = sigma,
+        .offset = Vector2D{offsetX * normalizedScale, offsetY * normalizedScale},
+        .color = CHyprColor(static_cast<uint64_t>(parsedColor.value_or(FALLBACK_COLOR))),
     };
 }
 
-void renderNiriWallpaperViewportShadow(const Rect& renderRect, double monitorScale, float alpha) {
-    const auto config = niriWallpaperViewportShadowConfig(monitorScale);
+double niriWallpaperViewportShadowAlpha(const NiriWallpaperViewportShadowConfig& config, int distanceFromBody) {
+    const double signedDistance = static_cast<double>(distanceFromBody) - static_cast<double>(config.spread);
+    const double divisor = std::sqrt(2.0) * std::max(0.001, config.sigma);
+    return clampUnit(0.5 * std::erfc(signedDistance / divisor));
+}
+
+void renderNiriWallpaperViewportShadow(HANDLE handle, const Rect& renderRect, float alpha) {
+    const auto config = niriWallpaperViewportShadowConfig(handle, renderRect);
     if (!config.enabled || config.color.a <= 0.0 || alpha <= 0.0F)
         return;
 
     CBox bodyBox = toBox(renderRect);
     bodyBox.round();
 
-    CBox shadowBox = bodyBox;
-    shadowBox.x -= static_cast<double>(config.range);
-    shadowBox.y -= static_cast<double>(config.range);
-    shadowBox.width += 2.0 * static_cast<double>(config.range);
-    shadowBox.height += 2.0 * static_cast<double>(config.range);
-    shadowBox.scaleFromCenter(config.scale).translate(config.offset).round();
-    if (shadowBox.width < 1.0 || shadowBox.height < 1.0)
+    CBox sourceBox = bodyBox;
+    sourceBox.translate(config.offset).round();
+    if (sourceBox.width < 1.0 || sourceBox.height < 1.0)
         return;
 
-    CRegion shadowDamage = g_pHyprRenderer->m_renderData.damage.copy();
-    shadowDamage.intersect(shadowBox);
-    shadowDamage.subtract(bodyBox);
-    if (shadowDamage.empty())
-        return;
+    const CRegion frameDamage = g_pHyprRenderer->m_renderData.damage.copy();
+    CBox          previousBox = sourceBox;
+    for (int distance = 0; distance < config.extent; ++distance) {
+        CBox shadowBox = sourceBox.copy().expand(distance + 1);
+        shadowBox.round();
 
-    const CRegion previousDamage = g_pHyprRenderer->m_renderData.damage.copy();
-    g_pHyprRenderer->m_renderData.damage = shadowDamage;
-    g_pHyprOpenGL->renderRoundedShadow(shadowBox, config.rounding, config.roundingPower, config.range, config.color, alpha);
-    g_pHyprRenderer->m_renderData.damage = previousDamage;
+        CRegion ringDamage = CRegion{shadowBox};
+        ringDamage.subtract(previousBox);
+        ringDamage.subtract(bodyBox);
+        ringDamage.intersect(frameDamage);
+        previousBox = shadowBox;
+        if (ringDamage.empty())
+            continue;
+
+        auto color = config.color;
+        color.a *= static_cast<float>(alpha * niriWallpaperViewportShadowAlpha(config, distance));
+        if (color.a <= 0.001F)
+            continue;
+
+        g_pHyprOpenGL->renderRect(shadowBox, color, {.damage = &ringDamage});
+    }
 }
 
 Rect rectToMonitorLocal(const Rect& rect, const PHLMONITOR& monitor) {
@@ -7780,15 +7797,40 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
 
     constexpr double phaseAlpha = 1.0;
 
+    struct WallpaperBackgroundRenderItem {
+        const State*                     state = nullptr;
+        const EmptyWorkspacePlaceholder* background = nullptr;
+        Rect                             viewportRect;
+        double                           alpha = 1.0;
+    };
+
+    std::vector<WallpaperBackgroundRenderItem> renderItems;
+
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
-    const double renderMonitorScale = renderScaleForMonitor(renderMonitor);
-    const auto renderBackground = [&](const Rect& globalRect, double alpha) {
+    const auto addWorkspace = [&](const State& state, const EmptyWorkspacePlaceholder& background, const Rect& viewportRect, double alpha) {
+        if (background.monitor != renderMonitor || alpha <= 0.001)
+            return;
+
+        renderItems.push_back({
+            .state = &state,
+            .background = &background,
+            .viewportRect = viewportRect,
+            .alpha = alpha,
+        });
+    };
+    const auto renderBackgroundShadow = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
 
-        renderNiriWallpaperViewportShadow(renderRect, renderMonitorScale, renderAlpha);
+        renderNiriWallpaperViewportShadow(m_handle, renderRect, renderAlpha);
+    };
+    const auto renderBackground = [&](const Rect& globalRect, double alpha) {
+        const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
+        const float renderAlpha = static_cast<float>(clampUnit(alpha));
+        if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
+            return;
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
@@ -7861,6 +7903,12 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
                                          });
         }
     };
+    const auto renderCollectedWorkspaces = [&]() {
+        for (const auto& item : renderItems)
+            renderBackgroundShadow(niriWorkspaceBackgroundRect(*item.state, *item.background, item.viewportRect), item.alpha);
+        for (const auto& item : renderItems)
+            renderWorkspace(*item.state, *item.background, item.viewportRect, item.alpha);
+    };
 
     if (!m_workspaceTransition.active || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) {
         // Close must use the same camera-exit rects as the window-backed path.
@@ -7870,8 +7918,9 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         // closing.
         for (const auto& background : m_state.emptyWorkspacePlaceholders) {
             if (background.monitor == renderMonitor)
-                renderWorkspace(m_state, background, currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
+                addWorkspace(m_state, background, currentEmptyWorkspacePlaceholderRect(background), phaseAlpha);
         }
+        renderCollectedWorkspaces();
         return;
     }
 
@@ -7985,10 +8034,11 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         }
 
         if (target)
-            renderWorkspace(m_workspaceTransition.targetState, *target, viewportRect, alpha);
+            addWorkspace(m_workspaceTransition.targetState, *target, viewportRect, alpha);
         else
-            renderWorkspace(m_workspaceTransition.sourceState, *source, viewportRect, alpha);
+            addWorkspace(m_workspaceTransition.sourceState, *source, viewportRect, alpha);
     }
+    renderCollectedWorkspaces();
 }
 void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) const {
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
