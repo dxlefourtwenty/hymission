@@ -5029,6 +5029,19 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
         return;
 
     if (kind == WindowSetChangeKind::MoveToWorkspace && activeDirectNiriSingleWorkspaceOverview()) {
+        if (window->m_workspace && isScrollingWorkspace(window->m_workspace) && !window->m_workspace->isVisible() && !window->m_pinned) {
+            niri_scrolling_detail::armDirectNiriWorkspaceTransferRenderGuard(window);
+            static std::size_t s_transferMoveEventLogBudget = 48;
+            if (debugLogsEnabled() && s_transferMoveEventLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] arm workspace-transfer guard from window-set"
+                    << " window=" << debugWindowLabel(window)
+                    << " workspace=" << debugWorkspaceLabel(window->m_workspace);
+                debugLog(out.str());
+                --s_transferMoveEventLogBudget;
+            }
+        }
+
         bool removedPlaceholder = removeOccupiedWorkspacePlaceholder(m_state, window);
         if (m_workspaceTransition.active) {
             removedPlaceholder = removeOccupiedWorkspacePlaceholder(m_workspaceTransition.sourceState, window) || removedPlaceholder;

@@ -678,6 +678,17 @@ struct DirectNiriWorkspaceTransferGuardState {
 std::unordered_map<const void*, WORKSPACEID> g_directNiriSeenWorkspaceIds;
 std::unordered_map<const void*, std::chrono::steady_clock::time_point> g_directNiriWorkspaceTransferGuardedUntil;
 
+bool directNiriWorkspaceTransferWorkspaceReady(const PHLWINDOW& window) {
+    if (!window || !window->m_workspace)
+        return false;
+
+    const auto workspace = window->m_workspace;
+    const auto monitor = workspace->m_monitor.lock();
+    // Snapshot refreshes briefly borrow inactive workspaces with forceRendering;
+    // only a real active workspace should clear the transfer guard.
+    return monitor && monitor->m_activeWorkspace == workspace && workspace->isVisible() && !workspace->m_forceRendering;
+}
+
 bool directNiriWorkspaceTransferRenderGuardActiveLocal(const PHLWINDOW& window) {
     if (!window)
         return false;
@@ -685,6 +696,16 @@ bool directNiriWorkspaceTransferRenderGuardActiveLocal(const PHLWINDOW& window) 
     const void* const key = window.get();
     if (!key)
         return false;
+    if (!window->m_workspace) {
+        g_directNiriWorkspaceTransferGuardedUntil.erase(key);
+        return false;
+    }
+
+    if (directNiriWorkspaceTransferWorkspaceReady(window)) {
+        g_directNiriWorkspaceTransferGuardedUntil.erase(key);
+        g_directNiriSeenWorkspaceIds[key] = window->m_workspace->m_id;
+        return false;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const auto it = g_directNiriWorkspaceTransferGuardedUntil.find(key);
@@ -694,8 +715,7 @@ bool directNiriWorkspaceTransferRenderGuardActiveLocal(const PHLWINDOW& window) 
     if (now < it->second)
         return true;
 
-    g_directNiriWorkspaceTransferGuardedUntil.erase(it);
-    return false;
+    return true;
 }
 
 void armDirectNiriWorkspaceTransferRenderGuardLocal(const PHLWINDOW& window) {
@@ -724,12 +744,14 @@ DirectNiriWorkspaceTransferGuardState updateDirectNiriWorkspaceTransferRenderGua
     const WORKSPACEID currentWorkspaceId = window->m_workspace->m_id;
     state.currentWorkspaceId = currentWorkspaceId;
 
-    if (const auto it = g_directNiriWorkspaceTransferGuardedUntil.find(key); it != g_directNiriWorkspaceTransferGuardedUntil.end()) {
-        if (now < it->second)
-            state.active = true;
-        else
-            g_directNiriWorkspaceTransferGuardedUntil.erase(it);
+    if (directNiriWorkspaceTransferWorkspaceReady(window)) {
+        g_directNiriWorkspaceTransferGuardedUntil.erase(key);
+        g_directNiriSeenWorkspaceIds[key] = currentWorkspaceId;
+        return state;
     }
+
+    if (g_directNiriWorkspaceTransferGuardedUntil.contains(key))
+        state.active = true;
 
     const auto seenIt = g_directNiriSeenWorkspaceIds.find(key);
     if (seenIt != g_directNiriSeenWorkspaceIds.end() && seenIt->second != currentWorkspaceId) {
