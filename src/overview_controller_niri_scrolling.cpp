@@ -769,6 +769,11 @@ double clampUnit(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
 
+double smoothUnit(double value) {
+    const double t = clampUnit(value);
+    return t * t * (3.0 - 2.0 * t);
+}
+
 Rect clampRectInside(const Rect& rect, const Rect& bounds) {
     const double width = std::min(rect.width, bounds.width);
     const double height = std::min(rect.height, bounds.height);
@@ -858,6 +863,7 @@ struct NiriWallpaperViewportShadowConfig {
     int        extent = 0;
     int        spread = 0;
     int        edgeFade = 0;
+    int        tailFade = 0;
     double     sigma = 0.0;
     Vector2D   offset;
     CHyprColor color;
@@ -876,13 +882,16 @@ NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(HANDLE handl
     const double softness = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 90.0), 0.0, 1024.0);
     const double spread = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_spread", 0.0), -1024.0, 1024.0);
     const double edgeFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_edge_fade", 12.0), 0.0, 1024.0);
+    const double tailFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0), 0.0, 1024.0);
+    const double extentScale = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.5), 0.0, 4.0);
     const double offsetX = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0), -65535.0, 65535.0);
     const double offsetY = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0), -65535.0, 65535.0);
 
     const double sigma = (softness * 0.5) * normalizedScale;
-    const int    range = std::max(0, static_cast<int>(std::ceil(sigma * 3.0)));
+    const int    range = std::max(0, static_cast<int>(std::ceil(sigma * 3.0 * extentScale)));
     const int    spreadPx = static_cast<int>(std::lround(spread * normalizedScale));
     const int    edgeFadePx = std::max(0, static_cast<int>(std::lround(edgeFade * normalizedScale)));
+    const int    tailFadePx = std::max(0, static_cast<int>(std::lround(tailFade * normalizedScale)));
     const int    extent = std::max(0, range + spreadPx);
     if (extent <= 0 || sigma <= 0.0)
         return {};
@@ -892,19 +901,27 @@ NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(HANDLE handl
         .extent = extent,
         .spread = spreadPx,
         .edgeFade = edgeFadePx,
+        .tailFade = std::min(tailFadePx, extent),
         .sigma = sigma,
         .offset = Vector2D{offsetX * normalizedScale, offsetY * normalizedScale},
         .color = CHyprColor(static_cast<uint64_t>(parsedColor.value_or(FALLBACK_COLOR))),
     };
 }
 
-double niriWallpaperViewportShadowAlpha(const NiriWallpaperViewportShadowConfig& config, int distanceFromBody) {
-    const double signedDistance = static_cast<double>(distanceFromBody) - static_cast<double>(config.spread);
+double niriWallpaperViewportShadowAlpha(const NiriWallpaperViewportShadowConfig& config, double distanceFromBody) {
+    const double signedDistance = distanceFromBody - static_cast<double>(config.spread);
     const double divisor = std::sqrt(2.0) * std::max(0.001, config.sigma);
     double       alpha = clampUnit(0.5 * std::erfc(signedDistance / divisor));
     if (config.edgeFade > 0) {
         const double edgeProgress = static_cast<double>(distanceFromBody + 1) / static_cast<double>(config.edgeFade + 1);
-        alpha *= clampUnit(edgeProgress);
+        alpha *= smoothUnit(edgeProgress);
+    }
+    if (config.tailFade > 0) {
+        const double tailStart = static_cast<double>(config.extent - config.tailFade);
+        if (distanceFromBody > tailStart) {
+            const double tailProgress = (static_cast<double>(config.extent) - distanceFromBody) / static_cast<double>(config.tailFade);
+            alpha *= smoothUnit(tailProgress);
+        }
     }
 
     return alpha;
@@ -938,7 +955,7 @@ void renderNiriWallpaperViewportShadow(HANDLE handle, const Rect& renderRect, fl
             continue;
 
         auto color = config.color;
-        color.a *= static_cast<float>(alpha * niriWallpaperViewportShadowAlpha(config, distance));
+        color.a *= static_cast<float>(alpha * niriWallpaperViewportShadowAlpha(config, static_cast<double>(distance) + 0.5));
         if (color.a <= 0.001F)
             continue;
 
