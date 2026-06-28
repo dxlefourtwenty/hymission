@@ -853,6 +853,29 @@ CBox toBox(const Rect& rect) {
     };
 }
 
+void renderNiriWallpaperViewportShadow(const Rect& renderRect, int shadowRange, const Vector2D& shadowOffset, const CHyprColor& shadowColor,
+                                       float alpha) {
+    CBox bodyBox = toBox(renderRect);
+    bodyBox.round();
+
+    CBox shadowBox = bodyBox;
+    shadowBox.x += shadowOffset.x - static_cast<double>(shadowRange);
+    shadowBox.y += shadowOffset.y - static_cast<double>(shadowRange);
+    shadowBox.width += 2.0 * static_cast<double>(shadowRange);
+    shadowBox.height += 2.0 * static_cast<double>(shadowRange);
+
+    CRegion shadowDamage = g_pHyprRenderer->m_renderData.damage.copy();
+    shadowDamage.intersect(shadowBox);
+    shadowDamage.subtract(bodyBox);
+    if (shadowDamage.empty())
+        return;
+
+    const CRegion previousDamage = g_pHyprRenderer->m_renderData.damage.copy();
+    g_pHyprRenderer->m_renderData.damage = shadowDamage;
+    g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, shadowRange, shadowColor, alpha);
+    g_pHyprRenderer->m_renderData.damage = previousDamage;
+}
+
 Rect rectToMonitorLocal(const Rect& rect, const PHLMONITOR& monitor) {
     if (!monitor)
         return rect;
@@ -7743,15 +7766,7 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
 
-        // renderRoundedShadow expects the passed box to include the shadow range.
-        // Insetting that box by the range gives the exact viewport source, which
-        // keeps the shadow while avoiding a visible source container around it.
-        CBox shadowBox = toBox(renderRect);
-        shadowBox.x += wallpaperShadowOffset.x - static_cast<double>(wallpaperShadowRange);
-        shadowBox.y += wallpaperShadowOffset.y - static_cast<double>(wallpaperShadowRange);
-        shadowBox.width += 2.0 * static_cast<double>(wallpaperShadowRange);
-        shadowBox.height += 2.0 * static_cast<double>(wallpaperShadowRange);
-        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha * 0.68F);
+        renderNiriWallpaperViewportShadow(renderRect, wallpaperShadowRange, wallpaperShadowOffset, wallpaperShadowColor, renderAlpha * 0.68F);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
