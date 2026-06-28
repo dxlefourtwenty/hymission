@@ -1755,9 +1755,11 @@ CHyprColor OverviewController::niriModeWallpaperZoomShadowColor() const {
     // Keep the shadow in the same hue family as the configured wallpaper zoom
     // background, but force it darker.  The previous low-luminance path inverted
     // near-black colors, so a background like #0D0F14 produced a lighter gray
-    // shadow and lost contrast around the viewport.
-    constexpr double SHADOW_DARKEN_MULTIPLIER = 0.42;
-    constexpr double SHADOW_ALPHA = 0.82;
+    // shadow and lost contrast around the viewport.  This multiplier is slightly
+    // brighter than the first contrast pass so the shadow reads as a soft shade
+    // instead of an almost-black outline.
+    constexpr double SHADOW_DARKEN_MULTIPLIER = 0.54;
+    constexpr double SHADOW_ALPHA = 0.78;
 
     return CHyprColor(
         std::clamp(background.r * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
@@ -7733,21 +7735,32 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
     const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
     const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
-    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(40.0 * wallpaperShadowScale)));
-    const double wallpaperShadowSpread = std::max(1.0, std::round(10.0 * wallpaperShadowScale));
-    const Vector2D wallpaperShadowOffset{0.0, std::round(10.0 * wallpaperShadowScale)};
+    const int wallpaperShadowOuterRange = std::max(1, static_cast<int>(std::lround(68.0 * wallpaperShadowScale)));
+    const int wallpaperShadowInnerRange = std::max(1, static_cast<int>(std::lround(34.0 * wallpaperShadowScale)));
+    const double wallpaperShadowOuterSpread = std::max(1.0, std::round(22.0 * wallpaperShadowScale));
+    const double wallpaperShadowInnerSpread = std::max(1.0, std::round(7.0 * wallpaperShadowScale));
+    const Vector2D wallpaperShadowOffset{0.0, std::round(9.0 * wallpaperShadowScale)};
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
 
-        CBox shadowBox = toBox(renderRect);
-        shadowBox.x += wallpaperShadowOffset.x - wallpaperShadowRange - wallpaperShadowSpread;
-        shadowBox.y += wallpaperShadowOffset.y - wallpaperShadowRange - wallpaperShadowSpread;
-        shadowBox.width += 2.0 * (wallpaperShadowRange + wallpaperShadowSpread);
-        shadowBox.height += 2.0 * (wallpaperShadowRange + wallpaperShadowSpread);
-        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha);
+        const auto renderShadowLayer = [&](int range, double spread, float opacity) {
+            CBox shadowBox = toBox(renderRect);
+            shadowBox.x += wallpaperShadowOffset.x - static_cast<double>(range) - spread;
+            shadowBox.y += wallpaperShadowOffset.y - static_cast<double>(range) - spread;
+            shadowBox.width += 2.0 * (static_cast<double>(range) + spread);
+            shadowBox.height += 2.0 * (static_cast<double>(range) + spread);
+            g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, range, wallpaperShadowColor, renderAlpha * opacity);
+        };
+
+        // Render a wide low-alpha shadow first, then a lighter tighter pass.
+        // The outer pass gives the viewport shadow room to fade out instead of
+        // ending at a crisp ring, while the inner pass keeps enough separation
+        // from similarly dark wallpaper/background colors.
+        renderShadowLayer(wallpaperShadowOuterRange, wallpaperShadowOuterSpread, 0.50F);
+        renderShadowLayer(wallpaperShadowInnerRange, wallpaperShadowInnerSpread, 0.34F);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
