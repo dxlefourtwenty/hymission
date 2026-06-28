@@ -2658,7 +2658,7 @@ bool directNiriSurfaceOverlayTargetIsOverviewSized(const Rect& targetRender, con
 
 DirectNiriSurfaceOverlayCheck directNiriSurfaceOverlayCheck(const PHLWINDOW& window, const SP<CWLSurfaceResource>& resource,
                                                             const SP<Render::ITexture>& texture, const Rect& targetRender,
-                                                            const PHLMONITOR& monitor) {
+                                                            const PHLMONITOR& monitor, bool allowNativeSizedTarget = false) {
     DirectNiriSurfaceOverlayCheck check;
     check.transferGuardActive = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
 
@@ -2692,7 +2692,8 @@ DirectNiriSurfaceOverlayCheck directNiriSurfaceOverlayCheck(const PHLWINDOW& win
     const double textureAspectDelta = aspectDeltaForOverlay(targetRender.width, targetRender.height, check.textureSize.x, check.textureSize.y);
     check.aspectDelta = std::min(sourceAspectDelta, textureAspectDelta);
 
-    if (!directNiriSurfaceOverlayTargetIsOverviewSized(targetRender, check.sourceSize, check.textureSize, check.expectedTextureSize, monitor)) {
+    if (!allowNativeSizedTarget &&
+        !directNiriSurfaceOverlayTargetIsOverviewSized(targetRender, check.sourceSize, check.textureSize, check.expectedTextureSize, monitor)) {
         check.reject = DirectNiriSurfaceOverlayReject::NativeSizedTarget;
         return check;
     }
@@ -14752,7 +14753,15 @@ void OverviewController::renderSelectionChrome() const {
     // before drawing Hymission chrome.  This mirrors Niri's model: overview
     // renders windows from their current layout/window state instead of waiting
     // for a workspace switch to make the workspace visible first.
-    if (!directNiriCloseChrome && g_pHyprOpenGL && m_state.collectionPolicy.onlyActiveWorkspace &&
+    //
+    // Keep this fallback alive through the direct-Niri close animation too.
+    // shouldRenderWindowHook() intentionally suppresses the native pass for
+    // inactive scrolling workspaces, so disabling this overlay on close leaves
+    // adjacent workspace viewports/wallpaper visible while their client contents
+    // vanish.  Only stop drawing it during the final native handoff/deactivate
+    // frames, where Hyprland owns the desktop sample again.
+    const bool directNiriFinalHandoff = m_deactivatePending || directNiriNativeHandoffActive();
+    if (!directNiriFinalHandoff && g_pHyprOpenGL && m_state.collectionPolicy.onlyActiveWorkspace &&
         (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state))) {
         std::size_t rendered = 0;
         std::size_t missing = 0;
@@ -14790,7 +14799,7 @@ void OverviewController::renderSelectionChrome() const {
             const auto transform = windowTransformFor(window, renderMonitor);
             const Rect targetGlobal = transform ? transform->targetGlobal : currentPreviewRect(managed);
             const Rect targetRender = rectToMonitorRenderLocal(targetGlobal, renderMonitor);
-            const auto overlayCheck = directNiriSurfaceOverlayCheck(window, resource, texture, targetRender, renderMonitor);
+            const auto overlayCheck = directNiriSurfaceOverlayCheck(window, resource, texture, targetRender, renderMonitor, directNiriCloseChrome);
 
             if (!overlayCheck.usable) {
                 ++missing;
@@ -14825,8 +14834,8 @@ void OverviewController::renderSelectionChrome() const {
                 continue;
             }
 
-            const float alpha = std::clamp(managedPreviewAlphaFor(window, managed.previewAlpha), 0.0F, 1.0F) *
-                static_cast<float>(std::clamp(progress, 0.0, 1.0));
+            const float overviewAlpha = directNiriCloseChrome ? 1.0F : static_cast<float>(std::clamp(progress, 0.0, 1.0));
+            const float alpha = std::clamp(managedPreviewAlphaFor(window, managed.previewAlpha), 0.0F, 1.0F) * overviewAlpha;
             if (alpha <= 0.001F) {
                 ++missing;
                 if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
