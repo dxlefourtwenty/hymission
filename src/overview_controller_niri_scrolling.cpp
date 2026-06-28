@@ -885,7 +885,7 @@ NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(HANDLE handl
     const double tailFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0), 0.0, 1024.0);
     const double extentScale = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.35), 0.0, 4.0);
     const double offsetX = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0), -65535.0, 65535.0);
-    const double offsetY = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0), -65535.0, 65535.0);
+    const double offsetY = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 0.0), -65535.0, 65535.0);
 
     const double sigma = (softness * 0.5) * normalizedScale;
     const int    range = std::max(0, static_cast<int>(std::ceil(sigma * 3.0 * extentScale)));

@@ -609,7 +609,7 @@ uint64_t layoutAffectingConfigSignature(HANDLE handle) {
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.35);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0);
-    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 0.0);
     mixString("plugin:hymission:niri_mode_wallpaper_zoom_shadow_color", "#00000050");
     mixString("plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
     mixInt("plugin:hymission:niri_mode_wallpaper_zoom_layer_refresh_ms", 100);

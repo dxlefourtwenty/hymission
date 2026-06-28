@@ -352,7 +352,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0F);
     FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_extent_scale", 0.35F);
     FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_offset_x", 0.0F);
-    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_offset_y", 10.0F);
+    FLOAT_CONF("niri_mode_wallpaper_zoom_shadow_offset_y", 0.0F);
     STRING_CONF("niri_mode_wallpaper_zoom_shadow_color", "#00000050");
     STRING_CONF("niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
     INT_CONF("niri_mode_wallpaper_zoom_layer_refresh_ms", 100);
