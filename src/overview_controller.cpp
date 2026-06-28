@@ -2567,6 +2567,7 @@ enum class DirectNiriSurfaceOverlayReject {
     InvalidSurfaceSize,
     TextureSizeMismatch,
     AspectMismatch,
+    NativeSizedTarget,
 };
 
 struct DirectNiriSurfaceOverlayCheck {
@@ -2588,6 +2589,7 @@ const char* directNiriSurfaceOverlayRejectName(DirectNiriSurfaceOverlayReject re
         case DirectNiriSurfaceOverlayReject::InvalidSurfaceSize: return "invalid-surface-size";
         case DirectNiriSurfaceOverlayReject::TextureSizeMismatch: return "texture-size-mismatch";
         case DirectNiriSurfaceOverlayReject::AspectMismatch: return "aspect-mismatch";
+        case DirectNiriSurfaceOverlayReject::NativeSizedTarget: return "native-sized-target";
     }
 
     return "unknown";
@@ -2628,6 +2630,32 @@ bool overlaySizesClose(const Vector2D& lhs, const Vector2D& rhs, double relative
     return closeAxis(lhs.x, rhs.x) && closeAxis(lhs.y, rhs.y);
 }
 
+bool directNiriSurfaceOverlayTargetIsOverviewSized(const Rect& targetRender, const Vector2D& sourceSize, const Vector2D& textureSize,
+                                                   const Vector2D& expectedTextureSize, const PHLMONITOR& monitor) {
+    Vector2D referenceSize = expectedTextureSize;
+    if (!usableSurfaceOverlaySize(referenceSize))
+        referenceSize = textureSize;
+    if (!usableSurfaceOverlaySize(referenceSize))
+        referenceSize = sourceSize;
+    if (!usableSurfaceOverlaySize(referenceSize))
+        return false;
+
+    constexpr double MAX_NATIVE_AXIS_FRACTION = 0.82;
+    if (targetRender.width > referenceSize.x * MAX_NATIVE_AXIS_FRACTION || targetRender.height > referenceSize.y * MAX_NATIVE_AXIS_FRACTION)
+        return false;
+
+    if (monitor) {
+        const double   scale = renderScaleForMonitor(monitor);
+        const Vector2D monitorRenderSize = monitor->m_size * scale;
+        constexpr double MAX_MONITOR_AXIS_FRACTION = 0.72;
+        if (targetRender.width > monitorRenderSize.x * MAX_MONITOR_AXIS_FRACTION ||
+            targetRender.height > monitorRenderSize.y * MAX_MONITOR_AXIS_FRACTION)
+            return false;
+    }
+
+    return true;
+}
+
 DirectNiriSurfaceOverlayCheck directNiriSurfaceOverlayCheck(const PHLWINDOW& window, const SP<CWLSurfaceResource>& resource,
                                                             const SP<Render::ITexture>& texture, const Rect& targetRender,
                                                             const PHLMONITOR& monitor) {
@@ -2663,6 +2691,11 @@ DirectNiriSurfaceOverlayCheck directNiriSurfaceOverlayCheck(const PHLWINDOW& win
     const double sourceAspectDelta = aspectDeltaForOverlay(targetRender.width, targetRender.height, check.sourceSize.x, check.sourceSize.y);
     const double textureAspectDelta = aspectDeltaForOverlay(targetRender.width, targetRender.height, check.textureSize.x, check.textureSize.y);
     check.aspectDelta = std::min(sourceAspectDelta, textureAspectDelta);
+
+    if (!directNiriSurfaceOverlayTargetIsOverviewSized(targetRender, check.sourceSize, check.textureSize, check.expectedTextureSize, monitor)) {
+        check.reject = DirectNiriSurfaceOverlayReject::NativeSizedTarget;
+        return check;
+    }
 
     if (check.aspectDelta > 0.22) {
         check.reject = DirectNiriSurfaceOverlayReject::AspectMismatch;
@@ -5252,28 +5285,23 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
     }
 
     if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
-        if ((usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
-            m_state.collectionPolicy.onlyActiveWorkspace &&
-            window->m_workspace && !window->m_workspace->isVisible() &&
-            niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window)) {
-            // A window that has just been moved into an inactive/unvisited
-            // scrolling workspace can have native Hyprland surface geometry that
-            // still belongs to the old workspace.  If we force the normal
-            // Hyprland window pass for that transient frame, browsers can render
-            // oversized/off-lane.  Do not skip the overview preview entirely:
-            // renderSelectionChrome() still paints the clipped live main-surface
-            // overlay for inactive workspaces, which keeps the window visible
-            // while avoiding the stale native-geometry pass.
-            static std::size_t s_transferNativePassLogBudget = 96;
-            if (debugLogsEnabled() && s_transferNativePassLogBudget > 0) {
+        const bool directNiriSingleWorkspace = (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
+            m_state.collectionPolicy.onlyActiveWorkspace;
+        const bool inactiveScrollingPreview = directNiriSingleWorkspace && window->m_workspace && isScrollingWorkspace(window->m_workspace) &&
+            !window->m_workspace->isVisible() && !window->m_pinned && !isFloatingOverviewWindow(window);
+        if (inactiveScrollingPreview) {
+            const bool transferGuard = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
+            static std::size_t s_inactiveNativePassLogBudget = 160;
+            if (debugLogsEnabled() && s_inactiveNativePassLogBudget > 0) {
                 std::ostringstream out;
-                out << "[hymission] suppress native pass for workspace-transfer preview"
+                out << "[hymission] suppress native pass for inactive direct-niri preview"
                     << " window=" << debugWindowLabel(window)
                     << " workspace=" << debugWorkspaceLabel(window->m_workspace)
                     << " monitor=" << monitor->m_name
+                    << " transferGuard=" << (transferGuard ? 1 : 0)
                     << " wsVisible=" << (window->m_workspace->isVisible() ? 1 : 0);
                 debugLog(out.str());
-                --s_transferNativePassLogBudget;
+                --s_inactiveNativePassLogBudget;
             }
             return false;
         }
