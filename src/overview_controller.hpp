@@ -537,6 +537,7 @@ class OverviewController {
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] CHyprColor   niriModeWallpaperZoomBackgroundColor() const;
+    [[nodiscard]] CHyprColor   niriModeWallpaperZoomShadowColor() const;
     [[nodiscard]] std::string  niriModeWallpaperZoomLayerNamespaces() const;
     [[nodiscard]] std::chrono::milliseconds niriModeWallpaperZoomLayerRefreshInterval() const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
@@ -617,7 +618,12 @@ class OverviewController {
     void                       prepareOverviewDispatcherTarget(PHLWINDOW preferredWindow = {}, bool allowWorkspaceOnly = false);
     [[nodiscard]] SDispatchResult runOverviewExecDispatcher(std::string args);
     [[nodiscard]] SDispatchResult runOverviewEditingDispatcher(const char* dispatcherName, DispatcherHandler* original, std::string args);
-    [[nodiscard]] std::optional<SDispatchResult> tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore);
+    [[nodiscard]] std::optional<SDispatchResult> tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore,
+                                                                                          bool keepFocusOnSource);
+    [[nodiscard]] SDispatchResult runDirectNiriSilentMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& movedWindow,
+                                                                              const PHLWORKSPACE& sourceWorkspace, const PHLMONITOR& sourceMonitor,
+                                                                              const PHLWORKSPACE& targetWorkspace, const PHLWINDOW& selectedBefore,
+                                                                              bool explicitWindowArg, const DispatcherHandler& silentDispatcher);
     void                       processScheduledVisibleStateRebuild(bool transitionActiveWhenScheduled);
     void                       restoreWrappedDispatchers();
 

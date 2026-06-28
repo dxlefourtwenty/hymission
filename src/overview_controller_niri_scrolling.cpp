@@ -1749,6 +1749,24 @@ CHyprColor OverviewController::niriModeWallpaperZoomBackgroundColor() const {
     const auto parsed = Config::ParserUtils::parseColor(configured);
     return CHyprColor(static_cast<uint64_t>(parsed.value_or(FALLBACK_COLOR)));
 }
+CHyprColor OverviewController::niriModeWallpaperZoomShadowColor() const {
+    const auto background = niriModeWallpaperZoomBackgroundColor();
+    const double luminance = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
+
+    if (luminance >= 0.20) {
+        return CHyprColor(
+            std::clamp(background.r * 0.20, 0.0, 0.16),
+            std::clamp(background.g * 0.20, 0.0, 0.16),
+            std::clamp(background.b * 0.20, 0.0, 0.16),
+            0.72);
+    }
+
+    return CHyprColor(
+        std::clamp((1.0 - background.r) * 0.18, 0.08, 0.24),
+        std::clamp((1.0 - background.g) * 0.18, 0.08, 0.24),
+        std::clamp((1.0 - background.b) * 0.18, 0.08, 0.24),
+        0.68);
+}
 std::string OverviewController::niriModeWallpaperZoomLayerNamespaces() const {
     return getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
 }
@@ -4842,31 +4860,34 @@ Config::Actions::ActionResult OverviewController::moveToWorkspaceActionHook(PHLW
         return {};
 
     const auto movedWindow = window.value_or(Desktop::focusState()->window());
-    const bool canRouteThroughOverviewTransition = !silent && !m_overviewEditingDispatcherInProgress && workspace && !workspace->m_isSpecialWorkspace &&
+    const bool canRouteThroughOverviewMove = !m_overviewEditingDispatcherInProgress && workspace && !workspace->m_isSpecialWorkspace &&
         isVisible() && m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview() && movedWindow && movedWindow == selectedWindow() &&
         movedWindow->m_isMapped && hasManagedWindow(movedWindow);
-    if (!canRouteThroughOverviewTransition)
+    if (!canRouteThroughOverviewMove)
         return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
 
-    const auto legacyDispatcher = m_overviewEditingDispatchersOriginal.find("movetoworkspace");
+    const auto dispatcherName = silent ? "movetoworkspacesilent" : "movetoworkspace";
+    const auto legacyDispatcher = m_overviewEditingDispatchersOriginal.find(dispatcherName);
     if (legacyDispatcher == m_overviewEditingDispatchersOriginal.end())
         return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] intercept direct niri move-to-workspace action"
+            << " silent=" << (silent ? 1 : 0)
             << " target=" << debugWorkspaceLabel(workspace)
             << " window=" << debugWindowLabel(movedWindow);
         debugLog(out.str());
     }
 
-    const auto result = runOverviewEditingDispatcher("movetoworkspace", &legacyDispatcher->second, std::to_string(workspace->m_id));
+    const auto result = runOverviewEditingDispatcher(dispatcherName, &legacyDispatcher->second, std::to_string(workspace->m_id));
     if (result.success)
         return {};
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] direct niri move-to-workspace action fallback"
+            << " silent=" << (silent ? 1 : 0)
             << " target=" << debugWorkspaceLabel(workspace)
             << " error=" << result.error;
         debugLog(out.str());
@@ -4875,12 +4896,152 @@ Config::Actions::ActionResult OverviewController::moveToWorkspaceActionHook(PHLW
     return m_moveToWorkspaceActionOriginal(std::move(workspace), silent, std::move(window));
 }
 
-std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore) {
+SDispatchResult OverviewController::runDirectNiriSilentMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& movedWindow,
+                                                                                const PHLWORKSPACE& sourceWorkspace, const PHLMONITOR& sourceMonitor,
+                                                                                const PHLWORKSPACE& targetWorkspace, const PHLWINDOW& selectedBefore,
+                                                                                bool explicitWindowArg, const DispatcherHandler& silentDispatcher) {
+    PreviewRectSnapshot previousPreviewRects;
+    previousPreviewRects.reserve(m_state.windows.size());
+    for (const auto& managed : m_state.windows) {
+        if (managed.window)
+            previousPreviewRects.emplace_back(managed.window, currentPreviewRect(managed));
+    }
+
+    const auto preservedOwnerWorkspace = m_state.ownerWorkspace;
+    const auto preservedOwnerMonitor = m_state.ownerMonitor ? m_state.ownerMonitor : sourceMonitor;
+    const auto preservedOwnerActiveWorkspace = preservedOwnerMonitor ? preservedOwnerMonitor->m_activeWorkspace : PHLWORKSPACE{};
+    const auto preservedNativeFocus = Desktop::focusState()->window();
+    const auto preservedOverviewFocus = selectedBefore ? selectedBefore : (m_state.focusDuringOverview ? m_state.focusDuringOverview : preservedNativeFocus);
+    const PHLWINDOW preservedSourceLastFocus = sourceWorkspace ? sourceWorkspace->getLastFocusedWindow() : PHLWINDOW{};
+    const PHLWINDOW preservedTargetLastFocus = targetWorkspace ? targetWorkspace->getLastFocusedWindow() : PHLWINDOW{};
+    const PHLWINDOW preservedOwnerLastFocus = preservedOwnerWorkspace ? preservedOwnerWorkspace->getLastFocusedWindow() : PHLWINDOW{};
+
+    const auto validOwnerFocus = [&](const PHLWINDOW& candidate) {
+        return candidate && candidate->m_isMapped && !candidate->m_fadingOut && !candidate->m_pinned && !candidate->onSpecialWorkspace() &&
+            candidate->m_workspace == preservedOwnerWorkspace;
+    };
+    const auto validLastFocusForWorkspace = [](const PHLWORKSPACE& workspace, const PHLWINDOW& candidate) -> PHLWINDOW {
+        if (!workspace || !candidate || !candidate->m_isMapped || candidate->m_fadingOut || candidate->m_pinned || candidate->onSpecialWorkspace() ||
+            candidate->m_workspace != workspace)
+            return {};
+
+        return candidate;
+    };
+    const auto ownerFocusFallback = [&]() -> PHLWINDOW {
+        if (validOwnerFocus(preservedOverviewFocus))
+            return preservedOverviewFocus;
+        if (validOwnerFocus(preservedNativeFocus))
+            return preservedNativeFocus;
+        if (validOwnerFocus(preservedOwnerLastFocus))
+            return preservedOwnerLastFocus;
+
+        for (const auto& managed : m_state.windows) {
+            const auto candidate = managed.window;
+            if (validOwnerFocus(candidate) && candidate != movedWindow)
+                return candidate;
+        }
+
+        for (const auto& candidate : g_pCompositor->m_windows) {
+            if (validOwnerFocus(candidate) && candidate != movedWindow)
+                return candidate;
+        }
+
+        return {};
+    };
+    const auto restoreOwnerWorkspace = [&]() {
+        if (!preservedOwnerMonitor || !preservedOwnerWorkspace)
+            return;
+
+        if (preservedOwnerActiveWorkspace == preservedOwnerWorkspace && preservedOwnerMonitor->m_activeWorkspace != preservedOwnerWorkspace) {
+            const ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
+            preservedOwnerMonitor->changeWorkspace(preservedOwnerWorkspace, true, true, true);
+            preservedOwnerWorkspace->m_renderOffset->setValueAndWarp(Vector2D{});
+            preservedOwnerWorkspace->m_alpha->setValueAndWarp(1.F);
+            m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+        }
+
+        m_state.ownerMonitor = preservedOwnerMonitor;
+        m_state.ownerWorkspace = preservedOwnerWorkspace;
+    };
+    const auto restoreSourceFocus = [&]() -> PHLWINDOW {
+        if (sourceWorkspace)
+            sourceWorkspace->m_lastFocusedWindow = validLastFocusForWorkspace(sourceWorkspace, preservedSourceLastFocus);
+        if (targetWorkspace && targetWorkspace != sourceWorkspace)
+            targetWorkspace->m_lastFocusedWindow = validLastFocusForWorkspace(targetWorkspace, preservedTargetLastFocus);
+        if (preservedOwnerWorkspace)
+            preservedOwnerWorkspace->m_lastFocusedWindow = validLastFocusForWorkspace(preservedOwnerWorkspace, preservedOwnerLastFocus);
+
+        restoreOwnerWorkspace();
+
+        const auto focus = ownerFocusFallback();
+        if (focus) {
+            if (Desktop::focusState()->window() != focus)
+                Desktop::focusState()->rawWindowFocus(focus, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (focus->m_workspace)
+                focus->m_workspace->m_lastFocusedWindow = focus;
+            selectWindowInState(m_state, focus);
+            m_state.focusDuringOverview = focus;
+        } else {
+            if (Desktop::focusState()->window())
+                Desktop::focusState()->rawWindowFocus(PHLWINDOW{}, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            m_state.selectedIndex.reset();
+            m_state.focusDuringOverview = {};
+        }
+
+        restoreOwnerWorkspace();
+        return focus;
+    };
+
+    const ScopedFlag dispatchGuard(m_overviewEditingDispatcherInProgress);
+    if (!explicitWindowArg && Desktop::focusState()->window() != movedWindow)
+        focusWindowCompat(movedWindow, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+
+    SDispatchResult result;
+    {
+        const ScopedFlag applyingWorkspaceTransitionCommit(m_applyingWorkspaceTransitionCommit);
+        result = silentDispatcher(args);
+    }
+    if (!result.success) {
+        (void)restoreSourceFocus();
+        return result;
+    }
+
+    niri_scrolling_detail::armDirectNiriWorkspaceTransferRenderGuard(movedWindow);
+    m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+
+    const auto focus = restoreSourceFocus();
+    refreshWorkspaceLayoutSnapshot(sourceWorkspace);
+    refreshWorkspaceLayoutSnapshot(targetWorkspace);
+    if (workspaceStripEnabled(m_state)) {
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+    }
+    refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, "movetoworkspacesilent");
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri silent workspace move"
+            << " window=" << debugWindowLabel(movedWindow)
+            << " source=" << debugWorkspaceLabel(sourceWorkspace)
+            << " target=" << debugWorkspaceLabel(targetWorkspace)
+            << " restoredFocus=" << debugWindowLabel(focus)
+            << " owner=" << debugWorkspaceLabel(m_state.ownerWorkspace);
+        debugLog(out.str());
+    }
+
+    damageOwnedMonitors();
+    return result;
+}
+
+std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspaceDispatcher(const std::string& args, const PHLWINDOW& selectedBefore,
+                                                                                             bool keepFocusOnSource) {
     std::string workspaceArgs = args;
     PHLWINDOW   movedWindow = selectedBefore;
+    bool        explicitWindowArg = false;
     if (const auto separator = args.find_last_of(','); separator != std::string::npos) {
         movedWindow = g_pCompositor->getWindowByRegex(args.substr(separator + 1));
         workspaceArgs = args.substr(0, separator);
+        explicitWindowArg = true;
     }
 
     const auto sourceWorkspace = movedWindow ? movedWindow->m_workspace : PHLWORKSPACE{};
@@ -4899,15 +5060,22 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
         targetWorkspace = g_pCompositor->createNewWorkspace(targetSpec.id, sourceMonitor->m_id, targetName, false);
     }
     const auto targetMonitor = targetWorkspace ? targetWorkspace->m_monitor.lock() : PHLMONITOR{};
+    const bool canOwnSilentWorkspaceMove = keepFocusOnSource && targetWorkspace && !targetWorkspace->m_isSpecialWorkspace &&
+        sourceWorkspace != targetWorkspace && targetMonitor;
     const bool canOwnWorkspaceTransition = targetWorkspace && !targetWorkspace->m_isSpecialWorkspace && sourceWorkspace != targetWorkspace && targetMonitor &&
         sourceMonitor == targetMonitor;
-    if (!canOwnWorkspaceTransition)
+    if (!canOwnSilentWorkspaceMove && !canOwnWorkspaceTransition)
         return std::nullopt;
 
     // Hyprland can destroy the source workspace immediately when its last
     // window is moved out. Keep that lane alive as a synthetic overview
     // placeholder until overview closes, otherwise later rebuilds drop it.
     niri_scrolling_detail::retainDirectNiriWorkspaceLane(sourceMonitor, sourceWorkspace);
+    niri_scrolling_detail::retainDirectNiriWorkspaceLane(targetMonitor, targetWorkspace);
+
+    if (keepFocusOnSource)
+        return runDirectNiriSilentMoveToWorkspaceDispatcher(args, movedWindow, sourceWorkspace, sourceMonitor, targetWorkspace, selectedBefore,
+                                                           explicitWindowArg, silentDispatcher->second);
 
     const auto* previousManaged = managedWindowFor(m_state, movedWindow, true);
     const float movedPreviewAlpha = previousManaged ? previousManaged->previewAlpha : 1.0F;
@@ -5049,8 +5217,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isDirectResizeActiveDispatcher = dispatcherNameLower == "resizeactive" || dispatcherNameLower.starts_with("resizeactive") ||
         dispatcherNameLower.find("window.resize") != std::string::npos;
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
-    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" ||
-        (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") == std::string::npos);
+    const bool isSilentMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspacesilent" ||
+        (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") != std::string::npos);
+    const bool isMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspace" || isSilentMoveToWorkspaceDispatcher ||
+        dispatcherNameLower.find("window.workspace") != std::string::npos;
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
         isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher ||
         isDirectResizeActiveDispatcher;
@@ -5495,7 +5665,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && isMoveToWorkspaceDispatcher) {
         retainVisibleDirectNiriWorkspaceLanes();
 
-        if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore); result)
+        if (const auto result = tryRunDirectNiriMoveToWorkspaceDispatcher(args, selectedBefore, isSilentMoveToWorkspaceDispatcher); result)
             return *result;
 
         PHLWINDOW retainedMoveSource = selectedBefore;
@@ -7563,11 +7733,23 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     constexpr double phaseAlpha = 1.0;
 
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
+    const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
+    const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
+    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(40.0 * wallpaperShadowScale)));
+    const double wallpaperShadowSpread = std::max(1.0, std::round(10.0 * wallpaperShadowScale));
+    const Vector2D wallpaperShadowOffset{0.0, std::round(10.0 * wallpaperShadowScale)};
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
+
+        CBox shadowBox = toBox(renderRect);
+        shadowBox.x += wallpaperShadowOffset.x - wallpaperShadowRange - wallpaperShadowSpread;
+        shadowBox.y += wallpaperShadowOffset.y - wallpaperShadowRange - wallpaperShadowSpread;
+        shadowBox.width += 2.0 * (wallpaperShadowRange + wallpaperShadowSpread);
+        shadowBox.height += 2.0 * (wallpaperShadowRange + wallpaperShadowSpread);
+        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
