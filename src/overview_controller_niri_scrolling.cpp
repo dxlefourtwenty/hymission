@@ -7735,7 +7735,7 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
     const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
     const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
-    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(32.0 * wallpaperShadowScale)));
+    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(40.0 * wallpaperShadowScale)));
     const double wallpaperShadowSpread = std::max(1.0, std::round(2.0 * wallpaperShadowScale));
     const Vector2D wallpaperShadowOffset{0.0, 0.0};
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
