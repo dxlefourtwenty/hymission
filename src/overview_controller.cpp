@@ -603,11 +603,11 @@ uint64_t layoutAffectingConfigSignature(HANDLE handle) {
     mixInt("plugin:hymission:niri_mode_wallpaper_zoom", 0);
     mixString("plugin:hymission:niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
     mixInt("plugin:hymission:niri_mode_wallpaper_zoom_shadow", 1);
-    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 90.0);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 140.0);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_spread", 0.0);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_edge_fade", 2.0);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0);
-    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.35);
+    mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.225);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0);
     mixFloat("plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 0.0);
     mixString("plugin:hymission:niri_mode_wallpaper_zoom_shadow_color", "#00000050");
