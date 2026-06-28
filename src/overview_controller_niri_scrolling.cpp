@@ -1751,21 +1751,19 @@ CHyprColor OverviewController::niriModeWallpaperZoomBackgroundColor() const {
 }
 CHyprColor OverviewController::niriModeWallpaperZoomShadowColor() const {
     const auto background = niriModeWallpaperZoomBackgroundColor();
-    const double luminance = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
 
-    if (luminance >= 0.20) {
-        return CHyprColor(
-            std::clamp(background.r * 0.20, 0.0, 0.16),
-            std::clamp(background.g * 0.20, 0.0, 0.16),
-            std::clamp(background.b * 0.20, 0.0, 0.16),
-            0.72);
-    }
+    // Keep the shadow in the same hue family as the configured wallpaper zoom
+    // background, but force it darker.  The previous low-luminance path inverted
+    // near-black colors, so a background like #0D0F14 produced a lighter gray
+    // shadow and lost contrast around the viewport.
+    constexpr double SHADOW_DARKEN_MULTIPLIER = 0.42;
+    constexpr double SHADOW_ALPHA = 0.82;
 
     return CHyprColor(
-        std::clamp((1.0 - background.r) * 0.18, 0.08, 0.24),
-        std::clamp((1.0 - background.g) * 0.18, 0.08, 0.24),
-        std::clamp((1.0 - background.b) * 0.18, 0.08, 0.24),
-        0.68);
+        std::clamp(background.r * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
+        std::clamp(background.g * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
+        std::clamp(background.b * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
+        std::clamp(std::max<double>(background.a, SHADOW_ALPHA), 0.0, 1.0));
 }
 std::string OverviewController::niriModeWallpaperZoomLayerNamespaces() const {
     return getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
