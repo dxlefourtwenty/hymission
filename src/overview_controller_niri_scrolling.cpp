@@ -853,16 +853,59 @@ CBox toBox(const Rect& rect) {
     };
 }
 
-void renderNiriWallpaperViewportShadow(const Rect& renderRect, int shadowRange, const Vector2D& shadowOffset, const CHyprColor& shadowColor,
-                                       float alpha) {
+struct NiriWallpaperViewportShadowConfig {
+    bool       enabled = false;
+    int        range = 0;
+    int        rounding = 0;
+    float      roundingPower = 2.0F;
+    double     scale = 1.0;
+    Vector2D   offset;
+    CHyprColor color;
+};
+
+NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(double monitorScale) {
+    static auto PSHADOWS      = CConfigValue<Config::INTEGER>("decoration:shadow:enabled");
+    static auto PSHADOWSIZE   = CConfigValue<Config::INTEGER>("decoration:shadow:range");
+    static auto PSHADOWSCALE  = CConfigValue<Config::FLOAT>("decoration:shadow:scale");
+    static auto PSHADOWOFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
+    static auto PSHADOWCOLOR  = CConfigValue<Config::INTEGER>("decoration:shadow:color");
+    static auto PROUNDING     = CConfigValue<Config::INTEGER>("decoration:rounding");
+    static auto PROUNDINGPOWER = CConfigValue<Config::FLOAT>("decoration:rounding_power");
+
+    monitorScale = monitorScale > 0.0 ? monitorScale : 1.0;
+
+    const int layoutRange = std::max(0, static_cast<int>(*PSHADOWSIZE));
+    if (*PSHADOWS != 1 || layoutRange <= 0)
+        return {};
+
+    const auto offset = *PSHADOWOFFSET;
+    return {
+        .enabled = true,
+        .range = std::max(1, static_cast<int>(std::lround(static_cast<double>(layoutRange) * monitorScale))),
+        .rounding = std::max(0, static_cast<int>(std::lround(static_cast<double>(*PROUNDING) * monitorScale))),
+        .roundingPower = std::clamp(static_cast<float>(*PROUNDINGPOWER), 2.0F, 10.0F),
+        .scale = std::clamp(static_cast<double>(*PSHADOWSCALE), 0.0, 1.0),
+        .offset = Vector2D{static_cast<double>(offset.x) * monitorScale, static_cast<double>(offset.y) * monitorScale},
+        .color = CHyprColor(static_cast<uint64_t>(*PSHADOWCOLOR)),
+    };
+}
+
+void renderNiriWallpaperViewportShadow(const Rect& renderRect, double monitorScale, float alpha) {
+    const auto config = niriWallpaperViewportShadowConfig(monitorScale);
+    if (!config.enabled || config.color.a <= 0.0 || alpha <= 0.0F)
+        return;
+
     CBox bodyBox = toBox(renderRect);
     bodyBox.round();
 
     CBox shadowBox = bodyBox;
-    shadowBox.x += shadowOffset.x - static_cast<double>(shadowRange);
-    shadowBox.y += shadowOffset.y - static_cast<double>(shadowRange);
-    shadowBox.width += 2.0 * static_cast<double>(shadowRange);
-    shadowBox.height += 2.0 * static_cast<double>(shadowRange);
+    shadowBox.x -= static_cast<double>(config.range);
+    shadowBox.y -= static_cast<double>(config.range);
+    shadowBox.width += 2.0 * static_cast<double>(config.range);
+    shadowBox.height += 2.0 * static_cast<double>(config.range);
+    shadowBox.scaleFromCenter(config.scale).translate(config.offset).round();
+    if (shadowBox.width < 1.0 || shadowBox.height < 1.0)
+        return;
 
     CRegion shadowDamage = g_pHyprRenderer->m_renderData.damage.copy();
     shadowDamage.intersect(shadowBox);
@@ -872,7 +915,7 @@ void renderNiriWallpaperViewportShadow(const Rect& renderRect, int shadowRange, 
 
     const CRegion previousDamage = g_pHyprRenderer->m_renderData.damage.copy();
     g_pHyprRenderer->m_renderData.damage = shadowDamage;
-    g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, shadowRange, shadowColor, alpha);
+    g_pHyprOpenGL->renderRoundedShadow(shadowBox, config.rounding, config.roundingPower, config.range, config.color, alpha);
     g_pHyprRenderer->m_renderData.damage = previousDamage;
 }
 
@@ -1771,24 +1814,6 @@ CHyprColor OverviewController::niriModeWallpaperZoomBackgroundColor() const {
         getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_background_color", "#0D0F14FF");
     const auto parsed = Config::ParserUtils::parseColor(configured);
     return CHyprColor(static_cast<uint64_t>(parsed.value_or(FALLBACK_COLOR)));
-}
-CHyprColor OverviewController::niriModeWallpaperZoomShadowColor() const {
-    const auto background = niriModeWallpaperZoomBackgroundColor();
-
-    // Keep the shadow in the same hue family as the configured wallpaper zoom
-    // background, but force it darker.  The previous low-luminance path inverted
-    // near-black colors, so a background like #0D0F14 produced a lighter gray
-    // shadow and lost contrast around the viewport.  This stays slightly brighter
-    // than the first contrast pass so the shadow reads as a soft shade instead of
-    // an almost-black outline.
-    constexpr double SHADOW_DARKEN_MULTIPLIER = 0.54;
-    constexpr double SHADOW_ALPHA = 0.74;
-
-    return CHyprColor(
-        std::clamp(background.r * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
-        std::clamp(background.g * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
-        std::clamp(background.b * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
-        std::clamp(std::max<double>(background.a, SHADOW_ALPHA), 0.0, 1.0));
 }
 std::string OverviewController::niriModeWallpaperZoomLayerNamespaces() const {
     return getConfigString(m_handle, "plugin:hymission:niri_mode_wallpaper_zoom_layer_namespaces", "awww-daemon");
@@ -7756,17 +7781,14 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     constexpr double phaseAlpha = 1.0;
 
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
-    const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
-    const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
-    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(40.0 * wallpaperShadowScale)));
-    const Vector2D wallpaperShadowOffset{0.0, 0.0};
+    const double renderMonitorScale = renderScaleForMonitor(renderMonitor);
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
 
-        renderNiriWallpaperViewportShadow(renderRect, wallpaperShadowRange, wallpaperShadowOffset, wallpaperShadowColor, renderAlpha * 0.68F);
+        renderNiriWallpaperViewportShadow(renderRect, renderMonitorScale, renderAlpha);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});

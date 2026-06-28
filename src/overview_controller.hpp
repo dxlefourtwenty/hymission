@@ -537,7 +537,6 @@ class OverviewController {
     [[nodiscard]] bool         niriModeShowEmptyWorkspacesBetweenEnabled() const;
     [[nodiscard]] bool         niriModeWallpaperZoomEnabled() const;
     [[nodiscard]] CHyprColor   niriModeWallpaperZoomBackgroundColor() const;
-    [[nodiscard]] CHyprColor   niriModeWallpaperZoomShadowColor() const;
     [[nodiscard]] std::string  niriModeWallpaperZoomLayerNamespaces() const;
     [[nodiscard]] std::chrono::milliseconds niriModeWallpaperZoomLayerRefreshInterval() const;
     [[nodiscard]] bool         niriWallpaperZoomAppliesToState(const State& state) const;
