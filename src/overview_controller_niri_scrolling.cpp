@@ -7735,32 +7735,24 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
     const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
     const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
-    const int wallpaperShadowOuterRange = std::max(1, static_cast<int>(std::lround(68.0 * wallpaperShadowScale)));
-    const int wallpaperShadowInnerRange = std::max(1, static_cast<int>(std::lround(34.0 * wallpaperShadowScale)));
-    const double wallpaperShadowOuterSpread = std::max(1.0, std::round(22.0 * wallpaperShadowScale));
-    const double wallpaperShadowInnerSpread = std::max(1.0, std::round(7.0 * wallpaperShadowScale));
-    const Vector2D wallpaperShadowOffset{0.0, std::round(9.0 * wallpaperShadowScale)};
+    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(34.0 * wallpaperShadowScale)));
+    const Vector2D wallpaperShadowOffset{0.0, std::round(5.0 * wallpaperShadowScale)};
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
         if (renderRect.width <= 0.0 || renderRect.height <= 0.0 || renderAlpha <= 0.001F)
             return;
 
-        const auto renderShadowLayer = [&](int range, double spread, float opacity) {
-            CBox shadowBox = toBox(renderRect);
-            shadowBox.x += wallpaperShadowOffset.x - static_cast<double>(range) - spread;
-            shadowBox.y += wallpaperShadowOffset.y - static_cast<double>(range) - spread;
-            shadowBox.width += 2.0 * (static_cast<double>(range) + spread);
-            shadowBox.height += 2.0 * (static_cast<double>(range) + spread);
-            g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, range, wallpaperShadowColor, renderAlpha * opacity);
-        };
-
-        // Render a wide low-alpha shadow first, then a lighter tighter pass.
-        // The outer pass gives the viewport shadow room to fade out instead of
-        // ending at a crisp ring, while the inner pass keeps enough separation
-        // from similarly dark wallpaper/background colors.
-        renderShadowLayer(wallpaperShadowOuterRange, wallpaperShadowOuterSpread, 0.50F);
-        renderShadowLayer(wallpaperShadowInnerRange, wallpaperShadowInnerSpread, 0.34F);
+        // Draw the shadow from the viewport's real bounds, not from an already
+        // expanded rectangle.  Expanding the source box creates a visible hard
+        // rectangular halo around the viewport.  Let renderRoundedShadow own the
+        // blur range so the shadow starts at the viewport edge and fades out
+        // without a separate outline.  The range is half of the previous wide
+        // falloff pass.
+        CBox shadowBox = toBox(renderRect);
+        shadowBox.x += wallpaperShadowOffset.x;
+        shadowBox.y += wallpaperShadowOffset.y;
+        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha * 0.58F);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
