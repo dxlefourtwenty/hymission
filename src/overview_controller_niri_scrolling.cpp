@@ -698,6 +698,19 @@ bool directNiriWorkspaceTransferRenderGuardActiveLocal(const PHLWINDOW& window) 
     return false;
 }
 
+void armDirectNiriWorkspaceTransferRenderGuardLocal(const PHLWINDOW& window) {
+    if (!window)
+        return;
+
+    const void* const key = window.get();
+    if (!key)
+        return;
+
+    g_directNiriWorkspaceTransferGuardedUntil[key] = std::chrono::steady_clock::now() + DIRECT_NIRI_WORKSPACE_TRANSFER_RENDER_GUARD_DURATION;
+    if (window->m_workspace)
+        g_directNiriSeenWorkspaceIds[key] = window->m_workspace->m_id;
+}
+
 DirectNiriWorkspaceTransferGuardState updateDirectNiriWorkspaceTransferRenderGuard(const PHLWINDOW& window) {
     DirectNiriWorkspaceTransferGuardState state;
     if (!window || !window->m_workspace)
@@ -1197,6 +1210,10 @@ bool workspaceSwitchDispatcherBlockRelayout = false;
 
 bool directNiriWorkspaceTransferRenderGuardActive(const PHLWINDOW& window) {
     return directNiriWorkspaceTransferRenderGuardActiveLocal(window);
+}
+
+void armDirectNiriWorkspaceTransferRenderGuard(const PHLWINDOW& window) {
+    armDirectNiriWorkspaceTransferRenderGuardLocal(window);
 }
 
 namespace {

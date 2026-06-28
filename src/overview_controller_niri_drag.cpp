@@ -1239,6 +1239,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         m_applyingWorkspaceTransitionCommit = true;
         g_pCompositor->moveWindowToWorkspaceSafe(window, workspace);
         m_applyingWorkspaceTransitionCommit = previousGuard;
+        niri_scrolling_detail::armDirectNiriWorkspaceTransferRenderGuard(window);
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     } else if (dropIntoEmptyWorkspace && target.monitor && target.monitor->m_activeWorkspace != workspace) {
         const bool previousGuard = m_applyingWorkspaceTransitionCommit;
