@@ -7756,23 +7756,23 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
         shadowBox.height += 2.0 * (static_cast<double>(wallpaperShadowRange) + wallpaperShadowSpread);
         g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha * 0.68F);
 
-        // renderRoundedShadow() gives the viewport shadow the right softness, but
-        // it also leaves a faint one-pixel perimeter where the shadow begins at
-        // the wallpaper edge.  Paint only that immediate outside perimeter back to
-        // the configured zoom background color.  The remaining falloff outside the
-        // mask stays visible, so this removes the subtle ring without killing the
-        // drop shadow.
-        auto ringMaskColor = niriModeWallpaperZoomBackgroundColor();
-        ringMaskColor.a = static_cast<float>(std::clamp(static_cast<double>(ringMaskColor.a) * static_cast<double>(renderAlpha), 0.0, 1.0));
-        const double ringMaskWidth = std::max(1.0, std::round(1.5 * wallpaperShadowScale));
-        const double maskLeft = renderRect.x + wallpaperShadowOffset.x;
-        const double maskTop = renderRect.y + wallpaperShadowOffset.y;
-        const double maskRight = maskLeft + renderRect.width;
-        const double maskBottom = maskTop + renderRect.height;
-        g_pHyprOpenGL->renderRect(CBox{maskLeft - ringMaskWidth, maskTop - ringMaskWidth, renderRect.width + ringMaskWidth * 2.0, ringMaskWidth}, ringMaskColor, {});
-        g_pHyprOpenGL->renderRect(CBox{maskLeft - ringMaskWidth, maskBottom, renderRect.width + ringMaskWidth * 2.0, ringMaskWidth}, ringMaskColor, {});
-        g_pHyprOpenGL->renderRect(CBox{maskLeft - ringMaskWidth, maskTop, ringMaskWidth, renderRect.height}, ringMaskColor, {});
-        g_pHyprOpenGL->renderRect(CBox{maskRight, maskTop, ringMaskWidth, renderRect.height}, ringMaskColor, {});
+        // renderRoundedShadow() has a very faint perimeter at the geometry it
+        // uses as the shadow source.  Do not change the shadow itself; just
+        // overpaint that source-outline with the same color as the wallpaper-zoom
+        // background so the outline becomes transparent against the backdrop.
+        // The previous mask covered the viewport edge, but the visible ring comes
+        // from the expanded shadow source box.
+        auto outlineMaskColor = niriModeWallpaperZoomBackgroundColor();
+        outlineMaskColor.a = static_cast<float>(std::clamp(static_cast<double>(outlineMaskColor.a) * static_cast<double>(renderAlpha), 0.0, 1.0));
+        const double outlineMaskWidth = std::max(1.0, std::round(2.0 * wallpaperShadowScale));
+        g_pHyprOpenGL->renderRect(CBox{shadowBox.x - outlineMaskWidth, shadowBox.y - outlineMaskWidth,
+                                      shadowBox.width + outlineMaskWidth * 2.0, outlineMaskWidth},
+                                  outlineMaskColor, {});
+        g_pHyprOpenGL->renderRect(CBox{shadowBox.x - outlineMaskWidth, shadowBox.y + shadowBox.height,
+                                      shadowBox.width + outlineMaskWidth * 2.0, outlineMaskWidth},
+                                  outlineMaskColor, {});
+        g_pHyprOpenGL->renderRect(CBox{shadowBox.x - outlineMaskWidth, shadowBox.y, outlineMaskWidth, shadowBox.height}, outlineMaskColor, {});
+        g_pHyprOpenGL->renderRect(CBox{shadowBox.x + shadowBox.width, shadowBox.y, outlineMaskWidth, shadowBox.height}, outlineMaskColor, {});
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
