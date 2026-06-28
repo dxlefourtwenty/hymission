@@ -1755,11 +1755,11 @@ CHyprColor OverviewController::niriModeWallpaperZoomShadowColor() const {
     // Keep the shadow in the same hue family as the configured wallpaper zoom
     // background, but force it darker.  The previous low-luminance path inverted
     // near-black colors, so a background like #0D0F14 produced a lighter gray
-    // shadow and lost contrast around the viewport.  This multiplier is slightly
-    // brighter than the first contrast pass so the shadow reads as a soft shade
-    // instead of an almost-black outline.
+    // shadow and lost contrast around the viewport.  This stays slightly brighter
+    // than the first contrast pass so the shadow reads as a soft shade instead of
+    // an almost-black outline.
     constexpr double SHADOW_DARKEN_MULTIPLIER = 0.54;
-    constexpr double SHADOW_ALPHA = 0.78;
+    constexpr double SHADOW_ALPHA = 0.74;
 
     return CHyprColor(
         std::clamp(background.r * SHADOW_DARKEN_MULTIPLIER, 0.0, 1.0),
@@ -7735,9 +7735,9 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
     const auto wallpaperTexture = niriWallpaperTextureForMonitor(renderMonitor);
     const auto wallpaperShadowColor = niriModeWallpaperZoomShadowColor();
     const double wallpaperShadowScale = renderMonitor ? renderMonitor->m_scale : 1.0;
-    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(24.0 * wallpaperShadowScale)));
-    const double wallpaperShadowSpread = std::max(1.0, std::round(3.0 * wallpaperShadowScale));
-    const Vector2D wallpaperShadowOffset{0.0, std::round(5.0 * wallpaperShadowScale)};
+    const int wallpaperShadowRange = std::max(1, static_cast<int>(std::lround(32.0 * wallpaperShadowScale)));
+    const double wallpaperShadowSpread = std::max(1.0, std::round(2.0 * wallpaperShadowScale));
+    const Vector2D wallpaperShadowOffset{0.0, 0.0};
     const auto renderBackground = [&](const Rect& globalRect, double alpha) {
         const Rect renderRect = scaleRectForRender(rectToMonitorLocal(globalRect, renderMonitor), renderMonitor);
         const float renderAlpha = static_cast<float>(clampUnit(alpha));
@@ -7746,16 +7746,15 @@ void OverviewController::renderNiriWorkspaceBackgrounds() const {
 
         // renderRoundedShadow needs a small shadow surface around the viewport.
         // Drawing it from the exact viewport rect hides most of the shadow under
-        // the wallpaper texture, but the previous large two-layer expansion left
-        // a visible rectangular outline.  Use one compact layer: half-width
-        // compared with the wide falloff pass, with only a tiny spread so there
-        // is no separate halo box around the workspace viewport.
+        // the wallpaper texture.  Keep the surface symmetric around the viewport
+        // so the falloff is even on the top and bottom, and use one slightly wider
+        // low-alpha layer instead of a tight inner outline.
         CBox shadowBox = toBox(renderRect);
         shadowBox.x += wallpaperShadowOffset.x - static_cast<double>(wallpaperShadowRange) - wallpaperShadowSpread;
         shadowBox.y += wallpaperShadowOffset.y - static_cast<double>(wallpaperShadowRange) - wallpaperShadowSpread;
         shadowBox.width += 2.0 * (static_cast<double>(wallpaperShadowRange) + wallpaperShadowSpread);
         shadowBox.height += 2.0 * (static_cast<double>(wallpaperShadowRange) + wallpaperShadowSpread);
-        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha * 0.82F);
+        g_pHyprOpenGL->renderRoundedShadow(shadowBox, 0, 2.0F, wallpaperShadowRange, wallpaperShadowColor, renderAlpha * 0.68F);
 
         if (wallpaperTexture) {
             g_pHyprOpenGL->renderTexture(wallpaperTexture, toBox(renderRect), {.a = renderAlpha});
