@@ -881,9 +881,9 @@ NiriWallpaperViewportShadowConfig niriWallpaperViewportShadowConfig(HANDLE handl
     const double normalizedScale = std::max(0.0, renderRect.height) / 1080.0;
     const double softness = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_softness", 90.0), 0.0, 1024.0);
     const double spread = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_spread", 0.0), -1024.0, 1024.0);
-    const double edgeFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_edge_fade", 12.0), 0.0, 1024.0);
+    const double edgeFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_edge_fade", 2.0), 0.0, 1024.0);
     const double tailFade = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_tail_fade", 36.0), 0.0, 1024.0);
-    const double extentScale = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.5), 0.0, 4.0);
+    const double extentScale = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_extent_scale", 0.35), 0.0, 4.0);
     const double offsetX = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_x", 0.0), -65535.0, 65535.0);
     const double offsetY = std::clamp(getConfigFloat(handle, "plugin:hymission:niri_mode_wallpaper_zoom_shadow_offset_y", 10.0), -65535.0, 65535.0);
 
@@ -941,7 +941,8 @@ void renderNiriWallpaperViewportShadow(HANDLE handle, const Rect& renderRect, fl
         return;
 
     const CRegion frameDamage = g_pHyprRenderer->m_renderData.damage.copy();
-    CBox          previousBox = sourceBox;
+    // Start from the viewport body so the offset shadow fills the contact area instead of leaving a gap.
+    CBox          previousBox = bodyBox;
     for (int distance = 0; distance < config.extent; ++distance) {
         CBox shadowBox = sourceBox.copy().expand(distance + 1);
         shadowBox.round();
