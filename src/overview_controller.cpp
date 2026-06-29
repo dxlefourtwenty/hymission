@@ -3990,6 +3990,7 @@ void OverviewController::renderStage(eRenderStage stage) {
         }
 
         bool needsForcedRelayout = false;
+        bool needsDirectNiriGeometryRelayout = false;
         PHLWINDOW relayoutTriggerWindow;
         for (const auto& managed : m_state.windows) {
             const auto window = managed.window;
@@ -4001,10 +4002,24 @@ void OverviewController::renderStage(eRenderStage stage) {
 
             const auto nextMonitor = preferredMonitorForWindow(window, m_state);
             const bool expectedNiriFloatingOverlay = niriOverview && (isFloatingOverviewWindow(window) || window->m_pinned);
-            if (nextMonitor != managed.targetMonitor || managed.isFloating != window->m_isFloating || managed.isPinned != window->m_pinned ||
-                managed.isNiriFloatingOverlay != expectedNiriFloatingOverlay) {
+            const bool geometryStateChanged = managed.isFloating != window->m_isFloating || managed.isPinned != window->m_pinned ||
+                managed.isNiriFloatingOverlay != expectedNiriFloatingOverlay;
+            if (nextMonitor != managed.targetMonitor || geometryStateChanged) {
                 needsForcedRelayout = true;
+                needsDirectNiriGeometryRelayout = directNiriOverview && geometryStateChanged;
                 relayoutTriggerWindow = window;
+                if (debugLogsEnabled() && needsDirectNiriGeometryRelayout) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri geometry state changed"
+                        << " window=" << debugWindowLabel(window)
+                        << " managedFloating=" << (managed.isFloating ? 1 : 0)
+                        << " liveFloating=" << (window->m_isFloating ? 1 : 0)
+                        << " managedPinned=" << (managed.isPinned ? 1 : 0)
+                        << " livePinned=" << (window->m_pinned ? 1 : 0)
+                        << " managedOverlay=" << (managed.isNiriFloatingOverlay ? 1 : 0)
+                        << " expectedOverlay=" << (expectedNiriFloatingOverlay ? 1 : 0);
+                    debugLog(out.str());
+                }
                 break;
             }
 
@@ -4016,7 +4031,7 @@ void OverviewController::renderStage(eRenderStage stage) {
             }
         }
 
-        if (directNiriOverview && needsForcedRelayout) {
+        if (directNiriOverview && needsForcedRelayout && !needsDirectNiriGeometryRelayout) {
             scheduleVisibleStateRebuild();
             needsForcedRelayout = false;
         }
@@ -9104,6 +9119,8 @@ bool OverviewController::installHooks() {
         "window.swap",
         "window.resize",
         "window.workspace",
+        "window.float",
+        "window.pin",
     };
     if (g_pKeybindManager) {
         for (const auto& [name, _] : g_pKeybindManager->m_dispatchers) {
