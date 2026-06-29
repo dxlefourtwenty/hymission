@@ -9343,16 +9343,16 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                                                         targetMonitor->m_position.y + workspaceViewportLocal.y,
                                                                         workspaceViewportLocal.width,
                                                                         workspaceViewportLocal.height);
-        // Pinned windows are monitor-global overlays. They must not claim the
-        // per-workspace wallpaper/backing placeholder, because their slot path
-        // does not carry the scrolling tape overflow axis. If a pinned window is
-        // processed before a real tiled scrolling window, claiming this here
-        // makes the wallpaper use the pinned/floating overlay scale and appear
-        // smaller than the rest of the workspace viewports. Let tiled scrolling
-        // windows create the backing placeholder; if the workspace has only
-        // pinned overlays, the empty-workspace placeholder pass below creates a
-        // stable workspace-sized viewport.
-        if (!window->m_pinned && niriFitBackingPlaceholderWorkspaces.insert(layoutWorkspace->m_id).second) {
+        // Pinned/floating overlays are not scrolling-tape members. They must not
+        // claim the per-workspace wallpaper/backing placeholder, because their
+        // slot path does not carry the scrolling tape overflow axis. If an
+        // overlay is processed before a real tiled scrolling window, claiming
+        // this here makes the wallpaper use the overlay scale and appear smaller
+        // than the rest of the workspace viewports. Let tiled scrolling windows
+        // create the backing placeholder; if the workspace has only overlays,
+        // the empty-workspace placeholder pass below creates a stable
+        // workspace-sized viewport.
+        if (!window->m_pinned && !isFloatingOverviewWindow(window) && niriFitBackingPlaceholderWorkspaces.insert(layoutWorkspace->m_id).second) {
             const Rect targetGlobal = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
                                                targetMonitor->m_position.y + workspaceViewportLocal.y,
                                                workspaceViewportLocal.width,
@@ -9701,12 +9701,12 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (!managed.window || managed.targetMonitor != targetMonitor)
                     return false;
 
-                // Pinned windows are overlays on the monitor, not occupants of
-                // the focused scrolling workspace lane. Counting them here
-                // suppresses the stable empty/backing viewport for pinned-only
-                // workspaces, which then leaves the pinned card's smaller
-                // overlay-derived viewport as the only wallpaper rect.
-                if (managed.window->m_pinned || managed.isPinned)
+                // Pinned/floating overlays are not occupants of the focused
+                // scrolling workspace lane. Counting them here suppresses the
+                // stable empty/backing viewport for overlay-only workspaces,
+                // leaving the overlay card's smaller viewport as the only
+                // wallpaper rect.
+                if (managed.window->m_pinned || managed.isPinned || managed.isNiriFloatingOverlay || isFloatingOverviewWindow(managed.window))
                     return false;
 
                 return managed.window->m_workspace == workspace;

@@ -14765,7 +14765,9 @@ void OverviewController::renderSelectionChrome() const {
     // client area blank), overlay the current main-surface texture here, just
     // before drawing Hymission chrome.  This mirrors Niri's model: overview
     // renders windows from their current layout/window state instead of waiting
-    // for a workspace switch to make the workspace visible first.
+    // for a workspace switch to make the workspace visible first. Floating
+    // overlays need the same rescue path when they were just moved onto an
+    // inactive or never-visited workspace.
     //
     // Keep this fallback alive through the direct-Niri close animation too.
     // shouldRenderWindowHook() intentionally suppresses the native pass for
@@ -14788,8 +14790,9 @@ void OverviewController::renderSelectionChrome() const {
                 continue;
             }
 
+            const bool directNiriFloatingOverlay = managed.isNiriFloatingOverlay && isFloatingOverviewWindow(window);
             if (!window->m_workspace || !isScrollingWorkspace(window->m_workspace) || window->m_pinned || managed.isPinned ||
-                managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window)) {
+                (!directNiriFloatingOverlay && isFloatingOverviewWindow(window))) {
                 ++skipped;
                 continue;
             }
