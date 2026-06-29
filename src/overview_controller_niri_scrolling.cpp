@@ -5764,7 +5764,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
     };
 
-    const bool runDirectNiriDispatcherPath = directLiveGeometryAvailable || directNiriFocusOrColumnRelayout;
+    const bool directNiriGeometryEditNeedsHardRecalc = forceGeometryRefocus && !directNiriFocusOrColumnRelayout;
+    const bool runDirectNiriDispatcherPath = directNiriFocusOrColumnRelayout ||
+        (directLiveGeometryAvailable && !directNiriGeometryEditNeedsHardRecalc);
 
     if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && isMoveToWorkspaceDispatcher) {
         retainVisibleDirectNiriWorkspaceLanes();
