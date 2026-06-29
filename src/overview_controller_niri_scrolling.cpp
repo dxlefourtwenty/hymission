@@ -3847,7 +3847,8 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const PHLWINDOW& w
     if (!selectedManaged)
         return false;
 
-    const bool useStableExitPreview = m_beginCloseInProgress && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
+    const bool useStableExitPreview = (m_beginCloseInProgress || m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle) &&
+        m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state);
     const auto exitPreviewRect = [&](const ManagedWindow& managed) {
         return useStableExitPreview ? managed.targetGlobal : currentPreviewRect(managed);
     };
@@ -9549,7 +9550,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         std::optional<WindowSlot> directNiriSlot;
         bool directNiriFloatingOverlay = false;
 
-        const Rect floatingSourceGlobal = floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
+        Rect floatingRenderGlobal = renderGlobalRectForWindow(window, useGoalGeometry);
+        if (allowDirectNiriOverviewLayout && isFloatingOverviewWindow(window) && directNiriWorkspaceTransferRenderGuardActiveLocal(window) &&
+            window->m_workspace && !window->m_pinned && window->m_workspace->m_renderOffset) {
+            // Workspace-transfer render offsets are lane motion, not part of a
+            // floating window's workspace-local overview position.
+            const Vector2D offset = useGoalGeometry ? window->m_workspace->m_renderOffset->goal() : window->m_workspace->m_renderOffset->value();
+            floatingRenderGlobal = translateRect(floatingRenderGlobal, -offset.x, -offset.y);
+        }
+        const Rect floatingSourceGlobal = floatingOverviewSourceGlobalRectForWindow(window, floatingRenderGlobal);
         Rect resolvedFloatingSourceGlobal = floatingSourceGlobal;
         directNiriSlot = niriFloatingOverviewSlotForWindow(window, targetMonitor, floatingSourceGlobal, windowIndex, resolvedFloatingSourceGlobal);
         if (directNiriSlot) {

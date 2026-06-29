@@ -751,16 +751,6 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         return std::nullopt;
 
     auto workspace = lane->workspace ? lane->workspace : g_pCompositor->getWorkspaceByID(lane->workspaceId);
-    const bool floating = draggedWindow->m_isFloating || (draggedWindow->layoutTarget() && draggedWindow->layoutTarget()->floating());
-    if (floating) {
-        return NiriDragTarget{
-            .workspace = workspace,
-            .monitor = lane->monitor,
-            .workspaceId = lane->workspaceId,
-            .insertion = {.hint = dragRect(draggedPreview)},
-            .floating = true,
-        };
-    }
 
     std::vector<overview_drag::Column> columns;
     if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData) {
@@ -938,6 +928,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool targetHadTiledContentBeforeMove = tiledWorkspaceHasWindowOtherThan(workspace, window) || scrollingDataHasUsableColumnOtherThan(scrollingBeforeMove, window);
     const bool crossWorkspaceDrop = sourceWorkspace && sourceWorkspace != workspace;
     const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
+    const bool windowWasFloatingBeforeDrop = window->m_isFloating || (window->layoutTarget() && window->layoutTarget()->floating());
 
     const auto preservedOwnerWorkspace = m_state.ownerWorkspace;
     const auto preservedOwnerMonitor = m_state.ownerMonitor;
@@ -1254,6 +1245,26 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     }
 
+    if (!target.floating && windowWasFloatingBeforeDrop && workspace && workspace->m_space) {
+        const auto layoutTarget = window->layoutTarget();
+        if (layoutTarget && layoutTarget->floating()) {
+            const bool previousGuard = m_applyingWorkspaceTransitionCommit;
+            m_applyingWorkspaceTransitionCommit = true;
+            workspace->m_space->toggleTargetFloating(layoutTarget);
+            m_applyingWorkspaceTransitionCommit = previousGuard;
+            m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] direct niri drag retiled floating window"
+                    << " window=" << debugWindowLabel(window)
+                    << " workspace=" << debugWorkspaceLabel(workspace)
+                    << " emptyWorkspace=" << (dropIntoEmptyWorkspace ? 1 : 0);
+                debugLog(out.str());
+            }
+        }
+    }
+
     bool appliedCrossWorkspaceInColumn = false;
     bool appliedCrossWorkspaceNewColumnPosition = false;
     if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::InColumn) {
@@ -1521,7 +1532,8 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             g_layoutManager->recalculateMonitor(target.monitor);
     } else if (dropIntoEmptyWorkspace) {
         // Empty-workspace drops are the unstable path: Hyprland's normal
-        // moveWindowToWorkspaceSafe() already creates the first scrolling column.
+        // moveWindowToWorkspaceSafe() already creates the first scrolling column
+        // once a floating source has been retiled above.
         // Do not remove/re-add the freshly moved target or call SScrollingData::add()
         // here; doing so can leave renderer-visible window state with an invalid
         // variant on the next frame.
