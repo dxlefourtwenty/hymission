@@ -4031,6 +4031,11 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
         if (!managed.window || !managed.window->m_isMapped)
             continue;
 
+        // Floating overlays already use their live source rect. Re-inverting
+        // them through the tiled open camera recenters them over tiled content.
+        if (managed.isNiriFloatingOverlay)
+            continue;
+
         const Rect target = managed.targetGlobal;
         managed.naturalGlobal = makeRect(selectedStart.centerX() + (target.centerX() - selectedTarget.centerX()) * scaleX - target.width * scaleX * 0.5,
                                          selectedStart.centerY() + (target.centerY() - selectedTarget.centerY()) * scaleY - target.height * scaleY * 0.5,
@@ -4077,6 +4082,11 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspa
 
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
+            continue;
+
+        // Floating overlays already use their live source rect. Re-inverting
+        // them through the placeholder camera recenters them over the workspace.
+        if (managed.isNiriFloatingOverlay)
             continue;
 
         const Rect target = managed.targetGlobal;
@@ -9464,10 +9474,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
         } else if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
             anchorOverride = *anchor;
-            resolvedSourceGlobal = makeRect(anchor->centerX() - sourceGlobal.width * 0.5,
-                                            anchor->centerY() - sourceGlobal.height * 0.5,
-                                            sourceGlobal.width,
-                                            sourceGlobal.height);
+            // Keep sourceGlobal unchanged so the floating card keeps its own
+            // position inside the anchored workspace viewport.
         } else if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0 && sourceGlobal.width > 1.0 && sourceGlobal.height > 1.0) {
             // Floating-only scrolling workspaces still need a stable workspace
             // viewport.  Center the viewport on the workspace itself; the
