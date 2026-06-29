@@ -5320,6 +5320,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isDirectResizeColumnDispatcher = dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn";
     const bool isDirectResizeActiveDispatcher = dispatcherNameLower == "resizeactive" || dispatcherNameLower.starts_with("resizeactive") ||
         dispatcherNameLower.find("window.resize") != std::string::npos;
+    const bool isFloatTileDispatcher = dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
+        dispatcherNameLower == "settiled" || dispatcherNameLower.starts_with("togglefloating") ||
+        dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
+        dispatcherNameLower.find("window.float") != std::string::npos;
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isSilentMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspacesilent" ||
         (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") != std::string::npos);
@@ -5605,12 +5609,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
          dispatcherArgsLower.find("promote") != std::string::npos || dispatcherArgsLower.find("expel") != std::string::npos ||
          dispatcherArgsLower.find("consume") != std::string::npos || isSwapColumnLayoutMessage);
     const bool forceGeometryRefocus =
-        dispatcherNameLower == "resizeactive" || dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn" || dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
-        dispatcherNameLower == "settiled" || dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("resizecol") || dispatcherNameLower.starts_with("resizecolumn") ||
-        dispatcherNameLower.starts_with("togglefloating") || dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
+        isDirectResizeActiveDispatcher || isDirectResizeColumnDispatcher || isFloatTileDispatcher ||
+        dispatcherNameLower == "pin" || dispatcherNameLower.starts_with("resizewindow") || dispatcherNameLower.starts_with("resizecol") || dispatcherNameLower.starts_with("resizecolumn") ||
         dispatcherNameLower.starts_with("pin") || dispatcherNameLower.find("window.resize") != std::string::npos ||
-        dispatcherNameLower.find("window.float") != std::string::npos || dispatcherNameLower.find("window.pin") != std::string::npos ||
-        isScrollingGeometryLayoutMessage;
+        dispatcherNameLower.find("window.pin") != std::string::npos || isScrollingGeometryLayoutMessage;
 
     const bool directLiveGeometryAvailable = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
@@ -6222,7 +6224,33 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
 
     if (overviewActive && selectedBefore) {
         m_state.focusDuringOverview = selectedBefore;
-        syncRealFocusDuringOverview(selectedBefore, true);
+        const bool forceSelectedWorkspaceForFloatTile = isFloatTileDispatcher && m_state.collectionPolicy.onlyActiveWorkspace &&
+            usesDirectNiriScrollingOverview(m_state) && selectedBefore->m_workspace && isScrollingWorkspace(selectedBefore->m_workspace) &&
+            !selectedBefore->m_pinned;
+        if (forceSelectedWorkspaceForFloatTile) {
+            if (!m_state.ownerMonitor || selectedBefore->m_workspace->m_monitor.lock() == m_state.ownerMonitor)
+                m_state.ownerWorkspace = selectedBefore->m_workspace;
+
+            m_pendingLiveFocusWorkspaceChangeTarget = selectedBefore;
+            const bool activatedWorkspace = activateWindowWorkspaceForFocus(selectedBefore);
+            if (Desktop::focusState()->window() != selectedBefore)
+                focusWindowCompat(selectedBefore, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+            if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == selectedBefore)
+                m_pendingLiveFocusWorkspaceChangeTarget.reset();
+
+            if (debugLogsEnabled()) {
+                std::ostringstream out;
+                out << "[hymission] direct niri float-tile dispatcher focused selected workspace"
+                    << " dispatcher=" << dispatcherNameLower
+                    << " workspace=" << debugWorkspaceLabel(selectedBefore->m_workspace)
+                    << " selected=" << debugWindowLabel(selectedBefore)
+                    << " activatedWorkspace=" << (activatedWorkspace ? 1 : 0)
+                    << " activeAfter=" << debugWindowLabel(Desktop::focusState()->window());
+                debugLog(out.str());
+            }
+        } else {
+            syncRealFocusDuringOverview(selectedBefore, true);
+        }
         if (Desktop::focusState()->window() != selectedBefore) {
             m_pendingLiveFocusWorkspaceChangeTarget = selectedBefore;
             focusWindowCompat(selectedBefore, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
