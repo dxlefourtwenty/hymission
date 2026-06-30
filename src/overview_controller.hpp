@@ -797,10 +797,14 @@ class OverviewController {
         ScrollingSpotSyncIntent intent = ScrollingSpotSyncIntent::PreserveNativeCamera) const;
     [[nodiscard]] PHLWINDOW directNiriFloatActionTarget(const std::optional<PHLWINDOW>& window) const;
     [[nodiscard]] PHLWINDOW closestTiledDirectNiriGeometryAnchor(const PHLWINDOW& window) const;
-    void                    prepareDirectNiriFloatActionTarget(const PHLWINDOW& window);
+    void                    prepareDirectNiriFloatActionTarget(const PHLWINDOW& window, bool syncScrollingSpot = true);
+    void                    restoreDirectNiriFloatingActionTarget(const PHLWINDOW& window, const char* source);
     [[nodiscard]] bool      hardRecalculateDirectNiriGeometryAnchor(const PHLWINDOW& anchor, const char* source);
     [[nodiscard]] bool      focusDirectNiriGeometryAnchor(const PHLWINDOW& anchor, const char* source);
-    void                    refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source);
+    void                    refreshDirectNiriFloatingGeometryActionTarget(const PHLWINDOW& window, const char* source,
+                                                                         const PreviewRectSnapshot* previousPreviewRects = nullptr);
+    void                    refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source,
+                                                                     const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                    refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source,
                                                                const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
