@@ -7178,6 +7178,26 @@ bool OverviewController::directNiriWorkspaceHasTiledManagedWindow(WORKSPACEID wo
     });
 }
 
+OverviewController::EmptyWorkspacePlaceholder* OverviewController::directNiriWorkspaceViewportPlaceholder(WORKSPACEID workspaceId, const PHLMONITOR& monitor) {
+    if (workspaceId == WORKSPACE_INVALID)
+        return nullptr;
+
+    EmptyWorkspacePlaceholder* fallback = nullptr;
+    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
+        if (placeholder.workspaceId != workspaceId)
+            continue;
+        if (monitor && placeholder.monitor != monitor)
+            continue;
+
+        if (placeholder.backingOnly)
+            return &placeholder;
+        if (!fallback)
+            fallback = &placeholder;
+    }
+
+    return fallback;
+}
+
 void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
         return;
@@ -7186,9 +7206,6 @@ void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
     for (auto& managed : m_state.windows) {
         if (!inactiveDirectNiriFloatingOverlay(managed))
             continue;
-
-        managed.naturalGlobal = managed.targetGlobal;
-        managed.exitGlobal = managed.naturalGlobal;
 
         const WORKSPACEID workspaceId = managed.window && managed.window->m_workspace ? managed.window->m_workspace->m_id : WORKSPACE_INVALID;
         if (workspaceId != WORKSPACE_INVALID && !directNiriWorkspaceHasTiledManagedWindow(workspaceId))
@@ -7201,6 +7218,33 @@ void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
 
         placeholder.naturalGlobal = placeholder.targetGlobal;
         placeholder.exitGlobal = placeholder.naturalGlobal;
+    }
+
+    for (auto& managed : m_state.windows) {
+        if (!inactiveDirectNiriFloatingOverlay(managed))
+            continue;
+
+        const auto workspace = managed.window ? managed.window->m_workspace : PHLWORKSPACE{};
+        const WORKSPACEID workspaceId = workspace ? workspace->m_id : WORKSPACE_INVALID;
+        const auto monitor = managed.targetMonitor ? managed.targetMonitor : (workspace ? workspace->m_monitor.lock() : PHLMONITOR{});
+        const auto placeholder = directNiriWorkspaceViewportPlaceholder(workspaceId, monitor);
+
+        if (!placeholder || placeholder->naturalGlobal.width <= 1.0 || placeholder->naturalGlobal.height <= 1.0 || placeholder->targetGlobal.width <= 1.0 ||
+            placeholder->targetGlobal.height <= 1.0) {
+            managed.naturalGlobal = managed.targetGlobal;
+            managed.exitGlobal = managed.naturalGlobal;
+            continue;
+        }
+
+        const Rect source = transformLiveOverviewRect(managed.targetGlobal, placeholder->targetGlobal, placeholder->naturalGlobal);
+        if (source.width <= 1.0 || source.height <= 1.0) {
+            managed.naturalGlobal = managed.targetGlobal;
+            managed.exitGlobal = managed.naturalGlobal;
+            continue;
+        }
+
+        managed.naturalGlobal = source;
+        managed.exitGlobal = source;
     }
 }
 
