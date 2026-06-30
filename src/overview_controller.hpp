@@ -764,6 +764,7 @@ class OverviewController {
     [[nodiscard]] std::optional<std::size_t> hitTestTarget(double x, double y) const;
     [[nodiscard]] Rect         stablePreviewOrderRect(const ManagedWindow& window) const;
     [[nodiscard]] Rect         currentPreviewRect(const ManagedWindow& window) const;
+    [[nodiscard]] bool         directNiriNativeFloatingGeometryPreviewActive(const ManagedWindow& window) const;
     [[nodiscard]] double       visualProgress() const;
     [[nodiscard]] double       relayoutVisualProgress() const;
     void                       beginOverviewRelayoutAnimation(const char* source = "?");
@@ -797,10 +798,16 @@ class OverviewController {
         ScrollingSpotSyncIntent intent = ScrollingSpotSyncIntent::PreserveNativeCamera) const;
     [[nodiscard]] PHLWINDOW directNiriFloatActionTarget(const std::optional<PHLWINDOW>& window) const;
     [[nodiscard]] PHLWINDOW closestTiledDirectNiriGeometryAnchor(const PHLWINDOW& window) const;
-    void                    prepareDirectNiriFloatActionTarget(const PHLWINDOW& window);
+    void                    prepareDirectNiriFloatActionTarget(const PHLWINDOW& window, bool syncScrollingSpot = true);
+    void                    restoreDirectNiriFloatingActionTarget(const PHLWINDOW& window, const char* source);
+    void                    armDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window);
+    void                    clearDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window = {});
     [[nodiscard]] bool      hardRecalculateDirectNiriGeometryAnchor(const PHLWINDOW& anchor, const char* source);
     [[nodiscard]] bool      focusDirectNiriGeometryAnchor(const PHLWINDOW& anchor, const char* source);
-    void                    refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source);
+    void                    refreshDirectNiriFloatingGeometryActionTarget(const PHLWINDOW& window, const char* source,
+                                                                         const PreviewRectSnapshot* previousPreviewRects = nullptr);
+    void                    refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source,
+                                                                     const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                    refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source,
                                                                const PreviewRectSnapshot* previousPreviewRects = nullptr);
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
@@ -1011,6 +1018,7 @@ class OverviewController {
     PHLANIMVAR<float>         m_overviewVisibilityAnimation;
     SP<Hyprutils::Animation::SAnimationPropertyConfig> m_overviewVisibilityAnimationConfig;
     PHLANIMVAR<float>         m_workspaceTransitionAnimation;
+    PHLWINDOWREF              m_directNiriNativeFloatingGeometryPreview;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;

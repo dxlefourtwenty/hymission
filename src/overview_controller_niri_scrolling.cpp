@@ -5328,6 +5328,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower == "settiled" || dispatcherNameLower.starts_with("togglefloating") ||
         dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
         dispatcherNameLower.find("window.float") != std::string::npos;
+    const bool isCenterWindowDispatcher = dispatcherNameLower == "centerwindow" || dispatcherNameLower.starts_with("centerwindow");
     const bool isMoveFocusDispatcher = dispatcherNameLower == "movefocus";
     const bool isSilentMoveToWorkspaceDispatcher = dispatcherNameLower == "movetoworkspacesilent" ||
         (dispatcherNameLower.find("window.workspace") != std::string::npos && dispatcherNameLower.find("silent") != std::string::npos);
@@ -5771,8 +5772,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     };
 
     const bool directNiriGeometryEditNeedsHardRecalc = forceGeometryRefocus && !directNiriFocusOrColumnRelayout;
-    const bool runDirectNiriDispatcherPath = directNiriFocusOrColumnRelayout ||
-        (directLiveGeometryAvailable && !directNiriGeometryEditNeedsHardRecalc);
+    const bool runDirectNiriDispatcherPath = !isCenterWindowDispatcher &&
+        (directNiriFocusOrColumnRelayout || (directLiveGeometryAvailable && !directNiriGeometryEditNeedsHardRecalc));
+    const bool runCenterWindowFloatingGeometryPath = overviewActive && activeDirectNiriSingleWorkspaceOverview() && isCenterWindowDispatcher;
 
     if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && isMoveToWorkspaceDispatcher) {
         retainVisibleDirectNiriWorkspaceLanes();
@@ -6581,6 +6583,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     if (twoColumnOverviewSwap.valid)
         armPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
 
+    const auto centerWindowPreviewRects = runCenterWindowFloatingGeometryPath ?
+        (m_state.relayoutActive ? commitActiveNiriRelayoutForRetarget() : captureCurrentPreviewRects()) :
+        PreviewRectSnapshot{};
+
     const auto result = (*original)(std::move(args));
     if (!result.success)
         clearPendingTwoColumnSwapRepair(twoColumnOverviewSwap.workspace);
@@ -6607,6 +6613,24 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         debugLog(out.str());
         logSwapColumnFollowupState("movecol-after-dispatch", workspace, "movecol", selectedWindow());
         logScrollingWorkspaceSpotState("movecol-after-dispatch", workspace, selectedWindow());
+    }
+
+    if (runCenterWindowFloatingGeometryPath && result.success) {
+        const auto validCenterTarget = [&](const PHLWINDOW& candidate) {
+            return candidate && candidate->m_isMapped && hasManagedWindow(candidate) && candidate->m_workspace &&
+                isScrollingWorkspace(candidate->m_workspace) && isFloatingOverviewWindow(candidate);
+        };
+
+        PHLWINDOW centeredWindow = validCenterTarget(selectedBefore) ? selectedBefore : PHLWINDOW{};
+        if (!validCenterTarget(centeredWindow))
+            centeredWindow = validCenterTarget(Desktop::focusState()->window()) ? Desktop::focusState()->window() : PHLWINDOW{};
+        if (!validCenterTarget(centeredWindow))
+            centeredWindow = validCenterTarget(m_state.focusDuringOverview) ? m_state.focusDuringOverview : PHLWINDOW{};
+
+        if (validCenterTarget(centeredWindow)) {
+            refreshDirectNiriFloatingGeometryActionTarget(centeredWindow, dispatcherName ? dispatcherName : "centerwindow", &centerWindowPreviewRects);
+            return result;
+        }
     }
 
     if (applyTwoColumnOverviewSwap(twoColumnOverviewSwap, result)) {
@@ -7150,6 +7174,26 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
         return std::nullopt;
 
     return transformed;
+}
+
+bool OverviewController::directNiriNativeFloatingGeometryPreviewActive(const ManagedWindow& window) const {
+    if (m_state.phase != Phase::Active || !m_state.relayoutActive || !usesDirectNiriScrollingOverview(m_state) || !window.window ||
+        !window.window->m_isMapped)
+        return false;
+
+    const auto target = m_directNiriNativeFloatingGeometryPreview.lock();
+    if (!target || !target->m_isMapped || !target->m_workspace)
+        return false;
+
+    if (target == window.window)
+        return window.isNiriFloatingOverlay && isFloatingOverviewWindow(window.window);
+
+    if (window.window->m_workspace != target->m_workspace || window.window->m_pinned || window.isPinned || window.isNiriFloatingOverlay ||
+        isFloatingOverviewWindow(window.window))
+        return false;
+
+    const auto layoutTarget = window.window->layoutTarget();
+    return layoutTarget && !layoutTarget->floating();
 }
 
 bool OverviewController::inactiveDirectNiriFloatingOverlay(const ManagedWindow& managed) const {
@@ -7739,6 +7783,10 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
             if (usesDirectNiriScrollingOverview(m_state)) {
+                if (directNiriNativeFloatingGeometryPreviewActive(window)) {
+                    if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
+                        return *liveRect;
+                }
                 if (m_state.relayoutActive)
                     return activeBaseRect();
                 if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)

@@ -332,11 +332,11 @@ bool isOverviewEditingDispatcherCandidate(std::string_view name) {
         lowered == "movetoworkspacesilent" || lowered == "moveactive" || lowered == "resizeactive" || lowered == "swapactive" ||
         lowered == "movecol" || lowered == "movecolumn" || lowered == "swapcol" || lowered == "swapcolumn" ||
         lowered == "resizecol" || lowered == "resizecolumn" || lowered == "resizewindow" ||
-        lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "pin" ||
+        lowered == "togglefloating" || lowered == "setfloating" || lowered == "settiled" || lowered == "centerwindow" || lowered == "pin" ||
         lowered.starts_with("movewindow") || lowered.starts_with("swapwindow") || lowered.starts_with("movetoworkspace") ||
         lowered.starts_with("movecol") || lowered.starts_with("movecolumn") || lowered.starts_with("swapcol") || lowered.starts_with("swapcolumn") ||
         lowered.starts_with("resizecol") || lowered.starts_with("resizecolumn") || lowered.starts_with("resizewindow") || lowered.starts_with("togglefloating") || lowered.starts_with("setfloating") ||
-        lowered.starts_with("settiled") || lowered.starts_with("pin") ||
+        lowered.starts_with("settiled") || lowered.starts_with("centerwindow") || lowered.starts_with("pin") ||
         lowered.find("window.move") != std::string::npos || lowered.find("window.swap") != std::string::npos ||
         lowered.find("window.resize") != std::string::npos || lowered.find("window.workspace") != std::string::npos ||
         lowered.find("window.float") != std::string::npos || lowered.find("window.pin") != std::string::npos;
@@ -2811,7 +2811,7 @@ PHLWINDOW OverviewController::directNiriFloatActionTarget(const std::optional<PH
     return validTarget(Desktop::focusState()->window());
 }
 
-void OverviewController::prepareDirectNiriFloatActionTarget(const PHLWINDOW& window) {
+void OverviewController::prepareDirectNiriFloatActionTarget(const PHLWINDOW& window, bool syncScrollingSpot) {
     if (!window || !window->m_workspace)
         return;
 
@@ -2834,7 +2834,59 @@ void OverviewController::prepareDirectNiriFloatActionTarget(const PHLWINDOW& win
     if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
         m_pendingLiveFocusWorkspaceChangeTarget.reset();
 
-    (void)syncScrollingWorkspaceSpotOnWindow(window);
+    if (syncScrollingSpot)
+        (void)syncScrollingWorkspaceSpotOnWindow(window);
+}
+
+void OverviewController::restoreDirectNiriFloatingActionTarget(const PHLWINDOW& window, const char* source) {
+    if (!window || !window->m_isMapped || !hasManagedWindow(window) || !window->m_workspace || !usesDirectNiriScrollingOverview(m_state))
+        return;
+
+    selectWindowInState(m_state, window);
+    m_state.focusDuringOverview = window;
+    m_queuedOverviewSelectionTarget.reset();
+    m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
+    m_queuedOverviewLiveFocusTarget.reset();
+    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
+
+    if (!m_state.ownerMonitor || window->m_workspace->m_monitor.lock() == m_state.ownerMonitor)
+        m_state.ownerWorkspace = window->m_workspace;
+
+    m_pendingLiveFocusWorkspaceChangeTarget = window;
+    (void)activateWindowWorkspaceForFocus(window);
+    if (Desktop::focusState()->window() != window)
+        focusWindowCompat(window, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
+        m_pendingLiveFocusWorkspaceChangeTarget.reset();
+
+    if (isFloatingOverviewWindow(window))
+        g_pCompositor->changeWindowZOrder(window, true);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri floating action target restored"
+            << " source=" << (source ? source : "?")
+            << " target=" << debugWindowLabel(window)
+            << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+            << " active=" << debugWindowLabel(Desktop::focusState()->window());
+        debugLog(out.str());
+    }
+}
+
+void OverviewController::armDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window) {
+    if (!window || !window->m_isMapped || !window->m_workspace || !usesDirectNiriScrollingOverview(m_state) || !isFloatingOverviewWindow(window)) {
+        m_directNiriNativeFloatingGeometryPreview.reset();
+        return;
+    }
+
+    m_directNiriNativeFloatingGeometryPreview = window;
+}
+
+void OverviewController::clearDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window) {
+    if (!window || m_directNiriNativeFloatingGeometryPreview.lock() == window)
+        m_directNiriNativeFloatingGeometryPreview.reset();
 }
 
 PHLWINDOW OverviewController::closestTiledDirectNiriGeometryAnchor(const PHLWINDOW& window) const {
@@ -2980,13 +3032,10 @@ bool OverviewController::focusDirectNiriGeometryAnchor(const PHLWINDOW& anchor, 
     return hardRecalculateDirectNiriGeometryAnchor(anchor, source);
 }
 
-void OverviewController::refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source) {
+void OverviewController::refreshDirectNiriFloatingGeometryActionTarget(const PHLWINDOW& window, const char* source,
+                                                                       const PreviewRectSnapshot* previousPreviewRects) {
     if (!window || !window->m_isMapped || !window->m_workspace || !usesDirectNiriScrollingOverview(m_state))
         return;
-
-    PHLWINDOW preferredSelected = closestTiledDirectNiriGeometryAnchor(window);
-    if (preferredSelected)
-        (void)focusDirectNiriGeometryAnchor(preferredSelected, "geometry-edit-force-refocus");
 
     std::vector<PHLWORKSPACE> affectedWorkspaces;
     affectedWorkspaces.reserve(4);
@@ -3006,28 +3055,65 @@ void OverviewController::refreshDirectNiriSetFloatingActionTarget(const PHLWINDO
     for (const auto& workspace : affectedWorkspaces)
         refreshWorkspaceLayoutSnapshot(workspace);
 
-    if ((!preferredSelected || !preferredSelected->m_isMapped || !hasManagedWindow(preferredSelected))) {
-        if (const auto focusAfter = Desktop::focusState()->window(); focusAfter && hasManagedWindow(focusAfter))
-            preferredSelected = focusAfter;
+    restoreDirectNiriFloatingActionTarget(window, source);
+
+    const auto capturedPreviewRects = previousPreviewRects ? PreviewRectSnapshot{} : captureCurrentPreviewRects();
+    const auto* const relayoutOrigins = previousPreviewRects ? previousPreviewRects : &capturedPreviewRects;
+
+    State next = buildState(m_state.ownerMonitor, m_state.collectionPolicy.requestedScope, {}, false, m_state.suppressWorkspaceStrip, window, false);
+    auto currentIt = std::find_if(m_state.windows.begin(), m_state.windows.end(), [&](const ManagedWindow& managed) { return managed.window == window; });
+    const auto nextIt = std::find_if(next.windows.begin(), next.windows.end(), [&](const ManagedWindow& managed) { return managed.window == window; });
+    if (currentIt == m_state.windows.end() || nextIt == next.windows.end()) {
+        m_stripSnapshotsDirty = true;
+        scheduleWorkspaceStripSnapshotRefresh();
+        refreshNiriScrollingOverviewAfterLayoutScroll(source, relayoutOrigins);
+        restoreDirectNiriFloatingActionTarget(window, source);
+        damageOwnedMonitors();
+        return;
     }
 
-    if (preferredSelected && preferredSelected->m_isMapped && hasManagedWindow(preferredSelected))
-        (void)hardRecalculateDirectNiriGeometryAnchor(preferredSelected, "geometry-edit-pre-rebuild-hard-recalc");
+    const auto previousRectIt = std::find_if(relayoutOrigins->begin(), relayoutOrigins->end(), [&](const auto& entry) { return entry.first == window; });
+    const Rect previousRect = previousRectIt != relayoutOrigins->end() ? previousRectIt->second : currentPreviewRect(*currentIt);
 
-    const auto relayoutAnchor = closestTiledDirectNiriGeometryAnchor(preferredSelected);
-    if (relayoutAnchor && relayoutAnchor != preferredSelected) {
-        preferredSelected = relayoutAnchor;
-        selectWindowInState(m_state, preferredSelected);
-        m_state.focusDuringOverview = preferredSelected;
-        syncRealFocusDuringOverview(preferredSelected, true);
-        (void)syncScrollingWorkspaceSpotOnWindow(preferredSelected);
-        if (preferredSelected->m_workspace)
-            refreshWorkspaceLayoutSnapshot(preferredSelected->m_workspace);
+    currentIt->targetMonitor = nextIt->targetMonitor;
+    currentIt->title = nextIt->title;
+    currentIt->naturalGlobal = nextIt->naturalGlobal;
+    currentIt->exitGlobal = nextIt->exitGlobal;
+    currentIt->targetGlobal = nextIt->targetGlobal;
+    currentIt->slot = nextIt->slot;
+    currentIt->previewAlpha = nextIt->previewAlpha;
+    currentIt->isFloating = nextIt->isFloating;
+    currentIt->isPinned = nextIt->isPinned;
+    currentIt->isNiriFloatingOverlay = nextIt->isNiriFloatingOverlay;
+    currentIt->relayoutFromGlobal = previousRect;
+
+    const bool targetChanged = !rectApproxEqual(currentIt->relayoutFromGlobal, currentIt->targetGlobal, 0.5);
+    m_state.relayoutActive = targetChanged && niriOverviewAnimationsEnabled();
+    m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
+    m_state.relayoutStart = {};
+    if (!m_state.relayoutActive) {
+        currentIt->relayoutFromGlobal = currentIt->targetGlobal;
+        m_relayoutProgressAnimation.reset();
+        clearDirectNiriNativeFloatingGeometryPreview(window);
+    } else {
+        armDirectNiriNativeFloatingGeometryPreview(window);
+        beginOverviewRelayoutAnimation(source ? source : "floating-geometry");
     }
 
-    rebuildVisibleState(preferredSelected, true);
-    refreshNiriScrollingOverviewAfterFocusDispatcher(source, preferredSelected);
+    m_state.slots.clear();
+    m_state.slots.reserve(m_state.windows.size());
+    for (const auto& managed : m_state.windows)
+        m_state.slots.push_back(managed.slot);
+
+    m_stripSnapshotsDirty = true;
+    scheduleWorkspaceStripSnapshotRefresh();
+    restoreDirectNiriFloatingActionTarget(window, source);
     damageOwnedMonitors();
+}
+
+void OverviewController::refreshDirectNiriSetFloatingActionTarget(const PHLWINDOW& window, const char* source,
+                                                                  const PreviewRectSnapshot* previousPreviewRects) {
+    refreshDirectNiriFloatingGeometryActionTarget(window, source, previousPreviewRects);
 }
 
 void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source,
@@ -3035,8 +3121,11 @@ void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& win
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return;
 
+    if (tiledNow)
+        clearDirectNiriNativeFloatingGeometryPreview(window);
+
     if (!tiledNow && usesDirectNiriScrollingOverview(m_state)) {
-        refreshDirectNiriSetFloatingActionTarget(window, source);
+        refreshDirectNiriSetFloatingActionTarget(window, source, previousPreviewRects);
         return;
     }
 
@@ -3101,13 +3190,13 @@ std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActi
         (action == Config::Actions::TOGGLE_ACTION_TOGGLE && !wasFloating);
     const bool expectedChange = requestedFloating != wasFloating;
     std::optional<PreviewRectSnapshot> previousPreviewRects;
-    if (expectedChange && !requestedFloating)
+    if (expectedChange)
         previousPreviewRects = m_state.relayoutActive ? commitActiveNiriRelayoutForRetarget() : captureCurrentPreviewRects();
 
     Config::Actions::ActionResult result;
     {
         ScopedFlag editingGuard(m_overviewEditingDispatcherInProgress);
-        prepareDirectNiriFloatActionTarget(target);
+        prepareDirectNiriFloatActionTarget(target, !requestedFloating);
         result = g_floatWindowActionOriginal(action, std::optional<PHLWINDOW>{target});
     }
 
@@ -9327,6 +9416,7 @@ bool OverviewController::installHooks() {
         "togglefloating",
         "setfloating",
         "settiled",
+        "centerwindow",
         "pin",
         "movecol",
         "movecolumn",
@@ -9986,6 +10076,7 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     m_state.relayoutActive = false;
     m_state.relayoutProgress = 1.0;
     m_state.relayoutStart = {};
+    clearDirectNiriNativeFloatingGeometryPreview();
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -11406,6 +11497,7 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutProgress = 1.0;
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
+    clearDirectNiriNativeFloatingGeometryPreview();
 }
 
 void OverviewController::beginOverviewVisibilityAnimation(const char* source) {
