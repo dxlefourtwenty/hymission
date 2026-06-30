@@ -7163,21 +7163,6 @@ bool OverviewController::inactiveDirectNiriFloatingOverlay(const ManagedWindow& 
     return true;
 }
 
-bool OverviewController::directNiriWorkspaceHasTiledManagedWindow(WORKSPACEID workspaceId) const {
-    if (workspaceId == WORKSPACE_INVALID)
-        return false;
-
-    return std::ranges::any_of(m_state.windows, [&](const ManagedWindow& managed) {
-        if (!managed.window || managed.window->m_pinned || managed.isPinned || managed.isNiriFloatingOverlay || isFloatingOverviewWindow(managed.window))
-            return false;
-        if (!managed.window->m_workspace || managed.window->m_workspace->m_id != workspaceId)
-            return false;
-
-        const auto target = managed.window->layoutTarget();
-        return target && !target->floating();
-    });
-}
-
 OverviewController::EmptyWorkspacePlaceholder* OverviewController::directNiriWorkspaceViewportPlaceholder(WORKSPACEID workspaceId, const PHLMONITOR& monitor) {
     if (workspaceId == WORKSPACE_INVALID)
         return nullptr;
@@ -7201,24 +7186,6 @@ OverviewController::EmptyWorkspacePlaceholder* OverviewController::directNiriWor
 void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
         return;
-
-    std::unordered_set<WORKSPACEID> floatingOnlyWorkspaceIds;
-    for (auto& managed : m_state.windows) {
-        if (!inactiveDirectNiriFloatingOverlay(managed))
-            continue;
-
-        const WORKSPACEID workspaceId = managed.window && managed.window->m_workspace ? managed.window->m_workspace->m_id : WORKSPACE_INVALID;
-        if (workspaceId != WORKSPACE_INVALID && !directNiriWorkspaceHasTiledManagedWindow(workspaceId))
-            floatingOnlyWorkspaceIds.insert(workspaceId);
-    }
-
-    for (auto& placeholder : m_state.emptyWorkspacePlaceholders) {
-        if (placeholder.workspaceId == WORKSPACE_INVALID || !floatingOnlyWorkspaceIds.contains(placeholder.workspaceId))
-            continue;
-
-        placeholder.naturalGlobal = placeholder.targetGlobal;
-        placeholder.exitGlobal = placeholder.naturalGlobal;
-    }
 
     for (auto& managed : m_state.windows) {
         if (!inactiveDirectNiriFloatingOverlay(managed))

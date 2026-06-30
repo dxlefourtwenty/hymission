@@ -681,7 +681,6 @@ class OverviewController {
     [[nodiscard]] std::optional<Rect> livePreviewRectForManagedWindow(const ManagedWindow& window) const;
     [[nodiscard]] bool         shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& window) const;
     [[nodiscard]] bool         inactiveDirectNiriFloatingOverlay(const ManagedWindow& managed) const;
-    [[nodiscard]] bool         directNiriWorkspaceHasTiledManagedWindow(WORKSPACEID workspaceId) const;
     [[nodiscard]] EmptyWorkspacePlaceholder* directNiriWorkspaceViewportPlaceholder(WORKSPACEID workspaceId, const PHLMONITOR& monitor);
     void                       stabilizeInactiveNiriFloatingOpenGeometry();
     void                       refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& workspace) const;
