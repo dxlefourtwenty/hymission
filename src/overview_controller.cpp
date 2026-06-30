@@ -2587,160 +2587,6 @@ std::optional<Vector2D> expectedSurfaceSizeForUV(const PHLWINDOW& window, const 
     return std::nullopt;
 }
 
-enum class DirectNiriSurfaceOverlayReject {
-    None,
-    MissingTexture,
-    InvalidTarget,
-    MissingSurface,
-    InvalidSurfaceSize,
-    TextureSizeMismatch,
-    AspectMismatch,
-    NativeSizedTarget,
-};
-
-struct DirectNiriSurfaceOverlayCheck {
-    bool                             usable = false;
-    bool                             transferGuardActive = false;
-    DirectNiriSurfaceOverlayReject   reject = DirectNiriSurfaceOverlayReject::None;
-    Vector2D                         sourceSize;
-    Vector2D                         expectedTextureSize;
-    Vector2D                         textureSize;
-    double                           aspectDelta = 0.0;
-};
-
-const char* directNiriSurfaceOverlayRejectName(DirectNiriSurfaceOverlayReject reject) {
-    switch (reject) {
-        case DirectNiriSurfaceOverlayReject::None: return "none";
-        case DirectNiriSurfaceOverlayReject::MissingTexture: return "missing-texture";
-        case DirectNiriSurfaceOverlayReject::InvalidTarget: return "invalid-target";
-        case DirectNiriSurfaceOverlayReject::MissingSurface: return "missing-surface";
-        case DirectNiriSurfaceOverlayReject::InvalidSurfaceSize: return "invalid-surface-size";
-        case DirectNiriSurfaceOverlayReject::TextureSizeMismatch: return "texture-size-mismatch";
-        case DirectNiriSurfaceOverlayReject::AspectMismatch: return "aspect-mismatch";
-        case DirectNiriSurfaceOverlayReject::NativeSizedTarget: return "native-sized-target";
-    }
-
-    return "unknown";
-}
-
-bool usableSurfaceOverlaySize(const Vector2D& size) {
-    return size.x > 1.0 && size.y > 1.0 && std::isfinite(size.x) && std::isfinite(size.y);
-}
-
-Vector2D directNiriSurfaceOverlaySourceSize(const SP<CWLSurfaceResource>& resource) {
-    if (!resource)
-        return {};
-
-    if (resource->m_current.viewport.hasDestination)
-        return resource->m_current.viewport.destination;
-
-    if (resource->m_current.viewport.hasSource)
-        return resource->m_current.viewport.source.size();
-
-    return resource->m_current.size;
-}
-
-double aspectDeltaForOverlay(double targetWidth, double targetHeight, double sourceWidth, double sourceHeight) {
-    if (targetWidth <= 1.0 || targetHeight <= 1.0 || sourceWidth <= 1.0 || sourceHeight <= 1.0)
-        return std::numeric_limits<double>::infinity();
-
-    return std::abs(std::log((targetWidth / targetHeight) / (sourceWidth / sourceHeight)));
-}
-
-bool overlaySizesClose(const Vector2D& lhs, const Vector2D& rhs, double relativeTolerance, double absoluteTolerance) {
-    if (!usableSurfaceOverlaySize(lhs) || !usableSurfaceOverlaySize(rhs))
-        return false;
-
-    const auto closeAxis = [&](double a, double b) {
-        return std::abs(a - b) <= std::max(absoluteTolerance, std::max(std::abs(a), std::abs(b)) * relativeTolerance);
-    };
-
-    return closeAxis(lhs.x, rhs.x) && closeAxis(lhs.y, rhs.y);
-}
-
-bool directNiriSurfaceOverlayTargetIsOverviewSized(const Rect& targetRender, const Vector2D& sourceSize, const Vector2D& textureSize,
-                                                   const Vector2D& expectedTextureSize, const PHLMONITOR& monitor) {
-    Vector2D referenceSize = expectedTextureSize;
-    if (!usableSurfaceOverlaySize(referenceSize))
-        referenceSize = textureSize;
-    if (!usableSurfaceOverlaySize(referenceSize))
-        referenceSize = sourceSize;
-    if (!usableSurfaceOverlaySize(referenceSize))
-        return false;
-
-    constexpr double MAX_NATIVE_AXIS_FRACTION = 0.82;
-    if (targetRender.width > referenceSize.x * MAX_NATIVE_AXIS_FRACTION || targetRender.height > referenceSize.y * MAX_NATIVE_AXIS_FRACTION)
-        return false;
-
-    if (monitor) {
-        const double   scale = renderScaleForMonitor(monitor);
-        const Vector2D monitorRenderSize = monitor->m_size * scale;
-        constexpr double MAX_MONITOR_AXIS_FRACTION = 0.72;
-        if (targetRender.width > monitorRenderSize.x * MAX_MONITOR_AXIS_FRACTION ||
-            targetRender.height > monitorRenderSize.y * MAX_MONITOR_AXIS_FRACTION)
-            return false;
-    }
-
-    return true;
-}
-
-DirectNiriSurfaceOverlayCheck directNiriSurfaceOverlayCheck(const PHLWINDOW& window, const SP<CWLSurfaceResource>& resource,
-                                                            const SP<Render::ITexture>& texture, const Rect& targetRender,
-                                                            const PHLMONITOR& monitor, bool allowNativeSizedTarget = false) {
-    DirectNiriSurfaceOverlayCheck check;
-    check.transferGuardActive = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
-
-    if (!texture) {
-        check.reject = DirectNiriSurfaceOverlayReject::MissingTexture;
-        return check;
-    }
-
-    if (targetRender.width <= 1.0 || targetRender.height <= 1.0) {
-        check.reject = DirectNiriSurfaceOverlayReject::InvalidTarget;
-        return check;
-    }
-
-    if (!resource) {
-        check.reject = DirectNiriSurfaceOverlayReject::MissingSurface;
-        return check;
-    }
-
-    check.sourceSize = directNiriSurfaceOverlaySourceSize(resource);
-    check.textureSize = texture->m_size;
-    check.expectedTextureSize = usableSurfaceOverlaySize(resource->m_current.bufferSize) ?
-        resource->m_current.bufferSize :
-        check.sourceSize * renderScaleForMonitor(monitor);
-
-    if (!usableSurfaceOverlaySize(check.sourceSize) || !usableSurfaceOverlaySize(check.textureSize)) {
-        check.reject = DirectNiriSurfaceOverlayReject::InvalidSurfaceSize;
-        return check;
-    }
-
-    const double sourceAspectDelta = aspectDeltaForOverlay(targetRender.width, targetRender.height, check.sourceSize.x, check.sourceSize.y);
-    const double textureAspectDelta = aspectDeltaForOverlay(targetRender.width, targetRender.height, check.textureSize.x, check.textureSize.y);
-    check.aspectDelta = std::min(sourceAspectDelta, textureAspectDelta);
-
-    if (!allowNativeSizedTarget &&
-        !directNiriSurfaceOverlayTargetIsOverviewSized(targetRender, check.sourceSize, check.textureSize, check.expectedTextureSize, monitor)) {
-        check.reject = DirectNiriSurfaceOverlayReject::NativeSizedTarget;
-        return check;
-    }
-
-    if (check.aspectDelta > 0.22) {
-        check.reject = DirectNiriSurfaceOverlayReject::AspectMismatch;
-        return check;
-    }
-
-    if (check.transferGuardActive && usableSurfaceOverlaySize(check.expectedTextureSize) &&
-        !overlaySizesClose(check.textureSize, check.expectedTextureSize, 0.25, 12.0)) {
-        check.reject = DirectNiriSurfaceOverlayReject::TextureSizeMismatch;
-        return check;
-    }
-
-    check.usable = true;
-    return check;
-}
-
 void focusWindowCompat(const PHLWINDOW& window, bool raw = false, Desktop::eFocusReason reason = Desktop::FOCUS_REASON_OTHER) {
     if (!window)
         return;
@@ -10307,6 +10153,91 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
     return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
 }
 
+std::size_t OverviewController::renderDirectNiriSurfaceTreeOverlay(const ManagedWindow& managed, const PHLMONITOR& monitor,
+                                                                   const Time::steady_tp& now, float alpha, const char* context,
+                                                                   std::optional<Rect> targetOverride) const {
+    const auto window = managed.window;
+    if (!window || !monitor || !g_pHyprRenderer || !window->m_isMapped || window->m_fadingOut)
+        return 0;
+
+    const auto wlSurface = window->wlSurface();
+    const auto root = wlSurface ? wlSurface->resource() : nullptr;
+    if (!root)
+        return 0;
+
+    const Rect actual = surfaceRenderGlobalRectForWindow(window);
+    if (actual.width <= 1.0 || actual.height <= 1.0)
+        return 0;
+
+    CSurfacePassElement::SRenderData renderData = {monitor, now};
+    renderData.pos = Vector2D{actual.x, actual.y};
+    renderData.w = std::max(actual.width, 5.0);
+    renderData.h = std::max(actual.height, 5.0);
+    renderData.surface = root;
+    renderData.dontRound = window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN);
+    renderData.alpha = 1.0F;
+    renderData.fadeAlpha = 1.0F;
+    renderData.decorate = false;
+    renderData.rounding = renderData.dontRound ? 0 : window->rounding() * monitor->m_scale;
+    renderData.roundingPower = renderData.dontRound ? 2.0F : window->roundingPower();
+    renderData.blur = false;
+    renderData.blockBlurOptimization = true;
+    renderData.pWindow = window;
+
+    const auto previousAlphaOverride = m_surfaceRenderAlphaOverride;
+    const auto previousTargetOverrideWindow = m_surfaceRenderTargetOverrideWindow;
+    const auto previousTargetOverride = m_surfaceRenderTargetOverride;
+    m_surfaceRenderAlphaOverride = std::clamp(alpha, 0.0F, 1.0F);
+    if (targetOverride) {
+        m_surfaceRenderTargetOverrideWindow = window;
+        m_surfaceRenderTargetOverride = *targetOverride;
+    }
+    Hyprutils::Utils::CScopeGuard restoreSurfaceOverrides([this, previousAlphaOverride, previousTargetOverrideWindow, previousTargetOverride] {
+        m_surfaceRenderAlphaOverride = previousAlphaOverride;
+        m_surfaceRenderTargetOverrideWindow = previousTargetOverrideWindow;
+        m_surfaceRenderTargetOverride = previousTargetOverride;
+    });
+
+    std::size_t rendered = 0;
+    std::size_t skipped = 0;
+    root->breadthfirst(
+        [&](SP<CWLSurfaceResource> surface, const Vector2D& offset, void*) {
+            if (!surface || !surface->m_current.texture || surface->m_current.size.x < 1 || surface->m_current.size.y < 1) {
+                ++skipped;
+                return;
+            }
+
+            renderData.localPos = offset;
+            renderData.texture = surface->m_current.texture;
+            renderData.surface = surface;
+            renderData.mainSurface = surface == root;
+            renderData.surfaceCounter = static_cast<int>(rendered);
+            g_pHyprRenderer->draw(renderData);
+            ++rendered;
+        },
+        nullptr);
+
+    if (debugLogsEnabled()) {
+        static std::size_t s_surfaceTreeOverlayLogBudget = 180;
+        if (s_surfaceTreeOverlayLogBudget > 0) {
+            std::ostringstream out;
+            out << "[hymission] direct niri surface tree overlay"
+                << " context=" << (context ? context : "?")
+                << " window=" << debugWindowLabel(window)
+                << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                << " rendered=" << rendered
+                << " skipped=" << skipped
+                << " alpha=" << *m_surfaceRenderAlphaOverride
+                << " actual=" << rectToString(actual)
+                << " target=" << rectToString(targetOverride.value_or(currentPreviewRect(managed)));
+            debugLog(out.str());
+            --s_surfaceTreeOverlayLogBudget;
+        }
+    }
+
+    return rendered;
+}
+
 PHLMONITOR OverviewController::focusMonitorForWindow(const PHLWINDOW& window) const {
     if (!window)
         return {};
@@ -10465,7 +10396,9 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
         return std::nullopt;
 
     Rect current;
-    if (m_stripPreviewContext.active) {
+    if (m_surfaceRenderTargetOverride && m_surfaceRenderTargetOverrideWindow.lock() == window) {
+        current = *m_surfaceRenderTargetOverride;
+    } else if (m_stripPreviewContext.active) {
         // Strip thumbnails should snapshot the fully-open mini preview, not the
         // main overview's current animation frame. In strip-only openings from
         // an empty workspace, using the opening snapshot geometry leaves hidden
@@ -11212,7 +11145,7 @@ bool OverviewController::prepareSurfaceRenderData(void* surfacePassThisptr, cons
     const bool suppressBlur = suppressSurfaceBlur(surfacePassThisptr);
     const bool transformed = transformSurfaceRenderDataForWindow(renderData->pWindow, monitor, *renderData);
     if (transformed) {
-        renderData->alpha = managedPreviewAlphaFor(renderData->pWindow, snapshot.alpha);
+        renderData->alpha = m_surfaceRenderAlphaOverride ? *m_surfaceRenderAlphaOverride : managedPreviewAlphaFor(renderData->pWindow, snapshot.alpha);
         if (!renderData->pWindow->m_fadingOut)
             renderData->fadeAlpha = 1.0F;
         if (suppressBlur)
@@ -15192,56 +15125,12 @@ void OverviewController::renderSelectionChrome() const {
                 continue;
             }
 
-            // The live texture overlay is only a fallback for inactive/unvisited
+            // The live surface-tree overlay is only a fallback for inactive/unvisited
             // workspaces whose normal fake-render path can temporarily produce
             // blank client contents.  For the currently visible workspace, the
-            // transformed Hyprland surface pass is the authoritative renderer;
-            // overlaying the raw main-surface texture during a spawn/resize races
-            // the client's configure/commit size and can stretch or offset stale
-            // buffers over the preview for a couple seconds.
+            // transformed Hyprland surface pass is the authoritative renderer.
             if (window->m_workspace->isVisible()) {
                 ++skipped;
-                continue;
-            }
-
-            const auto surface = window->wlSurface();
-            const auto resource = surface ? surface->resource() : nullptr;
-            const auto texture = resource ? resource->m_current.texture : nullptr;
-            const auto transform = windowTransformFor(window, renderMonitor);
-            const Rect targetGlobal = transform ? transform->targetGlobal : currentPreviewRect(managed);
-            const Rect targetRender = rectToMonitorRenderLocal(targetGlobal, renderMonitor);
-            const auto overlayCheck = directNiriSurfaceOverlayCheck(window, resource, texture, targetRender, renderMonitor, directNiriCloseChrome);
-
-            if (!overlayCheck.usable) {
-                ++missing;
-                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
-                    std::ostringstream out;
-                    out << "[hymission] direct niri live surface overlay missing"
-                        << " window=" << debugWindowLabel(window)
-                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
-                        << " reason=" << directNiriSurfaceOverlayRejectName(overlayCheck.reject)
-                        << " transferGuard=" << (overlayCheck.transferGuardActive ? 1 : 0)
-                        << " texture=" << (texture ? 1 : 0)
-                        << " target=" << rectToString(targetGlobal)
-                        << " targetRender=" << rectToString(targetRender)
-                        << " hidden=" << (window->isHidden() ? 1 : 0)
-                        << " mapped=" << (window->m_isMapped ? 1 : 0)
-                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
-                        << " wsForceRendering=" << (window->m_workspace && window->m_workspace->m_forceRendering ? 1 : 0)
-                        << " alphaTotal=" << window->alphaTotal();
-                    if (resource)
-                        out << " surfSize=" << vectorToString(resource->m_current.size)
-                            << " buffer=" << vectorToString(resource->m_current.bufferSize)
-                            << " source=" << vectorToString(overlayCheck.sourceSize)
-                            << " expectedTexture=" << vectorToString(overlayCheck.expectedTextureSize);
-                    else
-                        out << " surface=<null>";
-                    if (texture)
-                        out << " textureSize=" << vectorToString(overlayCheck.textureSize);
-                    out << " aspectDelta=" << overlayCheck.aspectDelta;
-                    debugLog(out.str());
-                    --s_directNiriSurfaceOverlayLogBudget;
-                }
                 continue;
             }
 
@@ -15265,7 +15154,26 @@ void OverviewController::renderSelectionChrome() const {
                 continue;
             }
 
-            g_pHyprOpenGL->renderTexture(texture, toBox(targetRender), {.a = alpha});
+            const std::size_t renderedSurfaces = renderDirectNiriSurfaceTreeOverlay(managed, renderMonitor, Time::steadyNow(), alpha, "overview");
+            if (renderedSurfaces == 0) {
+                ++missing;
+                if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
+                    std::ostringstream out;
+                    out << "[hymission] direct niri live surface overlay missing"
+                        << " window=" << debugWindowLabel(window)
+                        << " workspace=" << debugWorkspaceLabel(window->m_workspace)
+                        << " reason=no-surface-tree"
+                        << " hidden=" << (window->isHidden() ? 1 : 0)
+                        << " mapped=" << (window->m_isMapped ? 1 : 0)
+                        << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
+                        << " wsForceRendering=" << (window->m_workspace && window->m_workspace->m_forceRendering ? 1 : 0)
+                        << " alphaTotal=" << window->alphaTotal();
+                    debugLog(out.str());
+                    --s_directNiriSurfaceOverlayLogBudget;
+                }
+                continue;
+            }
+
             ++rendered;
 
             if (debugLogsEnabled() && s_directNiriSurfaceOverlayLogBudget > 0) {
@@ -15273,17 +15181,13 @@ void OverviewController::renderSelectionChrome() const {
                 out << "[hymission] direct niri live surface overlay render"
                     << " window=" << debugWindowLabel(window)
                     << " workspace=" << debugWorkspaceLabel(window->m_workspace)
-                    << " target=" << rectToString(targetGlobal)
-                    << " targetRender=" << rectToString(targetRender)
                     << " alpha=" << alpha
+                    << " surfaces=" << renderedSurfaces
                     << " hidden=" << (window->isHidden() ? 1 : 0)
                     << " mapped=" << (window->m_isMapped ? 1 : 0)
                     << " wsVisible=" << (window->m_workspace && window->m_workspace->isVisible() ? 1 : 0)
                     << " wsForceRendering=" << (window->m_workspace && window->m_workspace->m_forceRendering ? 1 : 0)
                     << " alphaTotal=" << window->alphaTotal();
-                if (resource)
-                    out << " surfSize=" << vectorToString(resource->m_current.size)
-                        << " buffer=" << vectorToString(resource->m_current.bufferSize);
                 debugLog(out.str());
                 --s_directNiriSurfaceOverlayLogBudget;
             }
@@ -16120,12 +16024,9 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
             renderPreviewWindows(true);
 
             // Hyprland's normal window render path can draw decos/borders for an
-            // inactive scrolling workspace while still producing an empty client
-            // surface when that workspace has never been made visible.  Niri does
-            // not depend on hidden-workspace compositor visibility for overview:
-            // it renders from the window/layout state.  For direct-Niri strip
-            // snapshots, mirror that by drawing the current main surface texture
-            // into the preview rect directly as a fallback layer.
+            // inactive scrolling workspace while still producing empty client
+            // contents.  Niri renders the whole surface tree from layout state, so
+            // mirror that for direct-Niri strip snapshots.
             if (directNiriStripSnapshot && g_pHyprOpenGL) {
                 std::size_t directSurfaceRendered = 0;
                 std::size_t directSurfaceMissing = 0;
@@ -16135,47 +16036,25 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
                     if (!managed.window || !windowMatchesOverviewScope(managed.window, m_stripPreviewContext.state, false))
                         continue;
 
-                    const auto surface = managed.window->wlSurface();
-                    const auto resource = surface ? surface->resource() : nullptr;
-                    const auto texture = resource ? resource->m_current.texture : nullptr;
-
-                    const Rect targetGlobal = snapRectToRenderPixelGrid(managed.targetGlobal, monitor);
-                    const Rect targetLocal = rectToMonitorRenderLocal(targetGlobal, monitor);
-                    const auto overlayCheck = directNiriSurfaceOverlayCheck(managed.window, resource, texture, targetLocal, monitor);
-
-                    if (!overlayCheck.usable) {
+                    const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F);
+                    const std::size_t renderedSurfaces = renderDirectNiriSurfaceTreeOverlay(managed, monitor, renderNow, alpha, "strip-snapshot");
+                    if (renderedSurfaces == 0) {
                         ++directSurfaceMissing;
                         if (debugLogsEnabled() && s_directSurfaceLogBudget > 0) {
                             std::ostringstream out;
                             out << "[hymission] strip snapshot direct surface missing"
                                 << " window=" << debugWindowLabel(managed.window)
                                 << " workspace=" << debugWorkspaceLabel(managed.window->m_workspace)
-                                << " reason=" << directNiriSurfaceOverlayRejectName(overlayCheck.reject)
-                                << " transferGuard=" << (overlayCheck.transferGuardActive ? 1 : 0)
-                                << " texture=" << (texture ? 1 : 0)
-                                << " target=" << rectToString(targetGlobal)
-                                << " targetLocal=" << rectToString(targetLocal)
+                                << " reason=no-surface-tree"
                                 << " hidden=" << (managed.window->isHidden() ? 1 : 0)
                                 << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
                                 << " fading=" << (managed.window->m_fadingOut ? 1 : 0);
-                            if (resource)
-                                out << " surfSize=" << vectorToString(resource->m_current.size)
-                                    << " buffer=" << vectorToString(resource->m_current.bufferSize)
-                                    << " source=" << vectorToString(overlayCheck.sourceSize)
-                                    << " expectedTexture=" << vectorToString(overlayCheck.expectedTextureSize);
-                            else
-                                out << " surface=<null>";
-                            if (texture)
-                                out << " textureSize=" << vectorToString(overlayCheck.textureSize);
-                            out << " aspectDelta=" << overlayCheck.aspectDelta;
                             debugLog(out.str());
                             --s_directSurfaceLogBudget;
                         }
                         continue;
                     }
 
-                    const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F);
-                    g_pHyprOpenGL->renderTexture(texture, toBox(targetLocal), {.a = alpha});
                     ++directSurfaceRendered;
 
                     if (debugLogsEnabled() && s_directSurfaceLogBudget > 0) {
@@ -16183,15 +16062,11 @@ void OverviewController::renderWorkspaceStripSnapshot(WorkspaceStripEntry& entry
                         out << "[hymission] strip snapshot direct surface render"
                             << " window=" << debugWindowLabel(managed.window)
                             << " workspace=" << debugWorkspaceLabel(managed.window->m_workspace)
-                            << " target=" << rectToString(targetGlobal)
-                            << " targetLocal=" << rectToString(targetLocal)
                             << " alpha=" << alpha
+                            << " surfaces=" << renderedSurfaces
                             << " hidden=" << (managed.window->isHidden() ? 1 : 0)
                             << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
                             << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
-                        if (resource)
-                            out << " surfSize=" << vectorToString(resource->m_current.size)
-                                << " buffer=" << vectorToString(resource->m_current.bufferSize);
                         debugLog(out.str());
                         --s_directSurfaceLogBudget;
                     }
@@ -16417,10 +16292,6 @@ void OverviewController::renderWorkspaceStrip() const {
                 if (!managed.window || managed.window->m_workspace != entry.workspace || !windowMatchesOverviewScope(managed.window, m_state, false))
                     continue;
 
-                const auto surface = managed.window->wlSurface();
-                const auto resource = surface ? surface->resource() : nullptr;
-                const auto texture = resource ? resource->m_current.texture : nullptr;
-
                 Rect windowGlobal = currentPreviewRect(managed);
                 if (hasWorkspaceTransition) {
                     if (m_workspaceTransition.axis == WorkspaceTransitionAxis::Vertical)
@@ -16436,44 +16307,28 @@ void OverviewController::renderWorkspaceStrip() const {
                 if (!rectsOverlap(windowGlobal, outerGlobal))
                     continue;
 
-                const Rect targetGlobal = snapRectToRenderPixelGrid(windowGlobal, renderMonitor);
-                const Rect targetRender = rectToMonitorRenderLocal(targetGlobal, renderMonitor);
-                const auto overlayCheck = directNiriSurfaceOverlayCheck(managed.window, resource, texture, targetRender, renderMonitor);
-
-                if (!overlayCheck.usable) {
+                const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F) *
+                    static_cast<float>(std::clamp(progress, 0.0, 1.0));
+                const std::size_t renderedSurfaces =
+                    renderDirectNiriSurfaceTreeOverlay(managed, renderMonitor, Time::steadyNow(), alpha, "strip-live", snapRectToRenderPixelGrid(windowGlobal, renderMonitor));
+                if (renderedSurfaces == 0) {
                     ++liveSurfaceMissing;
                     if (debugLogsEnabled() && s_liveStripSurfaceLogBudget > 0) {
                         std::ostringstream out;
                         out << "[hymission] strip live surface missing"
                             << " window=" << debugWindowLabel(managed.window)
                             << " workspace=" << debugWorkspaceLabel(entry.workspace)
-                            << " reason=" << directNiriSurfaceOverlayRejectName(overlayCheck.reject)
-                            << " transferGuard=" << (overlayCheck.transferGuardActive ? 1 : 0)
-                            << " texture=" << (texture ? 1 : 0)
-                            << " target=" << rectToString(targetGlobal)
-                            << " targetRender=" << rectToString(targetRender)
+                            << " reason=no-surface-tree"
+                            << " target=" << rectToString(windowGlobal)
                             << " hidden=" << (managed.window->isHidden() ? 1 : 0)
                             << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
                             << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
-                        if (resource)
-                            out << " surfSize=" << vectorToString(resource->m_current.size)
-                                << " buffer=" << vectorToString(resource->m_current.bufferSize)
-                                << " source=" << vectorToString(overlayCheck.sourceSize)
-                                << " expectedTexture=" << vectorToString(overlayCheck.expectedTextureSize);
-                        else
-                            out << " surface=<null>";
-                        if (texture)
-                            out << " textureSize=" << vectorToString(overlayCheck.textureSize);
-                        out << " aspectDelta=" << overlayCheck.aspectDelta;
                         debugLog(out.str());
                         --s_liveStripSurfaceLogBudget;
                     }
                     continue;
                 }
 
-                const float alpha = std::clamp(managedPreviewAlphaFor(managed.window, managed.previewAlpha), 0.0F, 1.0F) *
-                    static_cast<float>(std::clamp(progress, 0.0, 1.0));
-                g_pHyprOpenGL->renderTexture(texture, toBox(targetRender), {.a = alpha});
                 ++liveSurfaceRendered;
 
                 if (debugLogsEnabled() && s_liveStripSurfaceLogBudget > 0) {
@@ -16481,15 +16336,12 @@ void OverviewController::renderWorkspaceStrip() const {
                     out << "[hymission] strip live surface render"
                         << " window=" << debugWindowLabel(managed.window)
                         << " workspace=" << debugWorkspaceLabel(entry.workspace)
-                        << " target=" << rectToString(targetGlobal)
-                        << " targetRender=" << rectToString(targetRender)
+                        << " target=" << rectToString(windowGlobal)
                         << " alpha=" << alpha
+                        << " surfaces=" << renderedSurfaces
                         << " hidden=" << (managed.window->isHidden() ? 1 : 0)
                         << " mapped=" << (managed.window->m_isMapped ? 1 : 0)
                         << " visibleWs=" << (managed.window->m_workspace && managed.window->m_workspace->isVisible() ? 1 : 0);
-                    if (resource)
-                        out << " surfSize=" << vectorToString(resource->m_current.size)
-                            << " buffer=" << vectorToString(resource->m_current.bufferSize);
                     debugLog(out.str());
                     --s_liveStripSurfaceLogBudget;
                 }

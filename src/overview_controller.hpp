@@ -756,6 +756,9 @@ class OverviewController {
     [[nodiscard]] bool                          prepareSurfaceRenderData(void* surfacePassThisptr, const char* context, CSurfacePassElement::SRenderData*& renderData,
                                                                          PHLMONITOR& monitor, SurfaceRenderDataSnapshot& snapshot) const;
     void                                        restoreSurfaceRenderData(CSurfacePassElement::SRenderData* renderData, const SurfaceRenderDataSnapshot& snapshot) const;
+    [[nodiscard]] std::size_t                   renderDirectNiriSurfaceTreeOverlay(const ManagedWindow& managed, const PHLMONITOR& monitor,
+                                                                                  const Time::steady_tp& now, float alpha, const char* context,
+                                                                                  std::optional<Rect> targetOverride = std::nullopt) const;
     [[nodiscard]] bool                          removeOccupiedWorkspacePlaceholder(State& state, const PHLWINDOW& window) const;
     [[nodiscard]] std::optional<std::size_t> hitTestStripTarget(double x, double y) const;
     [[nodiscard]] std::optional<std::size_t> hitTestTarget(double x, double y) const;
@@ -1032,6 +1035,9 @@ class OverviewController {
     bool                      m_deactivatePending = false;
     bool                      m_deactivateScheduled = false;
     std::size_t               m_surfaceRenderDataTransformDepth = 0;
+    mutable std::optional<float> m_surfaceRenderAlphaOverride;
+    mutable PHLWINDOWREF         m_surfaceRenderTargetOverrideWindow;
+    mutable std::optional<Rect>  m_surfaceRenderTargetOverride;
     PHLWINDOWREF              m_lastLayoutSelectedWindow;
     PHLWINDOWREF              m_queuedOverviewSelectionTarget;
     bool                      m_queuedOverviewSelectionSyncScrollingSpot = false;
