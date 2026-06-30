@@ -2875,6 +2875,20 @@ void OverviewController::restoreDirectNiriFloatingActionTarget(const PHLWINDOW& 
     }
 }
 
+void OverviewController::armDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window) {
+    if (!window || !window->m_isMapped || !window->m_workspace || !usesDirectNiriScrollingOverview(m_state) || !isFloatingOverviewWindow(window)) {
+        m_directNiriNativeFloatingGeometryPreview.reset();
+        return;
+    }
+
+    m_directNiriNativeFloatingGeometryPreview = window;
+}
+
+void OverviewController::clearDirectNiriNativeFloatingGeometryPreview(const PHLWINDOW& window) {
+    if (!window || m_directNiriNativeFloatingGeometryPreview.lock() == window)
+        m_directNiriNativeFloatingGeometryPreview.reset();
+}
+
 PHLWINDOW OverviewController::closestTiledDirectNiriGeometryAnchor(const PHLWINDOW& window) const {
     if (!window || !usesDirectNiriScrollingOverview(m_state))
         return window;
@@ -3080,7 +3094,9 @@ void OverviewController::refreshDirectNiriFloatingGeometryActionTarget(const PHL
     if (!m_state.relayoutActive) {
         currentIt->relayoutFromGlobal = currentIt->targetGlobal;
         m_relayoutProgressAnimation.reset();
+        clearDirectNiriNativeFloatingGeometryPreview(window);
     } else {
+        armDirectNiriNativeFloatingGeometryPreview(window);
         beginOverviewRelayoutAnimation(source ? source : "floating-geometry");
     }
 
@@ -3104,6 +3120,9 @@ void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& win
                                                             const PreviewRectSnapshot* previousPreviewRects) {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return;
+
+    if (tiledNow)
+        clearDirectNiriNativeFloatingGeometryPreview(window);
 
     if (!tiledNow && usesDirectNiriScrollingOverview(m_state)) {
         refreshDirectNiriSetFloatingActionTarget(window, source, previousPreviewRects);
@@ -10057,6 +10076,7 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     m_state.relayoutActive = false;
     m_state.relayoutProgress = 1.0;
     m_state.relayoutStart = {};
+    clearDirectNiriNativeFloatingGeometryPreview();
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -11477,6 +11497,7 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutProgress = 1.0;
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
+    clearDirectNiriNativeFloatingGeometryPreview();
 }
 
 void OverviewController::beginOverviewVisibilityAnimation(const char* source) {

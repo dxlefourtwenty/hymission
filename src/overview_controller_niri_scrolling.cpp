@@ -7176,6 +7176,15 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
     return transformed;
 }
 
+bool OverviewController::directNiriNativeFloatingGeometryPreviewActive(const ManagedWindow& window) const {
+    if (m_state.phase != Phase::Active || !m_state.relayoutActive || !usesDirectNiriScrollingOverview(m_state) || !window.window ||
+        !window.window->m_isMapped || !window.isNiriFloatingOverlay || !isFloatingOverviewWindow(window.window))
+        return false;
+
+    const auto target = m_directNiriNativeFloatingGeometryPreview.lock();
+    return target && target == window.window;
+}
+
 bool OverviewController::inactiveDirectNiriFloatingOverlay(const ManagedWindow& managed) const {
     if (!managed.window || !managed.isNiriFloatingOverlay || managed.window->m_pinned || managed.isPinned)
         return false;
@@ -7763,6 +7772,10 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return lerpRect(window.naturalGlobal, window.targetGlobal, visualProgress());
         case Phase::Active:
             if (usesDirectNiriScrollingOverview(m_state)) {
+                if (directNiriNativeFloatingGeometryPreviewActive(window)) {
+                    if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
+                        return *liveRect;
+                }
                 if (m_state.relayoutActive)
                     return activeBaseRect();
                 if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
