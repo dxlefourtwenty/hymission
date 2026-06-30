@@ -2991,7 +2991,8 @@ void OverviewController::prepareDirectNiriFloatActionTarget(const PHLWINDOW& win
     (void)syncScrollingWorkspaceSpotOnWindow(window);
 }
 
-void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source) {
+void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source,
+                                                            const PreviewRectSnapshot* previousPreviewRects) {
     if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
         return;
 
@@ -3034,9 +3035,8 @@ void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& win
 
     m_stripSnapshotsDirty = true;
     scheduleWorkspaceStripSnapshotRefresh();
-    rebuildVisibleState(window, true);
     if (usesDirectNiriScrollingOverview(m_state))
-        refreshNiriScrollingOverviewAfterFocusDispatcher(source, window, tiledNow);
+        refreshVisibleStateMetadata(window, previousPreviewRects, source);
     else
         refreshNiriScrollingOverviewAfterLayoutScroll(source);
     damageOwnedMonitors();
@@ -3053,11 +3053,12 @@ std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActi
         return std::nullopt;
 
     const bool wasFloating = isFloatingOverviewWindow(target);
-    prepareDirectNiriFloatActionTarget(target);
+    const auto previousPreviewRects = m_state.relayoutActive ? commitActiveNiriRelayoutForRetarget() : captureCurrentPreviewRects();
 
     Config::Actions::ActionResult result;
     {
         ScopedFlag editingGuard(m_overviewEditingDispatcherInProgress);
+        prepareDirectNiriFloatActionTarget(target);
         result = g_floatWindowActionOriginal(action, std::optional<PHLWINDOW>{target});
     }
 
@@ -3071,7 +3072,7 @@ std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActi
     if (wasFloating == floatingNow)
         return result;
 
-    refreshDirectNiriFloatActionTarget(target, !floatingNow, "float-window-action");
+    refreshDirectNiriFloatActionTarget(target, !floatingNow, "float-window-action", &previousPreviewRects);
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] direct niri float action refresh"
