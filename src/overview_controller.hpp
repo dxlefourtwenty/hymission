@@ -108,6 +108,8 @@ class OverviewController {
     [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult moveFocusDispatcherHook(std::string args);
     [[nodiscard]] std::optional<Config::Actions::ActionResult> layoutMessageActionHook(const std::string& msg);
+    [[nodiscard]] std::optional<Config::Actions::ActionResult> floatWindowActionHook(Config::Actions::eTogglableAction action,
+                                                                                    std::optional<PHLWINDOW> window);
     [[nodiscard]] Config::Actions::ActionResult moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window);
     bool                surfaceNeedsLiveBlurHook(void* surfacePassThisptr);
     bool                surfaceNeedsPrecomputeBlurHook(void* surfacePassThisptr);
@@ -790,6 +792,9 @@ class OverviewController {
     [[nodiscard]] bool         syncScrollingWorkspaceSpotOnWindow(
         const PHLWINDOW& window, ScrollingSpotTargeting targeting = ScrollingSpotTargeting::Configured,
         ScrollingSpotSyncIntent intent = ScrollingSpotSyncIntent::PreserveNativeCamera) const;
+    [[nodiscard]] PHLWINDOW directNiriFloatActionTarget(const std::optional<PHLWINDOW>& window) const;
+    void                    prepareDirectNiriFloatActionTarget(const PHLWINDOW& window);
+    void                    refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source);
     void                       refreshExitLayoutForFocus(const PHLWINDOW& window) const;
     void                       syncRealFocusDuringOverview(const PHLWINDOW& window, bool syncScrollingSpot = true,
                                                           const PreviewRectSnapshot* previousPreviewRects = nullptr, bool forceRealFocus = false);

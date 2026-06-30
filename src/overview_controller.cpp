@@ -308,17 +308,20 @@ using MoveFocusActionFn = Config::Actions::ActionResult (*)(Math::eDirection);
 using MoveInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
 using SwapInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
 using ResizeActionFn = Config::Actions::ActionResult (*)(const Vector2D&, bool, std::optional<PHLWINDOW>);
+using FloatWindowActionFn = Config::Actions::ActionResult (*)(Config::Actions::eTogglableAction, std::optional<PHLWINDOW>);
 
 CFunctionHook* g_layoutMessageActionHook = nullptr;
 CFunctionHook* g_moveFocusActionHook = nullptr;
 CFunctionHook* g_moveInDirectionActionHook = nullptr;
 CFunctionHook* g_swapInDirectionActionHook = nullptr;
 CFunctionHook* g_resizeActionHook = nullptr;
+CFunctionHook* g_floatWindowActionHook = nullptr;
 LayoutMessageActionFn g_layoutMessageActionOriginal = nullptr;
 MoveFocusActionFn g_moveFocusActionOriginal = nullptr;
 MoveInDirectionActionFn g_moveInDirectionActionOriginal = nullptr;
 SwapInDirectionActionFn g_swapInDirectionActionOriginal = nullptr;
 ResizeActionFn g_resizeActionOriginal = nullptr;
+FloatWindowActionFn g_floatWindowActionOriginal = nullptr;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 
@@ -463,6 +466,18 @@ Config::Actions::ActionResult hkResizeAction(const Vector2D& size, bool relative
         return {};
 
     return g_resizeActionOriginal ? g_resizeActionOriginal(size, relative, std::move(window)) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkFloatWindowAction(Config::Actions::eTogglableAction action, std::optional<PHLWINDOW> window) {
+    if (shouldSuppressNativeActionDuringOverviewOpen(true))
+        return {};
+
+    if (g_controller) {
+        if (auto handled = g_controller->floatWindowActionHook(action, window); handled)
+            return std::move(*handled);
+    }
+
+    return g_floatWindowActionOriginal ? g_floatWindowActionOriginal(action, std::move(window)) : Config::Actions::ActionResult{};
 }
 
 enum class GestureDispatcherKind : uint8_t {
@@ -2926,6 +2941,151 @@ bool niri_scrolling_detail::isActiveController(const OverviewController* control
     return g_controller == controller;
 }
 
+PHLWINDOW OverviewController::directNiriFloatActionTarget(const std::optional<PHLWINDOW>& window) const {
+    const auto validTarget = [&](const PHLWINDOW& candidate) -> PHLWINDOW {
+        if (!candidate || !candidate->m_isMapped || candidate->m_fadingOut || candidate->m_pinned || candidate->onSpecialWorkspace() ||
+            !candidate->m_workspace || candidate->m_workspace->m_isSpecialWorkspace || !isScrollingWorkspace(candidate->m_workspace) ||
+            !hasManagedWindow(candidate))
+            return {};
+
+        const auto monitor = candidate->m_workspace->m_monitor.lock();
+        if (m_state.ownerMonitor && monitor && monitor != m_state.ownerMonitor)
+            return {};
+
+        return candidate;
+    };
+
+    if (window)
+        return validTarget(*window);
+    if (const auto selected = validTarget(selectedWindow()); selected)
+        return selected;
+    if (const auto overviewFocus = validTarget(m_state.focusDuringOverview); overviewFocus)
+        return overviewFocus;
+
+    return validTarget(Desktop::focusState()->window());
+}
+
+void OverviewController::prepareDirectNiriFloatActionTarget(const PHLWINDOW& window) {
+    if (!window || !window->m_workspace)
+        return;
+
+    selectWindowInState(m_state, window);
+    m_state.focusDuringOverview = window;
+    m_queuedOverviewSelectionTarget.reset();
+    m_queuedOverviewSelectionSyncScrollingSpot = false;
+    m_queuedOverviewSelectionCenterCursor = false;
+    m_queuedOverviewLiveFocusTarget.reset();
+    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+    m_queuedOverviewLiveFocusCenterCursor = false;
+
+    if (!m_state.ownerMonitor || window->m_workspace->m_monitor.lock() == m_state.ownerMonitor)
+        m_state.ownerWorkspace = window->m_workspace;
+
+    m_pendingLiveFocusWorkspaceChangeTarget = window;
+    (void)activateWindowWorkspaceForFocus(window);
+    if (Desktop::focusState()->window() != window)
+        focusWindowCompat(window, false, Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+    if (m_pendingLiveFocusWorkspaceChangeTarget.lock() == window)
+        m_pendingLiveFocusWorkspaceChangeTarget.reset();
+
+    (void)syncScrollingWorkspaceSpotOnWindow(window);
+}
+
+void OverviewController::refreshDirectNiriFloatActionTarget(const PHLWINDOW& window, bool tiledNow, const char* source) {
+    if (!window || !window->m_isMapped || !window->m_workspace || !isScrollingWorkspace(window->m_workspace))
+        return;
+
+    auto* const scrolling = scrollingAlgorithmForWorkspace(window->m_workspace);
+    if (window->m_workspace->m_space)
+        window->m_workspace->m_space->recalculate();
+    if (scrolling && scrolling->m_scrollingData)
+        scrolling->m_scrollingData->recalculate(true);
+
+    if (tiledNow) {
+        const auto target = window->layoutTarget();
+        if (target && !target->floating()) {
+            if (const auto targetData = scrolling ? scrolling->dataFor(target) : nullptr; targetData) {
+                if (const auto column = targetData->column.lock()) {
+                    column->lastFocusedTarget = targetData;
+                    if (scrolling->m_scrollingData && scrolling->m_scrollingData->controller) {
+                        if (getConfigInt(m_handle, "scrolling:focus_fit_method", 0) == 1)
+                            scrolling->m_scrollingData->fitCol(column);
+                        else
+                            scrolling->m_scrollingData->centerCol(column);
+                    }
+                }
+            }
+        }
+    }
+
+    (void)syncScrollingWorkspaceSpotOnWindow(window);
+    if (window->m_workspace->m_space)
+        window->m_workspace->m_space->recalculate();
+    if (scrolling && scrolling->m_scrollingData)
+        scrolling->m_scrollingData->recalculate(true);
+
+    refreshWorkspaceLayoutSnapshot(window->m_workspace);
+    if (const auto activeWorkspace = activeLayoutWorkspace(); activeWorkspace && activeWorkspace != window->m_workspace)
+        refreshWorkspaceLayoutSnapshot(activeWorkspace);
+    if (const auto monitor = window->m_monitor.lock())
+        g_layoutManager->recalculateMonitor(monitor);
+    if (g_pAnimationManager)
+        g_pAnimationManager->frameTick();
+
+    m_stripSnapshotsDirty = true;
+    scheduleWorkspaceStripSnapshotRefresh();
+    rebuildVisibleState(window, true);
+    if (usesDirectNiriScrollingOverview(m_state))
+        refreshNiriScrollingOverviewAfterFocusDispatcher(source, window, tiledNow);
+    else
+        refreshNiriScrollingOverviewAfterLayoutScroll(source);
+    damageOwnedMonitors();
+}
+
+std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActionHook(Config::Actions::eTogglableAction action,
+                                                                                      std::optional<PHLWINDOW> window) {
+    if (!g_floatWindowActionOriginal || m_overviewEditingDispatcherInProgress || !isVisible() || m_state.phase != Phase::Active ||
+        !activeDirectNiriSingleWorkspaceOverview())
+        return std::nullopt;
+
+    const auto target = directNiriFloatActionTarget(window);
+    if (!target)
+        return std::nullopt;
+
+    const bool wasFloating = isFloatingOverviewWindow(target);
+    prepareDirectNiriFloatActionTarget(target);
+
+    Config::Actions::ActionResult result;
+    {
+        ScopedFlag editingGuard(m_overviewEditingDispatcherInProgress);
+        result = g_floatWindowActionOriginal(action, std::optional<PHLWINDOW>{target});
+    }
+
+    if (!result)
+        return result;
+
+    if (!isVisible() || m_state.phase != Phase::Active || !target->m_isMapped)
+        return result;
+
+    const bool floatingNow = isFloatingOverviewWindow(target);
+    if (wasFloating == floatingNow)
+        return result;
+
+    refreshDirectNiriFloatActionTarget(target, !floatingNow, "float-window-action");
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri float action refresh"
+            << " action=" << static_cast<int>(action)
+            << " target=" << debugWindowLabel(target)
+            << " workspace=" << debugWorkspaceLabel(target->m_workspace)
+            << " wasFloating=" << (wasFloating ? 1 : 0)
+            << " floatingNow=" << (floatingNow ? 1 : 0);
+        debugLog(out.str());
+    }
+
+    return result;
+}
+
 OverviewController::OverviewController(HANDLE handle) : m_handle(handle) {
     g_controller = this;
     g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
@@ -2985,6 +3145,8 @@ OverviewController::~OverviewController() {
         g_swapInDirectionActionHook->unhook();
     if (g_resizeActionHook)
         g_resizeActionHook->unhook();
+    if (g_floatWindowActionHook)
+        g_floatWindowActionHook->unhook();
 
     if (m_surfaceTexBoxHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_surfaceTexBoxHook);
@@ -3052,6 +3214,11 @@ OverviewController::~OverviewController() {
         HyprlandAPI::removeFunctionHook(m_handle, g_resizeActionHook);
         g_resizeActionHook = nullptr;
         g_resizeActionOriginal = nullptr;
+    }
+    if (g_floatWindowActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_floatWindowActionHook);
+        g_floatWindowActionHook = nullptr;
+        g_floatWindowActionOriginal = nullptr;
     }
     if (m_handleGestureHook)
         HyprlandAPI::removeFunctionHook(m_handle, m_handleGestureHook);
@@ -9219,6 +9386,7 @@ bool OverviewController::installHooks() {
     (void)hookFunction("moveInDirection", "Config::Actions::moveInDirection(", g_moveInDirectionActionHook, reinterpret_cast<void*>(&hkMoveInDirectionAction));
     (void)hookFunction("swapInDirection", "Config::Actions::swapInDirection(", g_swapInDirectionActionHook, reinterpret_cast<void*>(&hkSwapInDirectionAction));
     (void)hookFunction("resize", "Config::Actions::resize(", g_resizeActionHook, reinterpret_cast<void*>(&hkResizeAction));
+    (void)hookFunction("floatWindow", "Config::Actions::floatWindow(", g_floatWindowActionHook, reinterpret_cast<void*>(&hkFloatWindowAction));
 
     m_shouldRenderWindowOriginal = nullptr;
     m_surfaceTexBoxOriginal = nullptr;
@@ -9255,6 +9423,7 @@ bool OverviewController::installHooks() {
     g_moveInDirectionActionOriginal = nullptr;
     g_swapInDirectionActionOriginal = nullptr;
     g_resizeActionOriginal = nullptr;
+    g_floatWindowActionOriginal = nullptr;
 
     activateOptionalHook(m_workspaceSwipeBeginFunctionHook, m_workspaceSwipeBeginOriginal, "workspace swipe begin");
     activateOptionalHook(m_workspaceSwipeUpdateFunctionHook, m_workspaceSwipeUpdateOriginal, "workspace swipe update");
@@ -9271,6 +9440,7 @@ bool OverviewController::installHooks() {
     activateOptionalHook(g_moveInDirectionActionHook, g_moveInDirectionActionOriginal, "move window action");
     activateOptionalHook(g_swapInDirectionActionHook, g_swapInDirectionActionOriginal, "swap window action");
     activateOptionalHook(g_resizeActionHook, g_resizeActionOriginal, "resize window action");
+    activateOptionalHook(g_floatWindowActionHook, g_floatWindowActionOriginal, "float window action");
     return true;
 }
 
