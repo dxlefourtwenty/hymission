@@ -3981,9 +3981,23 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
+    std::size_t anchoredFloatingOverlays = 0;
+    std::size_t cameraFloatingOverlays = 0;
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
             continue;
+
+        if (managed.isNiriFloatingOverlay) {
+            const auto workspace = managed.window->m_workspace;
+            if (managed.window->m_pinned || managed.isPinned || (workspace && workspace->m_id == placeholder.workspaceId)) {
+                managed.exitGlobal = managed.naturalGlobal;
+                ++anchoredFloatingOverlays;
+            } else {
+                managed.exitGlobal = transformLiveOverviewRect(managed.targetGlobal, selectedPreview, selectedExit);
+                ++cameraFloatingOverlays;
+            }
+            continue;
+        }
 
         const Rect preview = currentPreviewRect(managed);
         managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
@@ -4003,7 +4017,9 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
         out << "[hymission] niri scrolling camera exit placeholder=" << (placeholder.workspace ? debugWorkspaceLabel(placeholder.workspace) : std::to_string(placeholder.workspaceId))
             << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")";
+            << " scale=(" << scaleX << "," << scaleY << ")"
+            << " anchoredFloatingOverlays=" << anchoredFloatingOverlays
+            << " cameraFloatingOverlays=" << cameraFloatingOverlays;
         debugLog(out.str());
     }
 
@@ -4032,8 +4048,8 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
         if (!managed.window || !managed.window->m_isMapped)
             continue;
 
-        // Floating overlays already use their live source rect. Re-inverting
-        // them through the tiled open camera recenters them over tiled content.
+        // The selected workspace's floating overlays keep their native source;
+        // inactive overlays are aligned to this camera below.
         if (managed.isNiriFloatingOverlay)
             continue;
 
@@ -4052,7 +4068,7 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const PHLWINDOW& w
         placeholder.exitGlobal = placeholder.naturalGlobal;
     }
 
-    stabilizeInactiveNiriFloatingOpenGeometry();
+    stabilizeInactiveNiriFloatingOpenGeometry(window->m_workspace->m_id, selectedStart, selectedTarget);
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -4087,8 +4103,8 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspa
         if (!managed.window || !managed.window->m_isMapped)
             continue;
 
-        // Floating overlays already use their live source rect. Re-inverting
-        // them through the placeholder camera recenters them over the workspace.
+        // The selected workspace's floating overlays keep their native source;
+        // inactive overlays are aligned to this camera below.
         if (managed.isNiriFloatingOverlay)
             continue;
 
@@ -4107,7 +4123,7 @@ bool OverviewController::applyNiriScrollingCameraOpenGeometry(const EmptyWorkspa
         current.exitGlobal = current.naturalGlobal;
     }
 
-    stabilizeInactiveNiriFloatingOpenGeometry();
+    stabilizeInactiveNiriFloatingOpenGeometry(placeholder.workspaceId, selectedStart, selectedTarget);
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
@@ -7227,7 +7243,7 @@ OverviewController::EmptyWorkspacePlaceholder* OverviewController::directNiriWor
     return fallback;
 }
 
-void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
+void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry(WORKSPACEID selectedWorkspaceId, const Rect& selectedStart, const Rect& selectedTarget) {
     if (!m_state.collectionPolicy.onlyActiveWorkspace || !usesDirectNiriScrollingOverview(m_state))
         return;
 
@@ -7236,18 +7252,14 @@ void OverviewController::stabilizeInactiveNiriFloatingOpenGeometry() {
             continue;
 
         const auto workspace = managed.window ? managed.window->m_workspace : PHLWORKSPACE{};
-        const WORKSPACEID workspaceId = workspace ? workspace->m_id : WORKSPACE_INVALID;
-        const auto monitor = managed.targetMonitor ? managed.targetMonitor : (workspace ? workspace->m_monitor.lock() : PHLMONITOR{});
-        const auto placeholder = directNiriWorkspaceViewportPlaceholder(workspaceId, monitor);
-
-        if (!placeholder || placeholder->naturalGlobal.width <= 1.0 || placeholder->naturalGlobal.height <= 1.0 || placeholder->targetGlobal.width <= 1.0 ||
-            placeholder->targetGlobal.height <= 1.0) {
+        if (!workspace || workspace->m_id == selectedWorkspaceId || selectedStart.width <= 1.0 || selectedStart.height <= 1.0 || selectedTarget.width <= 1.0 ||
+            selectedTarget.height <= 1.0) {
             managed.naturalGlobal = managed.targetGlobal;
             managed.exitGlobal = managed.naturalGlobal;
             continue;
         }
 
-        const Rect source = transformLiveOverviewRect(managed.targetGlobal, placeholder->targetGlobal, placeholder->naturalGlobal);
+        const Rect source = transformLiveOverviewRect(managed.targetGlobal, selectedTarget, selectedStart);
         if (source.width <= 1.0 || source.height <= 1.0) {
             managed.naturalGlobal = managed.targetGlobal;
             managed.exitGlobal = managed.naturalGlobal;

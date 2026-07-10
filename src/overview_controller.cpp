@@ -296,6 +296,14 @@ bool directNiriNativeHandoffActive() {
     return false;
 }
 
+bool directNiriWorkspaceReadyForNativeRender(const PHLWORKSPACE& workspace) {
+    if (!workspace)
+        return false;
+
+    const auto monitor = workspace->m_monitor.lock();
+    return monitor && monitor->m_activeWorkspace == workspace && workspace->isVisible() && !workspace->m_forceRendering;
+}
+
 void armDirectNiriNativeHandoffGuard() {
     const auto until = std::chrono::steady_clock::now() + DIRECT_NIRI_NATIVE_HANDOFF_GUARD_DURATION;
     if (until > g_directNiriNativeHandoffUntil)
@@ -5627,7 +5635,7 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
         const bool directNiriSingleWorkspace = (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
             m_state.collectionPolicy.onlyActiveWorkspace;
         const bool inactiveScrollingPreview = directNiriSingleWorkspace && window->m_workspace && isScrollingWorkspace(window->m_workspace) &&
-            !window->m_workspace->isVisible() && !window->m_pinned && !isFloatingOverviewWindow(window);
+            !directNiriWorkspaceReadyForNativeRender(window->m_workspace) && !window->m_pinned && !isFloatingOverviewWindow(window);
         if (inactiveScrollingPreview) {
             const bool transferGuard = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
             static std::size_t s_inactiveNativePassLogBudget = 160;
@@ -15221,7 +15229,7 @@ void OverviewController::renderSelectionChrome() const {
             // workspaces whose normal fake-render path can temporarily produce
             // blank client contents.  For the currently visible workspace, the
             // transformed Hyprland surface pass is the authoritative renderer.
-            if (window->m_workspace->isVisible()) {
+            if (directNiriWorkspaceReadyForNativeRender(window->m_workspace)) {
                 ++skipped;
                 continue;
             }

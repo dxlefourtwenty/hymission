@@ -684,7 +684,7 @@ class OverviewController {
     [[nodiscard]] bool         shouldUseGoalGeometryForStateSnapshot(const PHLWINDOW& window) const;
     [[nodiscard]] bool         inactiveDirectNiriFloatingOverlay(const ManagedWindow& managed) const;
     [[nodiscard]] EmptyWorkspacePlaceholder* directNiriWorkspaceViewportPlaceholder(WORKSPACEID workspaceId, const PHLMONITOR& monitor);
-    void                       stabilizeInactiveNiriFloatingOpenGeometry();
+    void                       stabilizeInactiveNiriFloatingOpenGeometry(WORKSPACEID selectedWorkspaceId, const Rect& selectedStart, const Rect& selectedTarget);
     void                       refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& workspace) const;
     void                       commitNonScrollingWorkspaceLayout(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] std::optional<Vector2D> predictedScrollingExitTranslation(const PHLWINDOW& window) const;
