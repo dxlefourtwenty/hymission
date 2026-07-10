@@ -413,6 +413,8 @@ class OverviewController {
         bool                                   targetWorkspaceSyntheticEmpty = false;
         bool                                   targetActivatedEarly = false;
         bool                                   targetEdgeCameraPreserved = false;
+        PHLWINDOWREF                           previewAlphaOverrideWindow;
+        float                                  previewAlphaOverride = 1.0F;
         State                                  sourceState;
         State                                  targetState;
         double                                 animationFromDelta = 0.0;

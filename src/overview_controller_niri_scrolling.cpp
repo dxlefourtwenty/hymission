@@ -5235,6 +5235,9 @@ std::optional<SDispatchResult> OverviewController::tryRunDirectNiriMoveToWorkspa
                                           WorkspaceTransitionMode::TimedCommit, std::move(sourceState), movedWindow))
         return result;
 
+    m_workspaceTransition.previewAlphaOverrideWindow = movedWindow;
+    m_workspaceTransition.previewAlphaOverride = movedPreviewAlpha;
+
     // Same reason as above: the source transition state must retain the
     // target workspace's pre-move empty viewport so source and target lanes can
     // be matched by workspace id and interpolated row-to-row.  The target state
