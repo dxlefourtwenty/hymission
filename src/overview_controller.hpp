@@ -250,6 +250,7 @@ class OverviewController {
         std::size_t                           sourceColumn = 0;
         std::size_t                           sourceTile = 0;
         float                                 sourceColumnWidth = 1.0F;
+        bool                                  sourceFloating = false;
         bool                                  detached = false;
         std::optional<NiriDragTarget>         target;
         std::chrono::steady_clock::time_point edgeEnteredAt = {};
