@@ -923,7 +923,8 @@ void OverviewController::tickDirectNiriWindowDragEdgeScroll() {
     damageOwnedMonitors();
 }
 
-bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, const NiriDragTarget &target, const PreviewRectSnapshot &previousPreviewRects) {
+bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, const NiriDragTarget &target, const PreviewRectSnapshot &previousPreviewRects,
+                                                   const Rect &releasePreviewRect) {
     if (!window || !target.monitor || target.workspaceId == WORKSPACE_INVALID)
         return false;
 
@@ -941,6 +942,15 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool windowWasFloatingBeforeDrop = window->m_isFloating || (window->layoutTarget() && window->layoutTarget()->floating());
     const bool tiledDrop = !m_niriDragSession.sourceFloating && !windowWasFloatingBeforeDrop && !target.floating;
     const bool dropIntoEmptyWorkspace = tiledDrop && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
+    PreviewRectSnapshot relayoutOrigins = previousPreviewRects;
+    if (crossWorkspaceDrop && usableRect(releasePreviewRect)) {
+        const auto releaseOrigin = std::find_if(relayoutOrigins.begin(), relayoutOrigins.end(),
+                                                [&](const auto &entry) { return entry.first == window; });
+        if (releaseOrigin != relayoutOrigins.end())
+            releaseOrigin->second = releasePreviewRect;
+        else
+            relayoutOrigins.emplace_back(window, releasePreviewRect);
+    }
 
     const auto preservedOwnerWorkspace = m_state.ownerWorkspace;
     const auto preservedOwnerMonitor = m_state.ownerMonitor;
@@ -1182,7 +1192,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const auto refreshAfterMouseEdit = [&](const char *reason) {
         armMouseEditSnapshotRefresh();
         const auto focus = restoreFocusForMouseEdit();
-        refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
+        refreshVisibleStateMetadata(focus, relayoutOrigins.empty() ? nullptr : &relayoutOrigins, reason);
         armMouseEditSnapshotRefresh();
         // Do not briefly activate the drop workspace after a mouse edit.  The
         // old activation pulse was only a workaround for blank inactive-strip
@@ -1560,6 +1570,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
     const auto window = session.window.lock();
     const auto target = session.target;
     const auto previousRects = captureCurrentPreviewRects();
+    const Rect releasePreviewRect = directNiriDraggedPreviewRect();
     const Vector2D releasePoint = g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : Vector2D{};
 
     m_niriDragSession.active = false;
@@ -1571,7 +1582,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         return true;
     }
 
-    const auto finishCommit = [this, session, window, target, previousRects, releasePoint] {
+    const auto finishCommit = [this, session, window, target, previousRects, releasePreviewRect, releasePoint] {
         const NiriDragSession previousSession = m_niriDragSession;
         m_niriDragSession = session;
         m_niriDragSession.active = false;
@@ -1581,7 +1592,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
             refreshWorkspaceLayoutSnapshot(sourceWorkspace);
             refreshVisibleStateMetadata(selectedWindow(), previousRects.empty() ? nullptr : &previousRects, "drag-drop-cancel");
         } else if (target) {
-            (void)applyDirectNiriDragTarget(window, *target, previousRects);
+            (void)applyDirectNiriDragTarget(window, *target, previousRects, releasePreviewRect);
         } else if (session.detached) {
             const auto sourceWorkspace = session.sourceWorkspace.lock();
             restoreDetachedDragSource(window, sourceWorkspace, session.sourceColumn, session.sourceTile, session.sourceColumnWidth);
