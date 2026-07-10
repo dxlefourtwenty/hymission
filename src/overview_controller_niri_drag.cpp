@@ -943,7 +943,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const bool tiledDrop = !m_niriDragSession.sourceFloating && !windowWasFloatingBeforeDrop && !target.floating;
     const bool dropIntoEmptyWorkspace = tiledDrop && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
     PreviewRectSnapshot relayoutOrigins = previousPreviewRects;
-    if (crossWorkspaceDrop && usableRect(releasePreviewRect)) {
+    if ((crossWorkspaceDrop || tiledDrop) && usableRect(releasePreviewRect)) {
         const auto releaseOrigin = std::find_if(relayoutOrigins.begin(), relayoutOrigins.end(),
                                                 [&](const auto &entry) { return entry.first == window; });
         if (releaseOrigin != relayoutOrigins.end())
