@@ -237,6 +237,7 @@ class OverviewController {
         PHLWORKSPACE                workspace;
         PHLMONITOR                  monitor;
         WORKSPACEID                 workspaceId = WORKSPACE_INVALID;
+        Rect                        viewportGlobal;
         overview_drag::InsertTarget insertion;
         bool                        floating = false;
     };

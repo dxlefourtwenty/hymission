@@ -104,6 +104,36 @@ bool usableRect(const Rect &rect) {
     return rect.width > 1.0 && rect.height > 1.0;
 }
 
+std::optional<CBox> floatingDropBox(const PHLWINDOW &window, const PHLWORKSPACE &workspace, const Rect &viewportGlobal,
+                                   const Rect &releasePreviewRect, const Vector2D &pointerRatio) {
+    if (!window || !workspace || !workspace->m_space || !usableRect(viewportGlobal) || !usableRect(releasePreviewRect))
+        return std::nullopt;
+
+    const auto layoutTarget = window->layoutTarget();
+    if (!layoutTarget || !layoutTarget->floating())
+        return std::nullopt;
+
+    const CBox workArea = workspace->m_space->workArea();
+    const CBox currentBox = layoutTarget->position();
+    if (workArea.width <= 1.0 || workArea.height <= 1.0 || currentBox.width <= 1.0 || currentBox.height <= 1.0)
+        return std::nullopt;
+
+    const Vector2D releaseAnchor{
+        releasePreviewRect.x + releasePreviewRect.width * pointerRatio.x,
+        releasePreviewRect.y + releasePreviewRect.height * pointerRatio.y,
+    };
+    const Vector2D workspaceAnchor{
+        workArea.x + (releaseAnchor.x - viewportGlobal.x) * workArea.width / viewportGlobal.width,
+        workArea.y + (releaseAnchor.y - viewportGlobal.y) * workArea.height / viewportGlobal.height,
+    };
+    return CBox{
+        workspaceAnchor.x - currentBox.width * pointerRatio.x,
+        workspaceAnchor.y - currentBox.height * pointerRatio.y,
+        currentBox.width,
+        currentBox.height,
+    };
+}
+
 double dragPrimaryStart(const overview_drag::Rect &rect, overview_drag::Axis axis) {
     return axis == overview_drag::Axis::Horizontal ? rect.x : rect.y;
 }
@@ -759,6 +789,7 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
             .workspace = workspace,
             .monitor = lane->monitor,
             .workspaceId = lane->workspaceId,
+            .viewportGlobal = laneRect,
             .floating = true,
         };
     }
@@ -854,6 +885,7 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         .workspace = workspace,
         .monitor = lane->monitor,
         .workspaceId = lane->workspaceId,
+        .viewportGlobal = laneRect,
         .insertion = *insertion,
     };
 }
@@ -1276,6 +1308,9 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             m_applyingWorkspaceTransitionCommit = previousGuard;
             m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
         }
+
+        if (const auto dropBox = floatingDropBox(window, workspace, target.viewportGlobal, releasePreviewRect, m_niriDragSession.pointerRatio))
+            window->layoutTarget()->setPositionGlobal(*dropBox);
     }
 
     bool appliedCrossWorkspaceInColumn = false;
