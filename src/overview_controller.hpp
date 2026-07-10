@@ -250,6 +250,7 @@ class OverviewController {
         std::size_t                           sourceColumn = 0;
         std::size_t                           sourceTile = 0;
         float                                 sourceColumnWidth = 1.0F;
+        bool                                  sourceFloating = false;
         bool                                  detached = false;
         std::optional<NiriDragTarget>         target;
         std::chrono::steady_clock::time_point edgeEnteredAt = {};
@@ -412,6 +413,8 @@ class OverviewController {
         bool                                   targetWorkspaceSyntheticEmpty = false;
         bool                                   targetActivatedEarly = false;
         bool                                   targetEdgeCameraPreserved = false;
+        PHLWINDOWREF                           previewAlphaOverrideWindow;
+        float                                  previewAlphaOverride = 1.0F;
         State                                  sourceState;
         State                                  targetState;
         double                                 animationFromDelta = 0.0;
@@ -925,7 +928,7 @@ class OverviewController {
     [[nodiscard]] float directNiriDraggedPreviewAlpha(const PHLWINDOW& window, float fallback) const;
     [[nodiscard]] std::optional<NiriDragTarget> directNiriDragTargetAt(const Vector2D& pointer) const;
     [[nodiscard]] bool applyDirectNiriDragTarget(const PHLWINDOW& window, const NiriDragTarget& target,
-                                                  const PreviewRectSnapshot& previousPreviewRects);
+                                                  const PreviewRectSnapshot& previousPreviewRects, const Rect& releasePreviewRect);
     void applyWorkspaceStripCursorShape() const;
     bool refreshWorkspaceStripActivity(State& state, const PHLMONITOR& overrideMonitor = {}, WORKSPACEID overrideWorkspaceId = WORKSPACE_INVALID) const;
     void resetStaleClientCursorShape() const;

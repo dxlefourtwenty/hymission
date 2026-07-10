@@ -643,6 +643,7 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
     float sourceColumnWidth = 1.0F;
     const auto sourceWorkspace = managed.window->m_workspace;
     const auto layoutTarget = managed.window->layoutTarget();
+    const bool sourceFloating = managed.isFloating || managed.window->m_isFloating || (layoutTarget && layoutTarget->floating());
     if (layoutTarget && !layoutTarget->floating()) {
         if (auto *scrolling = scrollingForWorkspace(sourceWorkspace); scrolling && scrolling->m_scrollingData) {
             if (const auto targetData = scrolling->dataFor(layoutTarget); targetData && targetData->column) {
@@ -672,6 +673,7 @@ void OverviewController::beginDirectNiriWindowDrag(std::size_t windowIndex, cons
         .sourceColumn = sourceColumnIndex,
         .sourceTile = sourceTileIndex,
         .sourceColumnWidth = sourceColumnWidth,
+        .sourceFloating = sourceFloating,
         .detached = false,
         .lastEdgeTick = std::chrono::steady_clock::now(),
     };
@@ -751,6 +753,15 @@ std::optional<OverviewController::NiriDragTarget> OverviewController::directNiri
         return std::nullopt;
 
     auto workspace = lane->workspace ? lane->workspace : g_pCompositor->getWorkspaceByID(lane->workspaceId);
+
+    if (m_niriDragSession.sourceFloating) {
+        return NiriDragTarget{
+            .workspace = workspace,
+            .monitor = lane->monitor,
+            .workspaceId = lane->workspaceId,
+            .floating = true,
+        };
+    }
 
     std::vector<overview_drag::Column> columns;
     if (auto *scrolling = scrollingForWorkspace(workspace); scrolling && scrolling->m_scrollingData) {
@@ -912,7 +923,8 @@ void OverviewController::tickDirectNiriWindowDragEdgeScroll() {
     damageOwnedMonitors();
 }
 
-bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, const NiriDragTarget &target, const PreviewRectSnapshot &previousPreviewRects) {
+bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, const NiriDragTarget &target, const PreviewRectSnapshot &previousPreviewRects,
+                                                   const Rect &releasePreviewRect) {
     if (!window || !target.monitor || target.workspaceId == WORKSPACE_INVALID)
         return false;
 
@@ -927,8 +939,18 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     auto *scrollingBeforeMove = scrollingForWorkspace(workspace);
     const bool targetHadTiledContentBeforeMove = tiledWorkspaceHasWindowOtherThan(workspace, window) || scrollingDataHasUsableColumnOtherThan(scrollingBeforeMove, window);
     const bool crossWorkspaceDrop = sourceWorkspace && sourceWorkspace != workspace;
-    const bool dropIntoEmptyWorkspace = !target.floating && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
     const bool windowWasFloatingBeforeDrop = window->m_isFloating || (window->layoutTarget() && window->layoutTarget()->floating());
+    const bool tiledDrop = !m_niriDragSession.sourceFloating && !windowWasFloatingBeforeDrop && !target.floating;
+    const bool dropIntoEmptyWorkspace = tiledDrop && crossWorkspaceDrop && (createdWorkspaceForDrop || !targetHadTiledContentBeforeMove);
+    PreviewRectSnapshot relayoutOrigins = previousPreviewRects;
+    if ((crossWorkspaceDrop || tiledDrop) && usableRect(releasePreviewRect)) {
+        const auto releaseOrigin = std::find_if(relayoutOrigins.begin(), relayoutOrigins.end(),
+                                                [&](const auto &entry) { return entry.first == window; });
+        if (releaseOrigin != relayoutOrigins.end())
+            releaseOrigin->second = releasePreviewRect;
+        else
+            relayoutOrigins.emplace_back(window, releasePreviewRect);
+    }
 
     const auto preservedOwnerWorkspace = m_state.ownerWorkspace;
     const auto preservedOwnerMonitor = m_state.ownerMonitor;
@@ -1170,7 +1192,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     const auto refreshAfterMouseEdit = [&](const char *reason) {
         armMouseEditSnapshotRefresh();
         const auto focus = restoreFocusForMouseEdit();
-        refreshVisibleStateMetadata(focus, previousPreviewRects.empty() ? nullptr : &previousPreviewRects, reason);
+        refreshVisibleStateMetadata(focus, relayoutOrigins.empty() ? nullptr : &relayoutOrigins, reason);
         armMouseEditSnapshotRefresh();
         // Do not briefly activate the drop workspace after a mouse edit.  The
         // old activation pulse was only a workaround for blank inactive-strip
@@ -1194,7 +1216,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
     SP<Layout::Tiled::SColumnData> crossWorkspaceNewColumnLeftNeighbor;
     SP<Layout::Tiled::SColumnData> crossWorkspaceNewColumnRightNeighbor;
     std::size_t crossWorkspaceNewColumnTargetGap = 0;
-    if (!target.floating && crossWorkspaceDrop && scrollingBeforeMove && scrollingBeforeMove->m_scrollingData) {
+    if (tiledDrop && crossWorkspaceDrop && scrollingBeforeMove && scrollingBeforeMove->m_scrollingData) {
         auto &targetDataBeforeMove = scrollingBeforeMove->m_scrollingData;
         if (target.insertion.kind == overview_drag::InsertKind::InColumn) {
             crossWorkspaceInColumnTargetColumnIndex = std::min(target.insertion.column, targetDataBeforeMove->columns.size());
@@ -1211,7 +1233,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         }
     }
 
-    if (!target.floating && crossWorkspaceDrop && target.monitor && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
+    if (tiledDrop && crossWorkspaceDrop && target.monitor && m_state.collectionPolicy.onlyActiveWorkspace && usesDirectNiriScrollingOverview(m_state)) {
         if (m_workspaceTransition.active)
             commitActiveNiriWorkspaceTransitionForRetarget();
 
@@ -1245,29 +1267,20 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
     }
 
-    if (!target.floating && windowWasFloatingBeforeDrop && workspace && workspace->m_space) {
+    if (m_niriDragSession.sourceFloating && workspace->m_space) {
         const auto layoutTarget = window->layoutTarget();
-        if (layoutTarget && layoutTarget->floating()) {
+        if (layoutTarget && !layoutTarget->floating()) {
             const bool previousGuard = m_applyingWorkspaceTransitionCommit;
             m_applyingWorkspaceTransitionCommit = true;
             workspace->m_space->toggleTargetFloating(layoutTarget);
             m_applyingWorkspaceTransitionCommit = previousGuard;
             m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
-
-            if (debugLogsEnabled()) {
-                std::ostringstream out;
-                out << "[hymission] direct niri drag retiled floating window"
-                    << " window=" << debugWindowLabel(window)
-                    << " workspace=" << debugWorkspaceLabel(workspace)
-                    << " emptyWorkspace=" << (dropIntoEmptyWorkspace ? 1 : 0);
-                debugLog(out.str());
-            }
         }
     }
 
     bool appliedCrossWorkspaceInColumn = false;
     bool appliedCrossWorkspaceNewColumnPosition = false;
-    if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::InColumn) {
+    if (tiledDrop && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::InColumn) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (scrolling && scrolling->m_scrollingData && layoutTarget && !layoutTarget->floating()) {
@@ -1310,7 +1323,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         }
     }
 
-    if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::NewColumn) {
+    if (tiledDrop && crossWorkspaceDrop && !dropIntoEmptyWorkspace && target.insertion.kind == overview_drag::InsertKind::NewColumn) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (scrolling && scrolling->m_scrollingData && layoutTarget && !layoutTarget->floating()) {
@@ -1335,7 +1348,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         }
     }
 
-    if (!target.floating && !dropIntoEmptyWorkspace && !crossWorkspaceDrop) {
+    if (tiledDrop && !dropIntoEmptyWorkspace && !crossWorkspaceDrop) {
         auto *scrolling = scrollingForWorkspace(workspace);
         const auto layoutTarget = window->layoutTarget();
         if (!scrolling || !scrolling->m_scrollingData || !layoutTarget)
@@ -1522,7 +1535,7 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
         std::size_t tileIndex = std::min(target.insertion.tile, column->targetDatas.size());
         addLayoutTargetToColumn(column, layoutTarget, tileIndex, false);
         data->recalculate();
-    } else if (!target.floating && crossWorkspaceDrop && !dropIntoEmptyWorkspace) {
+    } else if (tiledDrop && crossWorkspaceDrop && !dropIntoEmptyWorkspace) {
         // Cross-workspace drops stay native-owned for workspace transfer.  If the
         // drop target was an existing column, the narrow post-move retile above
         // may have stacked the moved window into that column; otherwise Hyprland's
@@ -1557,6 +1570,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
     const auto window = session.window.lock();
     const auto target = session.target;
     const auto previousRects = captureCurrentPreviewRects();
+    const Rect releasePreviewRect = directNiriDraggedPreviewRect();
     const Vector2D releasePoint = g_pInputManager ? g_pInputManager->getMouseCoordsInternal() : Vector2D{};
 
     m_niriDragSession.active = false;
@@ -1568,7 +1582,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
         return true;
     }
 
-    const auto finishCommit = [this, session, window, target, previousRects, releasePoint] {
+    const auto finishCommit = [this, session, window, target, previousRects, releasePreviewRect, releasePoint] {
         const NiriDragSession previousSession = m_niriDragSession;
         m_niriDragSession = session;
         m_niriDragSession.active = false;
@@ -1578,7 +1592,7 @@ bool OverviewController::finishDirectNiriWindowDrag() {
             refreshWorkspaceLayoutSnapshot(sourceWorkspace);
             refreshVisibleStateMetadata(selectedWindow(), previousRects.empty() ? nullptr : &previousRects, "drag-drop-cancel");
         } else if (target) {
-            (void)applyDirectNiriDragTarget(window, *target, previousRects);
+            (void)applyDirectNiriDragTarget(window, *target, previousRects, releasePreviewRect);
         } else if (session.detached) {
             const auto sourceWorkspace = session.sourceWorkspace.lock();
             restoreDetachedDragSource(window, sourceWorkspace, session.sourceColumn, session.sourceTile, session.sourceColumnWidth);
@@ -1645,7 +1659,7 @@ void OverviewController::cancelDirectNiriWindowDrag() {
 }
 
 void OverviewController::renderNiriDragHint() const {
-    if (!m_niriDragSession.active || !m_niriDragSession.target || m_niriDragSession.target->floating)
+    if (!m_niriDragSession.active || m_niriDragSession.sourceFloating || !m_niriDragSession.target || m_niriDragSession.target->floating)
         return;
     const auto renderMonitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!renderMonitor || renderMonitor != m_niriDragSession.target->monitor)

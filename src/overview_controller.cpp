@@ -10246,8 +10246,11 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
         return std::clamp(managed->previewAlpha > 0.0F ? managed->previewAlpha : 1.0F, 0.0F, 1.0F);
 
     if (managed && m_workspaceTransition.active && m_state.collectionPolicy.onlyActiveWorkspace &&
-        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState)))
+        (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState))) {
+        if (m_workspaceTransition.previewAlphaOverrideWindow.lock() == window)
+            return std::clamp(m_workspaceTransition.previewAlphaOverride, 0.0F, 1.0F);
         return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+    }
 
     return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
 }
