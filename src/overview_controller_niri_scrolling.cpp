@@ -3981,9 +3981,16 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
     if (!std::isfinite(scaleX) || !std::isfinite(scaleY) || scaleX <= 0.0 || scaleY <= 0.0)
         return false;
 
+    std::size_t anchoredFloatingOverlays = 0;
     for (auto& managed : m_state.windows) {
         if (!managed.window || !managed.window->m_isMapped)
             continue;
+
+        if (managed.isNiriFloatingOverlay) {
+            managed.exitGlobal = managed.naturalGlobal;
+            ++anchoredFloatingOverlays;
+            continue;
+        }
 
         const Rect preview = currentPreviewRect(managed);
         managed.exitGlobal = makeRect(selectedExit.centerX() + (preview.centerX() - selectedPreview.centerX()) * scaleX - preview.width * scaleX * 0.5,
@@ -4003,7 +4010,8 @@ bool OverviewController::applyNiriScrollingCameraExitGeometry(const EmptyWorkspa
         out << "[hymission] niri scrolling camera exit placeholder=" << (placeholder.workspace ? debugWorkspaceLabel(placeholder.workspace) : std::to_string(placeholder.workspaceId))
             << " selectedPreview=" << rectToString(selectedPreview)
             << " selectedExit=" << rectToString(selectedExit)
-            << " scale=(" << scaleX << "," << scaleY << ")";
+            << " scale=(" << scaleX << "," << scaleY << ")"
+            << " anchoredFloatingOverlays=" << anchoredFloatingOverlays;
         debugLog(out.str());
     }
 
