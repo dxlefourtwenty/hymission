@@ -1676,6 +1676,19 @@ bool isFloatingOverviewWindow(const PHLWINDOW& window) {
     return target && target->floating();
 }
 
+Rect directNiriFloatingSnapshotGlobalRectForWindow(const PHLWINDOW& window, bool goalPosition) {
+    Rect rect = renderGlobalRectForWindow(window, goalPosition);
+    if (!window || !isFloatingOverviewWindow(window))
+        return rect;
+
+    const Vector2D liveSize = window->m_realSize->value();
+    if (liveSize.x > 1.0 && liveSize.y > 1.0) {
+        rect.width = liveSize.x;
+        rect.height = liveSize.y;
+    }
+    return rect;
+}
+
 Rect centeredSurfaceRectInLayoutBox(const CBox& layoutBox, const Rect& surfaceGlobal) {
     const double width = surfaceGlobal.width > 1.0 ? surfaceGlobal.width : layoutBox.width;
     const double height = surfaceGlobal.height > 1.0 ? surfaceGlobal.height : layoutBox.height;
@@ -4214,8 +4227,11 @@ void OverviewController::renderStage(eRenderStage stage) {
             const auto window = managed.window;
             const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window);
             const Rect stateGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry);
-            if (managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window) || (window && window->m_pinned))
-                return floatingOverviewSourceGlobalRectForWindow(window, renderGlobalRectForWindow(window, useGoalGeometry));
+            if (managed.isNiriFloatingOverlay || isFloatingOverviewWindow(window) || (window && window->m_pinned)) {
+                const Rect floatingRect = directNiriOverview ? directNiriFloatingSnapshotGlobalRectForWindow(window, useGoalGeometry) :
+                                                             renderGlobalRectForWindow(window, useGoalGeometry);
+                return floatingOverviewSourceGlobalRectForWindow(window, floatingRect);
+            }
             if (directNiriOverview) {
                 const Rect scrollingSource = scrollingOverviewSourceGlobalRectForWindow(window, stateGlobal);
                 PHLWINDOW layoutAnchorWindow;
