@@ -1030,6 +1030,19 @@ Rect renderGlobalRectForWindow(const PHLWINDOW& window, bool goal = false) {
     return rect;
 }
 
+Rect directNiriFloatingSnapshotGlobalRectForWindow(const PHLWINDOW& window, bool goalPosition) {
+    Rect rect = renderGlobalRectForWindow(window, goalPosition);
+    if (!window || !isFloatingOverviewWindow(window))
+        return rect;
+
+    const Vector2D liveSize = window->m_realSize->value();
+    if (liveSize.x > 1.0 && liveSize.y > 1.0) {
+        rect.width = liveSize.x;
+        rect.height = liveSize.y;
+    }
+    return rect;
+}
+
 Rect centeredSurfaceRectInLayoutBox(const CBox& layoutBox, const Rect& surfaceGlobal) {
     const double width = surfaceGlobal.width > 1.0 ? surfaceGlobal.width : layoutBox.width;
     const double height = surfaceGlobal.height > 1.0 ? surfaceGlobal.height : layoutBox.height;
@@ -9367,7 +9380,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
                     candidateAnchorGlobal = rowGeometry->anchorGlobal;
             } else {
-                candidateAnchorGlobal = floatingOverviewSourceGlobalRectForWindow(candidate, renderGlobalRectForWindow(candidate, candidateUseGoalGeometry));
+                candidateAnchorGlobal = floatingOverviewSourceGlobalRectForWindow(
+                    candidate, directNiriFloatingSnapshotGlobalRectForWindow(candidate, candidateUseGoalGeometry));
             }
 
             const double dx = candidateAnchorGlobal.centerX() - floatingSourceGlobal.centerX();
@@ -9710,7 +9724,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         std::optional<WindowSlot> directNiriSlot;
         bool directNiriFloatingOverlay = false;
 
-        Rect floatingRenderGlobal = renderGlobalRectForWindow(window, useGoalGeometry);
+        Rect floatingRenderGlobal = allowDirectNiriOverviewLayout && isFloatingOverviewWindow(window) ?
+            directNiriFloatingSnapshotGlobalRectForWindow(window, useGoalGeometry) : renderGlobalRectForWindow(window, useGoalGeometry);
         if (allowDirectNiriOverviewLayout && isFloatingOverviewWindow(window) && directNiriWorkspaceTransferRenderGuardActiveLocal(window) &&
             window->m_workspace && !window->m_pinned && window->m_workspace->m_renderOffset) {
             // Workspace-transfer render offsets are lane motion, not part of a
