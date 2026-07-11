@@ -9580,10 +9580,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
         }
 
-        if (isFloatingOverviewWindow(window) || window->m_pinned) {
-            // Floating and pinned windows can live outside the scrolling tape.
-            // Keep their overview cards inside the mapped 1.0 workspace viewport
-            // so they do not spill into neighboring Niri overview lanes.
+        if (window->m_pinned) {
+            // Pinned overlays are monitor-global and remain constrained to the
+            // selected viewport. Floating windows preserve their workspace-local
+            // geometry, including positions partially outside the viewport.
             targetLocal = clampRectInsidePreservingAspect(targetLocal, workspaceViewportLocal, scale);
             niriWorkspaceViewportGlobalByWindowIndex[windowIndex] = makeRect(targetMonitor->m_position.x + workspaceViewportLocal.x,
                                                                             targetMonitor->m_position.y + workspaceViewportLocal.y,
@@ -10003,7 +10003,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             std::vector<std::size_t> floatingIndexes;
             for (std::size_t index = 0; index < state.windows.size(); ++index) {
                 const auto& managed = state.windows[index];
-                if (managed.targetMonitor == candidateMonitor && managed.isNiriFloatingOverlay)
+                if (managed.targetMonitor == candidateMonitor && managed.isNiriFloatingOverlay && managed.isPinned)
                     floatingIndexes.push_back(index);
             }
 
