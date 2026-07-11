@@ -15415,8 +15415,9 @@ bool OverviewController::borderUsesTransformedGeometry(const State& state) const
 Rect OverviewController::managedWindowBorderRect(const ManagedWindow& managed, const PHLMONITOR& renderMonitor, const State& state, bool useTargetGeometry,
                                                  bool forceTransformedGeometry) const {
     Rect rect = useTargetGeometry ? managed.targetGlobal : currentPreviewRect(managed);
+    const bool directNiriDraggedWindow = m_niriDragSession.active && m_niriDragSession.window.lock() == managed.window;
 
-    if (forceTransformedGeometry || borderUsesTransformedGeometry(state)) {
+    if (forceTransformedGeometry || directNiriDraggedWindow || borderUsesTransformedGeometry(state)) {
         if (const auto transform = windowTransformFor(managed.window, renderMonitor))
             rect = transform->targetGlobal;
     }

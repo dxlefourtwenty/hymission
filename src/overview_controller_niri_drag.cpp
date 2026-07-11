@@ -1309,8 +1309,12 @@ bool OverviewController::applyDirectNiriDragTarget(const PHLWINDOW &window, cons
             m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
         }
 
-        if (const auto dropBox = floatingDropBox(window, workspace, target.viewportGlobal, releasePreviewRect, m_niriDragSession.pointerRatio))
-            window->layoutTarget()->setPositionGlobal(*dropBox);
+        if (const auto dropBox = floatingDropBox(window, workspace, target.viewportGlobal, releasePreviewRect, m_niriDragSession.pointerRatio)) {
+            const auto floatingTarget = window->layoutTarget();
+            g_layoutManager->setTargetGeom(*dropBox, floatingTarget);
+            floatingTarget->warpPositionSize();
+            floatingTarget->damageEntire();
+        }
     }
 
     bool appliedCrossWorkspaceInColumn = false;
