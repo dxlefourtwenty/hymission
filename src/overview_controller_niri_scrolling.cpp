@@ -9412,7 +9412,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     const auto niriOverviewSlotForSource = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal, const Rect& baseGlobal,
                                                std::size_t windowIndex, bool allowPinned,
                                                std::optional<GestureAxis> overflowAxis,
-                                               std::optional<Rect> anchorOverride) -> std::optional<WindowSlot> {
+                                               std::optional<Rect> anchorOverride,
+                                               bool applyScrollingPreviewGaps) -> std::optional<WindowSlot> {
         if (!allowDirectNiriOverviewLayout)
             return std::nullopt;
 
@@ -9554,7 +9555,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             });
         }
         const double stripPreviewGapBoost = g_niriStripSnapshotSingleWorkspaceOnly ? 2.0 : 0.0;
-        if (overflowAxis) {
+        if (overflowAxis && applyScrollingPreviewGaps) {
             const double previewGap = niriWindowGapsForWorkspace(layoutWorkspace, *overflowAxis) + stripPreviewGapBoost;
             if (*overflowAxis == GestureAxis::Horizontal) {
                 const double width = std::max(1.0, targetLocal.width - previewGap);
@@ -9635,6 +9636,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         }
 
         std::optional<Rect> anchorOverride;
+        std::optional<GestureAxis> workspaceOverflowAxis;
         if (window && window->m_pinned) {
             if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0 && sourceGlobal.width > 1.0 && sourceGlobal.height > 1.0) {
                 // Pinned windows are monitor-global overlays, not scrolling-tape
@@ -9649,8 +9651,11 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             }
         } else if (const auto anchor = closestScrollingAnchorForFloatingWindow(window, layoutWorkspace, sourceGlobal)) {
             anchorOverride = *anchor;
+            workspaceOverflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
             // Keep sourceGlobal unchanged so the floating card keeps its own
-            // position inside the anchored workspace viewport.
+            // position inside the anchored workspace viewport. Use the tiled
+            // viewport's fit scale without applying tiled-window gap trimming
+            // to the floating overlay itself.
         } else if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0 && sourceGlobal.width > 1.0 && sourceGlobal.height > 1.0) {
             // Floating-only scrolling workspaces still need a stable workspace
             // viewport.  Center the viewport on the workspace itself; the
@@ -9662,7 +9667,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                                       sourceGlobal.height);
         }
 
-        return niriOverviewSlotForSource(window, targetMonitor, resolvedSourceGlobal, baseGlobal, windowIndex, true, std::nullopt, anchorOverride);
+        return niriOverviewSlotForSource(window, targetMonitor, resolvedSourceGlobal, baseGlobal, windowIndex, true, workspaceOverflowAxis, anchorOverride, false);
     };
     const auto niriScrollingOverviewSlotForWindow = [&](const PHLWINDOW& window, const PHLMONITOR& targetMonitor, const Rect& sourceGlobal,
                                                         std::size_t windowIndex, Rect& resolvedSourceGlobal) -> std::optional<WindowSlot> {
@@ -9691,7 +9696,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
         }
 
-        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorOverride);
+        auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorOverride, true);
         if (slot)
             resolvedSourceGlobal = sourceForOverview;
         return slot;
