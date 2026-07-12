@@ -5647,11 +5647,12 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
         return m_shouldRenderWindowOriginal(g_pHyprRenderer.get(), window, monitor);
     }
 
-    if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
+    if (const auto* managed = renderableManagedWindowFor(window, monitor); isVisible() && window && monitor && ownsMonitor(monitor) && managed) {
         const bool directNiriSingleWorkspace = (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
             m_state.collectionPolicy.onlyActiveWorkspace;
+        const bool directNiriPreviewWindow = !isFloatingOverviewWindow(window) || managed->isNiriFloatingOverlay;
         const bool inactiveScrollingPreview = directNiriSingleWorkspace && window->m_workspace && isScrollingWorkspace(window->m_workspace) &&
-            !directNiriWorkspaceReadyForNativeRender(window->m_workspace) && !window->m_pinned && !isFloatingOverviewWindow(window);
+            !directNiriWorkspaceReadyForNativeRender(window->m_workspace) && !window->m_pinned && directNiriPreviewWindow;
         if (inactiveScrollingPreview) {
             const bool transferGuard = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
             static std::size_t s_inactiveNativePassLogBudget = 160;
