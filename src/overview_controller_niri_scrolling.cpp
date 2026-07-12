@@ -8721,7 +8721,7 @@ void OverviewController::buildWorkspaceStripEntries(State& state) const {
 
         const bool useGoalGeometry = shouldUseGoalGeometryForStateSnapshot(window);
         const auto naturalGlobal = stateSnapshotGlobalRectForWindow(window, useGoalGeometry);
-        const auto previewAlpha = std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+        const auto previewAlpha = hyprlandPreviewAlphaFor(window);
         const auto targetMonitor = preferredMonitorForWindow(window, state);
 
         for (auto& entry : state.stripEntries) {
@@ -9758,7 +9758,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             .title = window->m_title,
             .naturalGlobal = directNiriSlot ? directNiriSourceGlobal : naturalGlobal,
             .exitGlobal = directNiriSlot ? directNiriSourceGlobal : naturalGlobal,
-            .previewAlpha = std::clamp(window->alphaTotal(), 0.0F, 1.0F),
+            .previewAlpha = hyprlandPreviewAlphaFor(window),
             .isFloating = window->m_isFloating,
             .isPinned = window->m_pinned,
             .isNiriFloatingOverlay = directNiriFloatingOverlay,

@@ -5647,11 +5647,12 @@ bool OverviewController::shouldRenderWindowHook(const PHLWINDOW& window, const P
         return m_shouldRenderWindowOriginal(g_pHyprRenderer.get(), window, monitor);
     }
 
-    if (isVisible() && window && monitor && ownsMonitor(monitor) && renderableManagedWindowFor(window, monitor)) {
+    if (const auto* managed = renderableManagedWindowFor(window, monitor); isVisible() && window && monitor && ownsMonitor(monitor) && managed) {
         const bool directNiriSingleWorkspace = (usesDirectNiriScrollingOverview(m_state) || niriModeAppliesToState(m_state)) &&
             m_state.collectionPolicy.onlyActiveWorkspace;
+        const bool directNiriPreviewWindow = !isFloatingOverviewWindow(window) || managed->isNiriFloatingOverlay;
         const bool inactiveScrollingPreview = directNiriSingleWorkspace && window->m_workspace && isScrollingWorkspace(window->m_workspace) &&
-            !directNiriWorkspaceReadyForNativeRender(window->m_workspace) && !window->m_pinned && !isFloatingOverviewWindow(window);
+            !directNiriWorkspaceReadyForNativeRender(window->m_workspace) && !window->m_pinned && directNiriPreviewWindow;
         if (inactiveScrollingPreview) {
             const bool transferGuard = niri_scrolling_detail::directNiriWorkspaceTransferRenderGuardActive(window);
             static std::size_t s_inactiveNativePassLogBudget = 160;
@@ -6276,6 +6277,24 @@ std::vector<UP<IPassElement>> OverviewController::surfaceDrawHook(void* surfaceP
     SurfaceRenderDataSnapshot        snapshot;
     if (!prepareSurfaceRenderData(surfacePassThisptr, "draw", renderData, monitor, snapshot)) {
         return m_surfaceDrawOriginal(surfacePassThisptr);
+    }
+
+    if (debugLogsEnabled() && m_surfaceRenderAlphaOverride) {
+        static std::size_t s_directNiriSurfaceDrawLogBudget = 120;
+        if (s_directNiriSurfaceDrawLogBudget > 0) {
+            const auto surface = Desktop::View::CWLSurface::fromResource(renderData->surface);
+            std::ostringstream out;
+            out << "[hymission] direct niri surface draw"
+                << " window=" << debugWindowLabel(renderData->pWindow)
+                << " workspace=" << debugWorkspaceLabel(renderData->pWindow->m_workspace)
+                << " sourceAlpha=" << snapshot.alpha
+                << " drawAlpha=" << renderData->alpha
+                << " fadeAlpha=" << renderData->fadeAlpha
+                << " overrideAlpha=" << *m_surfaceRenderAlphaOverride
+                << " overallOpacity=" << (surface ? surface->m_overallOpacity : 1.0F);
+            debugLog(out.str());
+            --s_directNiriSurfaceDrawLogBudget;
+        }
     }
 
     ++m_surfaceRenderDataTransformDepth;
@@ -10256,6 +10275,41 @@ PHLWINDOW OverviewController::selectedWindow() const {
     return m_state.windows[*m_state.selectedIndex].window;
 }
 
+float OverviewController::hyprlandPreviewAlphaFor(const PHLWINDOW& window) const {
+    if (!window)
+        return 1.0F;
+
+    const bool directNiriPreview = niriModeEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace) && !window->m_pinned &&
+        m_state.collectionPolicy.onlyActiveWorkspace;
+    if (!directNiriPreview)
+        return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+
+    const float alphaWithoutActiveOpacity = window->alphaTotalWithout(Desktop::View::WINDOW_ALPHA_ACTIVE);
+    if (window->m_ruleApplicator->opaque().valueOrDefault())
+        return std::clamp(alphaWithoutActiveOpacity, 0.0F, 1.0F);
+
+    static auto PACTIVEOPACITY = CConfigValue<Config::FLOAT>("decoration:active_opacity");
+    static auto PINACTIVEOPACITY = CConfigValue<Config::FLOAT>("decoration:inactive_opacity");
+    static auto PFULLSCREENOPACITY = CConfigValue<Config::FLOAT>("decoration:fullscreen_opacity");
+
+    float intendedOpacity = 1.0F;
+    if (window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN)) {
+        intendedOpacity = window->m_ruleApplicator->alphaFullscreen().valueOrDefault().applyAlpha(*PFULLSCREENOPACITY);
+    } else {
+        const bool directNiriTransition = m_workspaceTransition.active &&
+            (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+        const State& focusState = directNiriTransition ? m_workspaceTransition.targetState : m_state;
+        const auto* managed = managedWindowFor(focusState, window, true);
+        const auto renderMonitor = managed && managed->targetMonitor ? managed->targetMonitor : focusMonitorForWindow(window);
+        const auto* focusedManaged = focusedManagedForBorder(focusState, renderMonitor);
+        const bool focused = focusedManaged && focusedManaged->window == window;
+        intendedOpacity = focused ? window->m_ruleApplicator->alpha().valueOrDefault().applyAlpha(*PACTIVEOPACITY) :
+                                    window->m_ruleApplicator->alphaInactive().valueOrDefault().applyAlpha(*PINACTIVEOPACITY);
+    }
+
+    return std::clamp(alphaWithoutActiveOpacity * intendedOpacity, 0.0F, 1.0F);
+}
+
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
     const auto* managed = managedWindowFor(window);
     if (m_stripPreviewContext.active && managed)
@@ -10265,8 +10319,11 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState))) {
         if (m_workspaceTransition.previewAlphaOverrideWindow.lock() == window)
             return std::clamp(m_workspaceTransition.previewAlphaOverride, 0.0F, 1.0F);
-        return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+        return directNiriDraggedPreviewAlpha(window, hyprlandPreviewAlphaFor(window));
     }
+
+    if (managed && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state))
+        return directNiriDraggedPreviewAlpha(window, hyprlandPreviewAlphaFor(window));
 
     return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
 }
@@ -10293,7 +10350,7 @@ std::size_t OverviewController::renderDirectNiriSurfaceTreeOverlay(const Managed
     renderData.h = std::max(actual.height, 5.0);
     renderData.surface = root;
     renderData.dontRound = window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN);
-    renderData.alpha = 1.0F;
+    renderData.alpha = std::clamp(alpha, 0.0F, 1.0F);
     renderData.fadeAlpha = 1.0F;
     renderData.decorate = false;
     renderData.rounding = renderData.dontRound ? 0 : window->rounding() * monitor->m_scale;

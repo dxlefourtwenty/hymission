@@ -660,6 +660,7 @@ class OverviewController {
     [[nodiscard]] const ManagedWindow* managedWindowFor(const PHLWINDOW& window) const;
     [[nodiscard]] const ManagedWindow* renderableManagedWindowFor(const PHLWINDOW& window, const PHLMONITOR& monitor) const;
     [[nodiscard]] PHLWINDOW     selectedWindow() const;
+    [[nodiscard]] float        hyprlandPreviewAlphaFor(const PHLWINDOW& window) const;
     [[nodiscard]] float        managedPreviewAlphaFor(const PHLWINDOW& window, float fallback = 1.0F) const;
     [[nodiscard]] PHLMONITOR   focusMonitorForWindow(const PHLWINDOW& window) const;
     [[nodiscard]] bool         shouldSuppressNiriFocusScrollForMonitorReturn(const PHLWINDOW& window, const PHLMONITOR& previousFocusMonitor) const;
