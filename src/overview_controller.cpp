@@ -10279,18 +10279,35 @@ float OverviewController::hyprlandPreviewAlphaFor(const PHLWINDOW& window) const
     if (!window)
         return 1.0F;
 
-    const bool inactiveDirectNiriPreview = niriModeEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace) && !window->m_pinned &&
-        !directNiriWorkspaceReadyForNativeRender(window->m_workspace);
-    if (!inactiveDirectNiriPreview || window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN))
+    const bool directNiriPreview = niriModeEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace) && !window->m_pinned &&
+        m_state.collectionPolicy.onlyActiveWorkspace;
+    if (!directNiriPreview)
         return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
 
     const float alphaWithoutActiveOpacity = window->alphaTotalWithout(Desktop::View::WINDOW_ALPHA_ACTIVE);
     if (window->m_ruleApplicator->opaque().valueOrDefault())
         return std::clamp(alphaWithoutActiveOpacity, 0.0F, 1.0F);
 
+    static auto PACTIVEOPACITY = CConfigValue<Config::FLOAT>("decoration:active_opacity");
     static auto PINACTIVEOPACITY = CConfigValue<Config::FLOAT>("decoration:inactive_opacity");
-    const float inactiveOpacity = window->m_ruleApplicator->alphaInactive().valueOrDefault().applyAlpha(*PINACTIVEOPACITY);
-    return std::clamp(alphaWithoutActiveOpacity * inactiveOpacity, 0.0F, 1.0F);
+    static auto PFULLSCREENOPACITY = CConfigValue<Config::FLOAT>("decoration:fullscreen_opacity");
+
+    float intendedOpacity = 1.0F;
+    if (window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN)) {
+        intendedOpacity = window->m_ruleApplicator->alphaFullscreen().valueOrDefault().applyAlpha(*PFULLSCREENOPACITY);
+    } else {
+        const bool directNiriTransition = m_workspaceTransition.active &&
+            (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState));
+        const State& focusState = directNiriTransition ? m_workspaceTransition.targetState : m_state;
+        const auto* managed = managedWindowFor(focusState, window, true);
+        const auto renderMonitor = managed && managed->targetMonitor ? managed->targetMonitor : focusMonitorForWindow(window);
+        const auto* focusedManaged = focusedManagedForBorder(focusState, renderMonitor);
+        const bool focused = focusedManaged && focusedManaged->window == window;
+        intendedOpacity = focused ? window->m_ruleApplicator->alpha().valueOrDefault().applyAlpha(*PACTIVEOPACITY) :
+                                    window->m_ruleApplicator->alphaInactive().valueOrDefault().applyAlpha(*PINACTIVEOPACITY);
+    }
+
+    return std::clamp(alphaWithoutActiveOpacity * intendedOpacity, 0.0F, 1.0F);
 }
 
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
@@ -10302,8 +10319,11 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState))) {
         if (m_workspaceTransition.previewAlphaOverrideWindow.lock() == window)
             return std::clamp(m_workspaceTransition.previewAlphaOverride, 0.0F, 1.0F);
-        return hyprlandPreviewAlphaFor(window);
+        return directNiriDraggedPreviewAlpha(window, hyprlandPreviewAlphaFor(window));
     }
+
+    if (managed && m_state.collectionPolicy.onlyActiveWorkspace && niriModeAppliesToState(m_state))
+        return directNiriDraggedPreviewAlpha(window, hyprlandPreviewAlphaFor(window));
 
     return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
 }
