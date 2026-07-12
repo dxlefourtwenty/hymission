@@ -10257,6 +10257,24 @@ PHLWINDOW OverviewController::selectedWindow() const {
     return m_state.windows[*m_state.selectedIndex].window;
 }
 
+float OverviewController::hyprlandPreviewAlphaFor(const PHLWINDOW& window) const {
+    if (!window)
+        return 1.0F;
+
+    const bool inactiveDirectNiriPreview = niriModeEnabled() && window->m_workspace && isScrollingWorkspace(window->m_workspace) && !window->m_pinned &&
+        !directNiriWorkspaceReadyForNativeRender(window->m_workspace);
+    if (!inactiveDirectNiriPreview || window->isEffectiveInternalFSMode(FSMODE_FULLSCREEN))
+        return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+
+    const float alphaWithoutActiveOpacity = window->alphaTotalWithout(Desktop::View::WINDOW_ALPHA_ACTIVE);
+    if (window->m_ruleApplicator->opaque().valueOrDefault())
+        return std::clamp(alphaWithoutActiveOpacity, 0.0F, 1.0F);
+
+    static auto PINACTIVEOPACITY = CConfigValue<Config::FLOAT>("decoration:inactive_opacity");
+    const float inactiveOpacity = window->m_ruleApplicator->alphaInactive().valueOrDefault().applyAlpha(*PINACTIVEOPACITY);
+    return std::clamp(alphaWithoutActiveOpacity * inactiveOpacity, 0.0F, 1.0F);
+}
+
 float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float fallback) const {
     const auto* managed = managedWindowFor(window);
     if (m_stripPreviewContext.active && managed)
@@ -10266,7 +10284,7 @@ float OverviewController::managedPreviewAlphaFor(const PHLWINDOW& window, float 
         (niriModeAppliesToState(m_workspaceTransition.sourceState) || niriModeAppliesToState(m_workspaceTransition.targetState))) {
         if (m_workspaceTransition.previewAlphaOverrideWindow.lock() == window)
             return std::clamp(m_workspaceTransition.previewAlphaOverride, 0.0F, 1.0F);
-        return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
+        return hyprlandPreviewAlphaFor(window);
     }
 
     return directNiriDraggedPreviewAlpha(window, managed ? managed->previewAlpha : fallback);
