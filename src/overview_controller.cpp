@@ -15331,9 +15331,23 @@ void OverviewController::renderSelectionChrome() const {
         std::size_t skipped = 0;
         static std::size_t s_directNiriSurfaceOverlayLogBudget = 320;
 
-        for (const auto& managed : m_state.windows) {
-            const auto window = managed.window;
-            if (!window || managed.targetMonitor != renderMonitor || !windowMatchesOverviewScope(window, m_state, false)) {
+        for (const auto& currentManaged : m_state.windows) {
+            const auto window = currentManaged.window;
+            const State* fallbackState = &m_state;
+            const ManagedWindow* fallbackManaged = &currentManaged;
+            if (m_workspaceTransition.active && window && m_workspaceTransition.previewAlphaOverrideWindow.lock() == window &&
+                !windowMatchesOverviewScope(window, m_state, false)) {
+                // A first-visit movetoworkspace destination is created after the
+                // source snapshot. Its moved window must use the target scope.
+                const auto* targetManaged = managedWindowFor(m_workspaceTransition.targetState, window, true);
+                if (targetManaged && windowMatchesOverviewScope(window, m_workspaceTransition.targetState, false)) {
+                    fallbackState = &m_workspaceTransition.targetState;
+                    fallbackManaged = targetManaged;
+                }
+            }
+
+            const auto& managed = *fallbackManaged;
+            if (!window || managed.targetMonitor != renderMonitor || !windowMatchesOverviewScope(window, *fallbackState, false)) {
                 ++skipped;
                 continue;
             }
