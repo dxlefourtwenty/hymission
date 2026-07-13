@@ -3693,6 +3693,15 @@ void OverviewController::clearPostCloseCursorShapeResetTimer() {
 void OverviewController::scheduleDeferredOpen(ScopeOverride requestedScope) {
     m_pendingDeferredOpenScope = requestedScope;
 
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] schedule deferred open"
+            << " scope=" << static_cast<int>(requestedScope)
+            << " heldButtons=" << (g_pInputManager && g_pInputManager->hasHeldButtons() ? 1 : 0)
+            << " dndActive=" << (directNiriDndProtocolActive() ? 1 : 0);
+        debugLog(out.str());
+    }
+
     if (!g_pEventLoopManager)
         return;
 
@@ -3705,7 +3714,9 @@ void OverviewController::scheduleDeferredOpen(ScopeOverride requestedScope) {
                     return;
                 }
 
-                if (g_pInputManager && g_pInputManager->hasHeldButtons()) {
+                const bool heldButtons = g_pInputManager && g_pInputManager->hasHeldButtons();
+                const bool dndActive = directNiriDndProtocolActive();
+                if (heldButtons && !dndActive) {
                     self->updateTimeout(DEFERRED_OPEN_POLL_INTERVAL);
                     return;
                 }
@@ -3717,6 +3728,16 @@ void OverviewController::scheduleDeferredOpen(ScopeOverride requestedScope) {
                 const auto monitor = g_pCompositor->getMonitorFromCursor();
                 if (!monitor)
                     return;
+
+                if (debugLogsEnabled()) {
+                    std::ostringstream out;
+                    out << "[hymission] dispatch deferred open"
+                        << " scope=" << static_cast<int>(requestedScope)
+                        << " heldButtons=" << (heldButtons ? 1 : 0)
+                        << " dndActive=" << (dndActive ? 1 : 0)
+                        << " monitor=" << monitor->m_name;
+                    debugLog(out.str());
+                }
 
                 const ScopedFlag dispatching(m_deferredOpenTimerDispatching);
                 beginOpen(monitor, requestedScope);
