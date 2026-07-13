@@ -30,8 +30,11 @@ src = [
   'src/main.cpp',
   'src/mission_layout.cpp',
   'src/overview_logic.cpp',
+  'src/overview_drag_logic.cpp',
   'src/overview_controller.cpp',
   'src/overview_controller_niri_scrolling.cpp',
+  'src/overview_controller_niri_drag.cpp',
+  'src/overview_controller_niri_dnd.cpp',
 ]
 
 shared_module(meson.project_name(), src,
@@ -63,3 +66,11 @@ overview_logic_test = executable('hymission-overview-logic-test',
 )
 
 test('hymission-overview-logic-test', overview_logic_test)
+
+overview_drag_logic_test = executable('hymission-overview-drag-logic-test',
+  ['tools/overview_drag_logic_test.cpp', 'src/overview_drag_logic.cpp'],
+  include_directories: include_directories('src'),
+  install: false,
+)
+
+test('hymission-overview-drag-logic-test', overview_drag_logic_test)
