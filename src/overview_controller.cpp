@@ -4823,8 +4823,10 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
         }
     }
 
-    if (handleDirectNiriDndButton(event))
-        return true;
+    const bool directNiriDndButton = m_niriDndSession.active ||
+        (directNiriDndProtocolActive() && (m_niriDndExitInProgress || directNiriDndApplies()));
+    if (directNiriDndButton)
+        return handleDirectNiriDndButton(event);
 
     if (!shouldHandleInput())
         return false;

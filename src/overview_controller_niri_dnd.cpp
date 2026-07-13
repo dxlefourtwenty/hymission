@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <typeinfo>
 
 #include <hyprland/src/Compositor.hpp>
@@ -49,6 +50,13 @@ bool contains(const Rect& rect, const Vector2D& point) {
 
 double area(const Rect& rect) { return std::max(0.0, rect.width) * std::max(0.0, rect.height); }
 
+SP<CWLSurfaceResource> dndSurfaceForWindow(const PHLWINDOW& window) {
+    if (!window || !window->m_isMapped || window->m_fadingOut || !window->wlSurface() || !window->wlSurface()->exists())
+        return {};
+
+    return window->wlSurface()->resource();
+}
+
 Layout::Tiled::CScrollingAlgorithm* scrollingForWorkspace(const PHLWORKSPACE& workspace) {
     if (!workspace || !workspace->m_space)
         return nullptr;
@@ -72,6 +80,34 @@ void OverviewController::suppressDirectNiriDndSurfaceFocus() const {
 
     g_pSeatManager->m_state.dndPointerFocus.reset();
     g_pSeatManager->m_events.dndPointerFocusChange.emit();
+}
+
+bool OverviewController::updateDirectNiriDndSurfaceFocus(const std::optional<NiriDndTarget>& target) const {
+    if (!g_pSeatManager)
+        return false;
+
+    const auto window = target ? target->window : PHLWINDOW{};
+    const auto surface = dndSurfaceForWindow(window);
+    const auto previousSurface = g_pSeatManager->m_state.dndPointerFocus.lock();
+    if (!surface) {
+        suppressDirectNiriDndSurfaceFocus();
+        if (previousSurface && debugLogsEnabled())
+            debugLog("[hymission] direct niri dnd target cleared");
+        return false;
+    }
+
+    if (previousSurface == surface)
+        return true;
+
+    g_pSeatManager->setPointerFocus(surface, surface->m_current.size / 2.0);
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri dnd target"
+            << " window=" << debugWindowLabel(window)
+            << " workspace=" << debugWorkspaceLabel(window->m_workspace);
+        debugLog(out.str());
+    }
+    return true;
 }
 
 bool OverviewController::handleDirectNiriDndMotion(const Vector2D& pointer) {
@@ -98,7 +134,6 @@ bool OverviewController::handleDirectNiriDndMotion(const Vector2D& pointer) {
         m_niriDndSession.lastEdgeTick = std::chrono::steady_clock::now();
     }
 
-    suppressDirectNiriDndSurfaceFocus();
     updateHoveredFromPointer(false, false, false, false, "dnd-motion");
     updateDirectNiriDnd(pointer);
     return true;
@@ -108,7 +143,7 @@ bool OverviewController::handleDirectNiriDndButton(const IPointer::SButtonEvent&
     if (m_niriDndExitInProgress && directNiriDndProtocolActive()) {
         if (event.state == WL_POINTER_BUTTON_STATE_RELEASED)
             PROTO::data->abortDndIfPresent();
-        return true;
+        return event.state != WL_POINTER_BUTTON_STATE_RELEASED;
     }
 
     if (!m_niriDndSession.active && !(directNiriDndProtocolActive() && directNiriDndApplies()))
@@ -117,11 +152,21 @@ bool OverviewController::handleDirectNiriDndButton(const IPointer::SButtonEvent&
     if (event.state != WL_POINTER_BUTTON_STATE_RELEASED)
         return true;
 
-    if (directNiriDndProtocolActive())
-        PROTO::data->abortDndIfPresent();
+    const auto target = m_state.phase == Phase::Active && !m_workspaceTransition.active ?
+        directNiriDndTargetAt(g_pInputManager->getMouseCoordsInternal()) : std::nullopt;
+    const bool validSurface = updateDirectNiriDndSurfaceFocus(target);
+
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] direct niri dnd release"
+            << " targetWindow=" << (target && target->window ? debugWindowLabel(target->window) : "<none>")
+            << " surface=" << (validSurface ? "valid" : "invalid")
+            << " protocolActive=" << (directNiriDndProtocolActive() ? 1 : 0);
+        debugLog(out.str());
+    }
 
     clearDirectNiriDndState();
-    return true;
+    return false;
 }
 
 void OverviewController::updateDirectNiriDnd(const Vector2D& pointer) {
@@ -130,6 +175,7 @@ void OverviewController::updateDirectNiriDnd(const Vector2D& pointer) {
 
     if (m_state.phase != Phase::Active || m_workspaceTransition.active) {
         const auto now = std::chrono::steady_clock::now();
+        suppressDirectNiriDndSurfaceFocus();
         clearDirectNiriDndHold();
         clearDirectNiriDndViewEdge(now);
         clearDirectNiriDndWorkspaceEdge(now);
@@ -140,6 +186,7 @@ void OverviewController::updateDirectNiriDnd(const Vector2D& pointer) {
     const auto now = std::chrono::steady_clock::now();
     const auto workspaceEdge = directNiriDndWorkspaceEdgeAt(pointer);
     const auto target = directNiriDndTargetAt(pointer);
+    (void)updateDirectNiriDndSurfaceFocus(target);
     const double edgeVelocity = target ? directNiriDndEdgeVelocity(*target, pointer) : 0.0;
     if (workspaceEdge)
         updateDirectNiriDndWorkspaceEdge(workspaceEdge->first, workspaceEdge->second, now);
@@ -318,7 +365,6 @@ void OverviewController::tickDirectNiriDnd() {
         return;
     }
 
-    suppressDirectNiriDndSurfaceFocus();
     const auto now = std::chrono::steady_clock::now();
     const auto workspaceEdgeMonitor = m_niriDndSession.workspaceEdgeMonitor;
     const auto edgeWorkspace = m_niriDndSession.edgeWorkspace.lock();

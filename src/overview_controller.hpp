@@ -979,6 +979,7 @@ class OverviewController {
     void               clearDirectNiriDndState();
     void               clearDirectNiriDndTimer();
     void               suppressDirectNiriDndSurfaceFocus() const;
+    [[nodiscard]] bool updateDirectNiriDndSurfaceFocus(const std::optional<NiriDndTarget>& target) const;
     [[nodiscard]] std::optional<NiriDragTarget> directNiriDragTargetAt(const Vector2D& pointer) const;
     [[nodiscard]] bool applyDirectNiriDragTarget(const PHLWINDOW& window, const NiriDragTarget& target,
                                                   const PreviewRectSnapshot& previousPreviewRects, const Rect& releasePreviewRect);
