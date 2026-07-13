@@ -10316,7 +10316,12 @@ float OverviewController::hyprlandPreviewAlphaFor(const PHLWINDOW& window) const
     if (!directNiriPreview)
         return std::clamp(window->alphaTotal(), 0.0F, 1.0F);
 
-    const float alphaWithoutActiveOpacity = window->alphaTotalWithout(Desktop::View::WINDOW_ALPHA_ACTIVE);
+    // Hyprland fades a window toward zero after moving it off the visible
+    // workspace. The direct-Niri overview still owns that window's preview, so
+    // applying the desktop transfer fade here leaves only Hymission's border.
+    const float alphaWithoutActiveOpacity = window->alphaValue(Desktop::View::WINDOW_ALPHA_FADE) *
+        window->alphaValue(Desktop::View::WINDOW_ALPHA_FULLSCREEN) * window->alphaValue(Desktop::View::WINDOW_ALPHA_LAYOUT) *
+        window->alphaValue(Desktop::View::WINDOW_ALPHA_MOVE_FROM_WORKSPACE);
     if (window->m_ruleApplicator->opaque().valueOrDefault())
         return std::clamp(alphaWithoutActiveOpacity, 0.0F, 1.0F);
 
