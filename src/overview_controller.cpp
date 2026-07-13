@@ -3266,6 +3266,7 @@ OverviewController::~OverviewController() {
     clearThemeWorkspaceActivationRefresh();
     clearWorkspaceStripSnapshotRefreshTimer();
     clearNiriWallpaperLayoutLayerRefresh();
+    clearDirectNiriDndTimer();
     clearRegisteredTrackpadGestures();
     clearPostCloseForcedFocus();
     clearPostCloseDispatcher();
@@ -3399,8 +3400,9 @@ bool OverviewController::initialize() {
     auto& events = Event::bus()->m_events;
 
     m_renderStageListener = events.render.stage.listen([this](eRenderStage stage) { renderStage(stage); });
-    m_mouseMoveListener = events.input.mouse.move.listen([this](const Vector2D&, Event::SCallbackInfo&) {
-        handleMouseMove();
+    m_mouseMoveListener = events.input.mouse.move.listen([this](const Vector2D&, Event::SCallbackInfo& info) {
+        if (handleMouseMove())
+            info.cancelled = true;
     });
     m_mouseButtonListener = events.input.mouse.button.listen([this](const IPointer::SButtonEvent& event, Event::SCallbackInfo& info) {
         // Copy the signal payload immediately; forwarding the raw listener arg
@@ -4734,7 +4736,7 @@ void OverviewController::handleConfigReloaded() {
     damageOwnedMonitors();
 }
 
-void OverviewController::handleMouseMove() {
+bool OverviewController::handleMouseMove() {
     if (m_restoreScrollingFollowFocusAfterScrollMouseMove && !m_scrollGestureSession.active) {
         if (debugLogsEnabled())
             debugLog("[hymission] restore scrolling:follow_focus after scroll mouse move");
@@ -4742,10 +4744,14 @@ void OverviewController::handleMouseMove() {
         setScrollingFollowFocusOverride(false);
     }
 
+    const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
+    if (handleDirectNiriDndMotion(pointer))
+        return true;
+
     if (m_postCloseForcedFocusLatched && !isVisible()) {
         if (m_ignorePostCloseMouseMoveCount > 0) {
             --m_ignorePostCloseMouseMoveCount;
-            return;
+            return false;
         }
 
         clearPostCloseForcedFocus();
@@ -4756,15 +4762,14 @@ void OverviewController::handleMouseMove() {
     }
 
     if (!shouldHandleInput())
-        return;
+        return false;
 
     if (m_pressedWindowIndex || m_draggedWindowIndex) {
         updateHoveredFromPointer(false, false, false, false, "mouse-move-drag");
 
-        const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
         if (m_niriDragSession.active) {
             updateDirectNiriWindowDrag(pointer);
-            return;
+            return false;
         }
 
         if (!m_draggedWindowIndex && m_pressedWindowIndex && *m_pressedWindowIndex < m_state.windows.size()) {
@@ -4781,10 +4786,11 @@ void OverviewController::handleMouseMove() {
         }
 
         damageOwnedMonitors();
-        return;
+        return false;
     }
 
     updateHoveredFromPointer(true, true, true, true, "mouse-move");
+    return false;
 }
 
 bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) {
@@ -4795,6 +4801,9 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             m_restoreInputFollowMouseAfterPostClose = false;
         }
     }
+
+    if (handleDirectNiriDndButton(event))
+        return true;
 
     if (!shouldHandleInput())
         return false;
@@ -12798,6 +12807,8 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     m_overviewVisibilityAnimation.reset();
     m_overviewVisibilityAnimationConfig.reset();
     clearToggleSwitchSession();
+    clearDirectNiriDndState();
+    m_niriDndExitInProgress = false;
     clearPostCloseCursorShapeResetTimer();
     clearPendingDeferredOpen();
     m_postCloseOpenDebounceScope.reset();
@@ -12960,6 +12971,9 @@ void OverviewController::beginClose(CloseMode mode, std::optional<double> fromVi
         return;
 
     clearDirectNiriCloseFinalRenderFrames(this);
+    if (directNiriDndProtocolActive() && activeDirectNiriSingleWorkspaceOverview())
+        m_niriDndExitInProgress = true;
+    clearDirectNiriDndState();
 
     if (mode != CloseMode::Abort && (m_state.phase == Phase::Closing || m_state.phase == Phase::ClosingSettle))
         return;
@@ -13301,6 +13315,7 @@ void OverviewController::deactivate() {
     const auto desiredFocus = m_state.closeMode != CloseMode::Abort && m_state.pendingExitFocus && m_state.pendingExitFocus->m_isMapped ? m_state.pendingExitFocus : PHLWINDOW{};
     const auto desiredWorkspace = m_state.closeMode != CloseMode::Abort && m_state.pendingExitWorkspace ? m_state.pendingExitWorkspace : PHLWORKSPACE{};
     const auto closedScope = m_state.collectionPolicy.requestedScope;
+    const bool niriDndExitInProgress = m_niriDndExitInProgress;
     const auto postCloseDispatcher = desiredFocus ? m_postCloseDispatcher : PostCloseDispatcher::None;
     const auto postCloseDispatcherArgs = desiredFocus ? m_postCloseDispatcherArgs : std::string{};
     const bool shouldDelayRestoreNativeAnimations = m_animationsEnabledOverridden && m_state.closeMode != CloseMode::Abort;
@@ -13308,7 +13323,7 @@ void OverviewController::deactivate() {
     const bool preferGoalVisiblePoint = shouldPreserveExitFocus && shouldPreferGoalExitGeometry(desiredFocus);
     const auto focusMonitor = desiredFocus ? (previewMonitorForWindow(desiredFocus) ? previewMonitorForWindow(desiredFocus) : desiredFocus->m_monitor.lock()) : PHLMONITOR{};
     const auto visiblePoint = shouldPreserveExitFocus ? visiblePointForWindowOnMonitor(desiredFocus, focusMonitor, preferGoalVisiblePoint) : std::nullopt;
-    const bool shouldWarpCursorForExitFocus = visiblePoint && desiredFocus != m_state.focusBeforeOpen;
+    const bool shouldWarpCursorForExitFocus = !niriDndExitInProgress && visiblePoint && desiredFocus != m_state.focusBeforeOpen;
     clearToggleSwitchSession();
     m_primaryButtonPressed = false;
     m_cursorShapeResetFrames = 0;
@@ -13388,6 +13403,7 @@ void OverviewController::deactivate() {
     ++m_workspaceChangeHandlingGeneration;
     clearPendingStripWorkspaceChange();
     clearStripWindowDragState();
+    clearDirectNiriDndState();
     clearHiddenStripLayerProxies();
     clearNiriWallpaperSnapshots();
     clearNiriWallpaperLayoutLayerRefresh();

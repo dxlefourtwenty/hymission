@@ -363,6 +363,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     FLOAT_CONF("niri_drag_edge_scroll_trigger", 30.0F);
     INT_CONF("niri_drag_edge_scroll_delay_ms", 100);
     FLOAT_CONF("niri_drag_edge_scroll_max_speed", 1500.0F);
+    FLOAT_CONF("niri_dnd_edge_view_scroll_trigger", 30.0F);
+    INT_CONF("niri_dnd_edge_view_scroll_delay_ms", 100);
+    FLOAT_CONF("niri_dnd_edge_view_scroll_max_speed", 1500.0F);
+    FLOAT_CONF("niri_dnd_edge_workspace_switch_trigger", 50.0F);
+    INT_CONF("niri_dnd_edge_workspace_switch_delay_ms", 100);
+    FLOAT_CONF("niri_dnd_edge_workspace_switch_max_speed", 1500.0F);
+    INT_CONF("niri_dnd_hold_to_activate_delay_ms", 750);
     INT_CONF("gesture_invert_vertical", 0);
     INT_CONF("one_workspace_per_row", 0);
     INT_CONF("only_active_workspace", 0);

@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <hyprland/src/SharedDefs.hpp>
@@ -89,7 +90,7 @@ class OverviewController {
 
     void renderStage(eRenderStage stage);
     void handleConfigReloaded();
-    void handleMouseMove();
+    bool handleMouseMove();
     bool handleMouseButton(const IPointer::SButtonEvent& event);
     void handleKeyboard(const IKeyboard::SKeyEvent& event, Event::SCallbackInfo& info);
     void handleWindowSetChange(PHLWINDOW window, WindowSetChangeKind kind = WindowSetChangeKind::General, bool preferDeferredRebuild = false);
@@ -257,6 +258,33 @@ class OverviewController {
         std::chrono::steady_clock::time_point edgeEnteredAt = {};
         std::chrono::steady_clock::time_point lastEdgeTick = {};
         double                                edgeVelocity = 0.0;
+    };
+
+    struct NiriDndSession {
+        bool                                  active = false;
+        PHLWINDOWREF                          holdWindow;
+        PHLWORKSPACEREF                       holdWorkspace;
+        PHLMONITOR                            holdMonitor;
+        WORKSPACEID                           holdWorkspaceId = WORKSPACE_INVALID;
+        std::chrono::steady_clock::time_point holdStartedAt = {};
+        PHLWORKSPACEREF                       edgeWorkspace;
+        std::chrono::steady_clock::time_point edgeEnteredAt = {};
+        std::chrono::steady_clock::time_point lastEdgeTick = {};
+        double                                edgeVelocity = 0.0;
+        PHLMONITOR                            workspaceEdgeMonitor;
+        std::chrono::steady_clock::time_point workspaceEdgeEnteredAt = {};
+        std::chrono::steady_clock::time_point lastWorkspaceEdgeTick = {};
+        double                                workspaceEdgeVelocity = 0.0;
+        double                                workspaceEdgeTravel = 0.0;
+    };
+
+    struct NiriDndTarget {
+        PHLWINDOW    window;
+        PHLWORKSPACE workspace;
+        PHLMONITOR   monitor;
+        WORKSPACEID  workspaceId = WORKSPACE_INVALID;
+        Rect         laneGlobal;
+        bool         hasLane = false;
     };
 
     struct State {
@@ -928,6 +956,29 @@ class OverviewController {
     void tickDirectNiriWindowDragEdgeScroll();
     [[nodiscard]] Rect directNiriDraggedPreviewRect() const;
     [[nodiscard]] float directNiriDraggedPreviewAlpha(const PHLWINDOW& window, float fallback) const;
+    [[nodiscard]] bool directNiriDndProtocolActive() const;
+    [[nodiscard]] bool directNiriDndApplies() const;
+    [[nodiscard]] bool handleDirectNiriDndMotion(const Vector2D& pointer);
+    [[nodiscard]] bool handleDirectNiriDndButton(const IPointer::SButtonEvent& event);
+    [[nodiscard]] std::optional<NiriDndTarget> directNiriDndTargetAt(const Vector2D& pointer) const;
+    [[nodiscard]] double                       directNiriDndEdgeVelocity(const NiriDndTarget& target, const Vector2D& pointer) const;
+    [[nodiscard]] std::optional<std::pair<PHLMONITOR, double>> directNiriDndWorkspaceEdgeAt(const Vector2D& pointer) const;
+    void                                       updateDirectNiriDndEdge(const NiriDndTarget& target, double velocity,
+                                                                      std::chrono::steady_clock::time_point now);
+    void                                       updateDirectNiriDndWorkspaceEdge(const PHLMONITOR& monitor, double velocity,
+                                                                               std::chrono::steady_clock::time_point now);
+    void                                       updateDirectNiriDndHold(const std::optional<NiriDndTarget>& target,
+                                                                      std::chrono::steady_clock::time_point now);
+    void               clearDirectNiriDndHold();
+    void               clearDirectNiriDndViewEdge(std::chrono::steady_clock::time_point now);
+    void               clearDirectNiriDndWorkspaceEdge(std::chrono::steady_clock::time_point now);
+    void               updateDirectNiriDnd(const Vector2D& pointer);
+    void               tickDirectNiriDnd();
+    void               activateDirectNiriDndTarget();
+    void               armDirectNiriDndTimer();
+    void               clearDirectNiriDndState();
+    void               clearDirectNiriDndTimer();
+    void               suppressDirectNiriDndSurfaceFocus() const;
     [[nodiscard]] std::optional<NiriDragTarget> directNiriDragTargetAt(const Vector2D& pointer) const;
     [[nodiscard]] bool applyDirectNiriDragTarget(const PHLWINDOW& window, const NiriDragTarget& target,
                                                   const PreviewRectSnapshot& previousPreviewRects, const Rect& releasePreviewRect);
@@ -1136,6 +1187,9 @@ class OverviewController {
     Vector2D                  m_pressedWindowPointer;
     Vector2D                  m_draggedWindowPointerOffset;
     NiriDragSession           m_niriDragSession;
+    NiriDndSession            m_niriDndSession;
+    SP<CEventLoopTimer>       m_niriDndTimer;
+    bool                      m_niriDndExitInProgress = false;
     Vector2D                  m_hoverSelectionAnchorPointer;
     bool                      m_hoverSelectionAnchorValid = false;
     std::chrono::steady_clock::time_point m_hoverSelectionRetargetBlockedUntil = {};

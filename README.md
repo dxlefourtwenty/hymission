@@ -281,6 +281,13 @@ plugin {
         niri_preview_disabled = 0
         niri_overview_animations = 1
         niri_overview_open_close_speed_multiplier = 1.5
+        niri_dnd_edge_view_scroll_trigger = 30.0
+        niri_dnd_edge_view_scroll_delay_ms = 100
+        niri_dnd_edge_view_scroll_max_speed = 1500.0
+        niri_dnd_edge_workspace_switch_trigger = 50.0
+        niri_dnd_edge_workspace_switch_delay_ms = 100
+        niri_dnd_edge_workspace_switch_max_speed = 1500.0
+        niri_dnd_hold_to_activate_delay_ms = 750
         toggle_switch_mode = 1
         switch_toggle_auto_next = 1
         switch_release_key = Super_L
@@ -334,6 +341,13 @@ hl.config({
             niri_preview_disabled = 0,
             niri_overview_animations = 1,
             niri_overview_open_close_speed_multiplier = 1.5,
+            niri_dnd_edge_view_scroll_trigger = 30.0,
+            niri_dnd_edge_view_scroll_delay_ms = 100,
+            niri_dnd_edge_view_scroll_max_speed = 1500.0,
+            niri_dnd_edge_workspace_switch_trigger = 50.0,
+            niri_dnd_edge_workspace_switch_delay_ms = 100,
+            niri_dnd_edge_workspace_switch_max_speed = 1500.0,
+            niri_dnd_hold_to_activate_delay_ms = 750,
             multi_workspace_expand_selected_window = 1,
             switch_release_key = "Super_L",
             workspace_strip_anchor = "left",
@@ -396,6 +410,13 @@ hl.config({
 | `niri_drag_edge_scroll_trigger` | float | `30.0` | Width in logical pixels of the scrolling-layout edge zone used while dragging a window. |
 | `niri_drag_edge_scroll_delay_ms` | int | `100` | Delay before drag edge scrolling begins. |
 | `niri_drag_edge_scroll_max_speed` | float | `1500.0` | Maximum drag edge-scroll speed in logical pixels per second. |
+| `niri_dnd_edge_view_scroll_trigger` | float | `30.0` | Width in logical pixels of the scrolling-view edge zone used during a Wayland drag-and-drop operation. |
+| `niri_dnd_edge_view_scroll_delay_ms` | int | `100` | Delay before file drag-and-drop edge scrolling begins. |
+| `niri_dnd_edge_view_scroll_max_speed` | float | `1500.0` | Maximum file drag-and-drop edge-scroll speed in logical pixels per second. Speed increases linearly toward the edge. |
+| `niri_dnd_edge_workspace_switch_trigger` | float | `50.0` | Height in logical pixels of the monitor-edge zone used to navigate workspaces during file drag-and-drop. |
+| `niri_dnd_edge_workspace_switch_delay_ms` | int | `100` | Delay before drag-and-drop workspace edge navigation begins. |
+| `niri_dnd_edge_workspace_switch_max_speed` | float | `1500.0` | Maximum drag-and-drop workspace edge-navigation speed in logical pixels per second. |
+| `niri_dnd_hold_to_activate_delay_ms` | int | `750` | Time a file drag must remain over an overview window or workspace before Hymission activates it and closes overview. |
 | `toggle_switch_mode` | bool | `1` | Turn `hymission:toggle` into a toggle-only switch session. Intended for modifier-backed bindings such as `ALT+TAB` / `SUPER+TAB`. |
 | `switch_toggle_auto_next` | bool | `1` | Toggle switch mode only. When enabled, the first switch-mode `toggle` both opens overview and advances to the next target. |
 | `switch_release_key` | string | `Super_L` | Toggle switch mode only. Release of this key commits the current selection and closes the switch session. Supports keysym names such as `Alt_L` / `Super_L` and `code:N`, and release tracking is resilient to missing per-window release events. |
@@ -438,6 +459,8 @@ By default it only shows real workspaces plus the trailing new-workspace card. I
 With `niri_mode = 1`, `only_active_workspace = 1`, and a Hyprland `scrolling` layout, there is no separate preview strip. Workspaces share one overview scene and use `niri_workspace_gap` for spacing. Tiled previews are rebuilt from Hyprland's live scrolling layout geometry, so resize, move, swap, and focus dispatchers remain owned by Hyprland. `focus_fit_method = 0` centers the focused column; `focus_fit_method = 1` fits it inside the viewport. Both `hymission:scroll,layout` and Hyprland's official `scrollMove` / Lua `scroll_move` can scroll the layout while overview is open.
 
 Left-dragging a window in this mode uses Hyprland's `binds:drag_threshold`. Crossing the threshold detaches the tiled window so its source column reflows immediately. The translucent preview follows the grabbed point, and a niri-style insertion hint selects a new column or a position inside an existing column on any visible workspace lane. Releasing outside a valid lane restores the original position. Holding the pointer at a lane's scrolling edge moves its preview camera after the configured delay.
+
+An existing Wayland drag-and-drop operation, such as dragging files from a file manager, can continue after this overview is opened. Overview previews remain compositor activation targets rather than scaled client input surfaces. Holding the drag over a window or workspace activates it and closes overview; release the item after the normal workspace view returns. Holding at a scrolling lane's layout edge pans that workspace, while holding at the top or bottom content edge navigates workspace lanes. DnD hot-corner entry is intentionally disabled, so open overview with a binding while continuing the drag; the DnD entry path is kept separate for a future hot-corner implementation.
 
 ### Optional Waybar Single-Entry Setup
 
