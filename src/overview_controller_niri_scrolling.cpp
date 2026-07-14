@@ -1110,7 +1110,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
     const auto normalizeToOverviewBase = [&](const Rect& rect) {
         if (rectApproxEqual(liveBaseGlobal, baseGlobal, 0.01))
             return rect;
-        return transformLiveOverviewRect(rect, liveBaseGlobal, baseGlobal);
+        return transformRectBetweenWorkAreas(rect, liveBaseGlobal, baseGlobal);
     };
     const Rect normalizedFallbackGlobal = normalizeToOverviewBase(fallbackGlobal);
 
