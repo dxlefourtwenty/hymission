@@ -15584,7 +15584,7 @@ bool OverviewController::borderUsesTransformedGeometry(const State& state) const
         return false;
 
     if (state.phase == Phase::Active && state.relayoutActive)
-        return false;
+        return usesDirectNiriScrollingOverview(state);
 
     return true;
 }
