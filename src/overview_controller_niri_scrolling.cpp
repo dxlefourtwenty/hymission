@@ -1074,7 +1074,8 @@ Rect scrollingOverviewSourceGlobalRectForWindow(const PHLWINDOW& window, const R
     return centeredSurfaceRectInLayoutBox(layoutBox, fallbackGlobal);
 }
 
-std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {}) {
+std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWindow(const PHLWINDOW& window, const Rect& fallbackGlobal, PHLWINDOW anchorWindow = {},
+                                                                                    std::optional<Rect> overviewBaseGlobal = std::nullopt) {
     if (!window || !window->m_workspace || !window->m_workspace->m_space)
         return std::nullopt;
 
@@ -1104,7 +1105,9 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
 
     const auto* const controller = scrolling->m_scrollingData->controller.get();
     const bool        horizontal = controller->isPrimaryHorizontal();
-    const Rect        baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+    const Rect        liveBaseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+    const Rect        baseGlobal = overviewBaseGlobal && overviewBaseGlobal->width > 1.0 && overviewBaseGlobal->height > 1.0 ? *overviewBaseGlobal : liveBaseGlobal;
+    const Rect        fallbackSourceGlobal = fallbackGlobal;
 
     struct ColumnEntry {
         SP<Layout::Tiled::SColumnData> column;
@@ -1292,7 +1295,7 @@ std::optional<ScrollingOverviewGeometry> scrollingOverviewTapeRowGeometryForWind
         setPrimaryStart(virtualCandidateLayoutBox, primaryStart(targetColumn.virtualBounds) + candidateOffset);
 
         CBox virtualBox{virtualCandidateLayoutBox.x, virtualCandidateLayoutBox.y, virtualCandidateLayoutBox.width, virtualCandidateLayoutBox.height};
-        targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackGlobal);
+        targetSource = centeredSurfaceRectInLayoutBox(virtualBox, fallbackSourceGlobal);
 
 
         double anchorX = targetColumn.virtualBounds.centerX();
@@ -1779,6 +1782,81 @@ using niri_scrolling_detail::shouldWrapWorkspaceIds;
 using niri_scrolling_detail::twoColumnSwapTraceActive;
 
 // Exact-mode OverviewController member implementations are kept below.
+
+void OverviewController::captureNiriOverviewViewports() {
+    m_niriOverviewViewportSnapshots.clear();
+    if (!niriModeEnabled())
+        return;
+
+    for (const auto& monitor : g_pCompositor->m_monitors) {
+        if (!monitor)
+            continue;
+
+        const CBox monitorBox = monitor->logicalBox();
+        const Rect viewport = makeRect(monitorBox.x, monitorBox.y, monitorBox.width, monitorBox.height);
+        Rect       initialWorkArea;
+        if (monitor->m_activeWorkspace && monitor->m_activeWorkspace->m_space) {
+            const CBox liveWorkArea = monitor->m_activeWorkspace->m_space->workArea();
+            initialWorkArea = makeRect(liveWorkArea.x, liveWorkArea.y, liveWorkArea.width, liveWorkArea.height);
+        }
+        if (initialWorkArea.width <= 1.0 || initialWorkArea.height <= 1.0) {
+            const CBox monitorWorkArea = monitor->logicalBoxMinusReserved();
+            initialWorkArea = makeRect(monitorWorkArea.x, monitorWorkArea.y, monitorWorkArea.width, monitorWorkArea.height);
+        }
+        if (viewport.width <= 1.0 || viewport.height <= 1.0)
+            continue;
+
+        m_niriOverviewViewportSnapshots.push_back({
+            .monitorId = monitor->m_id,
+            .viewportGlobal = viewport,
+            .initialWorkAreaGlobal = initialWorkArea,
+        });
+
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] freeze niri overview viewport monitor=" << monitor->m_name
+                << " viewport=" << rectToString(viewport)
+                << " workArea=" << rectToString(initialWorkArea);
+            debugLog(out.str());
+        }
+    }
+}
+
+void OverviewController::clearNiriOverviewViewports() {
+    m_niriOverviewViewportSnapshots.clear();
+}
+
+Rect OverviewController::niriOverviewViewportForWorkspace(const PHLWORKSPACE& workspace) const {
+    if (!workspace || !workspace->m_space)
+        return {};
+
+    const CBox liveWorkAreaBox = workspace->m_space->workArea();
+    const Rect liveWorkArea = makeRect(liveWorkAreaBox.x, liveWorkAreaBox.y, liveWorkAreaBox.width, liveWorkAreaBox.height);
+    const auto monitor = workspace->m_monitor.lock();
+    if (!monitor)
+        return liveWorkArea;
+
+    const auto snapshot = std::find_if(m_niriOverviewViewportSnapshots.begin(), m_niriOverviewViewportSnapshots.end(),
+                                       [&](const NiriOverviewViewportSnapshot& candidate) { return candidate.monitorId == monitor->m_id; });
+    if (snapshot == m_niriOverviewViewportSnapshots.end()) {
+        const CBox monitorBox = monitor->logicalBox();
+        return makeRect(monitorBox.x, monitorBox.y, monitorBox.width, monitorBox.height);
+    }
+
+    if (!snapshot->changeLogged && !rectApproxEqual(snapshot->initialWorkAreaGlobal, liveWorkArea, 0.01)) {
+        snapshot->changeLogged = true;
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] preserve niri overview viewport monitor=" << monitor->m_name
+                << " viewport=" << rectToString(snapshot->viewportGlobal)
+                << " initialWorkArea=" << rectToString(snapshot->initialWorkAreaGlobal)
+                << " liveWorkArea=" << rectToString(liveWorkArea);
+            debugLog(out.str());
+        }
+    }
+
+    return snapshot->viewportGlobal;
+}
 
 bool OverviewController::niriModeEnabled() const {
     return getConfigInt(m_handle, "plugin:hymission:niri_mode", 0) != 0;
@@ -7200,8 +7278,7 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
     if (placeholder == m_state.emptyWorkspacePlaceholders.end())
         return std::nullopt;
 
-    const CBox desktopBox = workspace->m_space->workArea();
-    const Rect desktopViewport = makeRect(desktopBox.x, desktopBox.y, desktopBox.width, desktopBox.height);
+    const Rect desktopViewport = niriOverviewViewportForWorkspace(workspace);
     const Rect liveRect = renderGlobalRectForWindow(window.window);
     if (desktopViewport.width <= 1.0 || desktopViewport.height <= 1.0 || liveRect.width <= 0.0 || liveRect.height <= 0.0)
         return std::nullopt;
@@ -7437,14 +7514,15 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         const bool useGoalGeometry = !isResizeAnchorWindow && shouldUseGoalGeometryForStateSnapshot(window.window);
         const Rect naturalGlobal = stateSnapshotGlobalRectForWindow(window.window, useGoalGeometry);
         const Rect sourceGlobal = scrollingOverviewSourceGlobalRectForWindow(window.window, naturalGlobal);
-        const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window.window, sourceGlobal, anchorWindow);
+        const Rect viewportBase = niriOverviewViewportForWorkspace(workspace);
+        const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window.window, sourceGlobal, anchorWindow, viewportBase);
         if (!rowGeometry)
             return std::nullopt;
 
         const bool anchorUseGoalGeometry = anchorManaged->window != anchorWindow && shouldUseGoalGeometryForStateSnapshot(anchorManaged->window);
         const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorManaged->window, anchorUseGoalGeometry);
         const Rect anchorSourceBase = scrollingOverviewSourceGlobalRectForWindow(anchorManaged->window, anchorNaturalGlobal);
-        const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorManaged->window, anchorSourceBase, anchorManaged->window);
+        const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorManaged->window, anchorSourceBase, anchorManaged->window, viewportBase);
         const Rect anchorSourceGlobal = anchorRowGeometry ? anchorRowGeometry->anchorGlobal : anchorManaged->naturalGlobal;
 
         double scale = window.slot.scale;
@@ -7514,8 +7592,17 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 anchorPreviewBase = columnPreview;
         }
 
-        const double viewportX = anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
-        const double viewportY = anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
+        const auto backingViewport = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
+                                                  [&](const EmptyWorkspacePlaceholder& candidate) {
+                                                      return candidate.backingOnly && candidate.monitor == window.targetMonitor &&
+                                                          candidate.workspaceId == workspace->m_id;
+                                                  });
+        const bool hasBackingViewport = backingViewport != m_state.emptyWorkspacePlaceholders.end() &&
+            backingViewport->targetGlobal.width > 1.0 && backingViewport->targetGlobal.height > 1.0;
+        const double viewportX = hasBackingViewport ? backingViewport->targetGlobal.x :
+            anchorPreviewBase.centerX() - (anchorSourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
+        const double viewportY = hasBackingViewport ? backingViewport->targetGlobal.y :
+            anchorPreviewBase.centerY() - (anchorSourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
 
         const double targetCenterX = viewportX + (rowGeometry->sourceGlobal.centerX() - rowGeometry->baseGlobal.x) * scale;
         const double targetCenterY = viewportY + (rowGeometry->sourceGlobal.centerY() - rowGeometry->baseGlobal.y) * scale;
@@ -7901,8 +7988,7 @@ Rect OverviewController::emptyOverviewPlaceholderLocalRect(const PHLMONITOR& mon
     double cardHeight = content.height * 0.62;
 
     if (niriModeAppliesToState(state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
-        const CBox workAreaBox = workspace->m_space->workArea();
-        Rect       baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        Rect baseGlobal = niriOverviewViewportForWorkspace(workspace);
         // Keep empty/backing viewport sizing independent of Hyprland's
         // scrolling focus policy.  focus_fit_method=0 should center differently,
         // not use a different monitor-sized base box than focus_fit_method=1.
@@ -7992,8 +8078,7 @@ Rect OverviewController::niriWorkspaceSurfaceRect(const State& state, const Empt
     if (!workspace)
         return viewportRect;
 
-    const CBox workspaceBox = workspace->m_space->workArea();
-    const Rect workspaceRect = makeRect(workspaceBox.x, workspaceBox.y, workspaceBox.width, workspaceBox.height);
+    const Rect workspaceRect = niriOverviewViewportForWorkspace(workspace);
     if (workspaceRect.width <= 1.0 || workspaceRect.height <= 1.0 || surfaceRect.width <= 1.0 || surfaceRect.height <= 1.0)
         return viewportRect;
 
@@ -8417,8 +8502,7 @@ void OverviewController::renderEmptyOverviewPlaceholder(bool backingOnlyPass) co
 
     const auto workspace = m_state.ownerWorkspace ? m_state.ownerWorkspace : renderMonitor->m_activeWorkspace;
     if (niriModeAppliesToState(m_state) && workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
-        const CBox workAreaBox = workspace->m_space->workArea();
-        const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+        const Rect baseGlobal = niriOverviewViewportForWorkspace(workspace);
         if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
             sourceLocal = rectToMonitorLocal(baseGlobal, renderMonitor);
         }
@@ -9282,8 +9366,7 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                 baseWorkspace = monitorWorkspaces.front();
 
             if (baseWorkspace && baseWorkspace->m_space) {
-                const CBox workAreaBox = baseWorkspace->m_space->workArea();
-                const Rect baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+                const Rect baseGlobal = niriOverviewViewportForWorkspace(baseWorkspace);
                 const Rect lanePreview = makeRect(content.x, content.y, content.width, laneHeight);
                 if (baseGlobal.width > 1.0 && baseGlobal.height > 1.0) {
                     const auto overflowAxis = axisForScrollingLayoutDirection(scrollingLayoutDirection());
@@ -9382,7 +9465,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
             const bool candidateIsTiledScrolling = target && !target->floating() && !isFloatingOverviewWindow(candidate);
             if (candidateIsTiledScrolling) {
                 candidateAnchorGlobal = scrollingOverviewSourceGlobalRectForWindow(candidate, candidateNaturalGlobal);
-                if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(candidate, candidateAnchorGlobal))
+                if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(
+                        candidate, candidateAnchorGlobal, {}, niriOverviewViewportForWorkspace(candidate->m_workspace)))
                     candidateAnchorGlobal = rowGeometry->anchorGlobal;
             } else {
                 candidateAnchorGlobal = floatingOverviewSourceGlobalRectForWindow(
@@ -9498,7 +9582,8 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
                     const bool anchorUseGoalGeometry = shouldUseGoalGeometryForStateSnapshot(anchorWindow);
                     const Rect anchorNaturalGlobal = stateSnapshotGlobalRectForWindow(anchorWindow, anchorUseGoalGeometry);
                     anchorSourceGlobal = scrollingOverviewSourceGlobalRectForWindow(anchorWindow, anchorNaturalGlobal);
-                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(anchorWindow, anchorSourceGlobal, anchorWindow))
+                    if (const auto anchorRowGeometry = scrollingOverviewTapeRowGeometryForWindow(
+                            anchorWindow, anchorSourceGlobal, anchorWindow, niriOverviewViewportForWorkspace(layoutWorkspace)))
                         anchorSourceGlobal = anchorRowGeometry->anchorGlobal;
                 }
             }
@@ -9631,14 +9716,10 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
 
         resolvedSourceGlobal = sourceGlobal;
 
-        Rect baseGlobal = niriFloatingOverviewBaseGlobalRect(targetMonitor);
         const auto layoutWorkspace = window && window->m_pinned ? focusedStripWorkspaceForMonitor(targetMonitor) : (window ? window->m_workspace : PHLWORKSPACE{});
-        if (layoutWorkspace && layoutWorkspace->m_space) {
-            const CBox workAreaBox = layoutWorkspace->m_space->workArea();
-            const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-            if (workArea.width > 1.0 && workArea.height > 1.0)
-                baseGlobal = workArea;
-        }
+        Rect baseGlobal = niriOverviewViewportForWorkspace(layoutWorkspace);
+        if (baseGlobal.width <= 1.0 || baseGlobal.height <= 1.0)
+            baseGlobal = niriFloatingOverviewBaseGlobalRect(targetMonitor);
 
         std::optional<Rect> anchorOverride;
         std::optional<GestureAxis> workspaceOverflowAxis;
@@ -9690,15 +9771,15 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
         else
             layoutAnchorWindow = focusCandidateForWorkspace(window->m_workspace);
 
-        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(window, sourceGlobal, layoutAnchorWindow)) {
+        if (const auto rowGeometry = scrollingOverviewTapeRowGeometryForWindow(
+                window, sourceGlobal, layoutAnchorWindow, niriOverviewViewportForWorkspace(window->m_workspace))) {
             sourceForOverview = rowGeometry->sourceGlobal;
             baseGlobal = rowGeometry->baseGlobal;
             if (g_niriStripSnapshotSingleWorkspaceOnly)
                 anchorOverride = rowGeometry->anchorGlobal;
             overflowAxis = rowGeometry->primaryAxis;
         } else {
-            const CBox workAreaBox = window && window->m_workspace && window->m_workspace->m_space ? window->m_workspace->m_space->workArea() : CBox{};
-            baseGlobal = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
+            baseGlobal = niriOverviewViewportForWorkspace(window ? window->m_workspace : PHLWORKSPACE{});
         }
 
         auto slot = niriOverviewSlotForSource(window, targetMonitor, sourceForOverview, baseGlobal, windowIndex, false, overflowAxis, anchorOverride, true);
@@ -9862,10 +9943,9 @@ OverviewController::State OverviewController::buildState(const PHLMONITOR& monit
     if (allowDirectNiriOverviewLayout) {
         const auto placeholderSourceGlobalForWorkspace = [&](const PHLMONITOR& targetMonitor, const PHLWORKSPACE& workspace) {
             if (workspace && workspace->m_space && isScrollingWorkspace(workspace)) {
-                const CBox workAreaBox = workspace->m_space->workArea();
-                const Rect workArea = makeRect(workAreaBox.x, workAreaBox.y, workAreaBox.width, workAreaBox.height);
-                if (workArea.width > 1.0 && workArea.height > 1.0)
-                    return workArea;
+                const Rect viewport = niriOverviewViewportForWorkspace(workspace);
+                if (viewport.width > 1.0 && viewport.height > 1.0)
+                    return viewport;
             }
 
             return makeRect(targetMonitor->m_position.x, targetMonitor->m_position.y, targetMonitor->m_size.x, targetMonitor->m_size.y);

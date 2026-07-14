@@ -74,6 +74,12 @@ int main() {
                      {300, 150, 400, 300}, "live overview transform should scale current Hyprland geometry into the overview viewport");
     ok &= expectRect(transformLiveOverviewRect({600, 200, 1000, 600}, {0, 0, 2000, 1000}, {100, 50, 1000, 500}),
                      {400, 150, 500, 300}, "metadata refresh should not freeze later live position and size changes");
+    ok &= expectRect(transformLiveOverviewRect({1932, 55, 2024, 1085}, {1920, 10, 2048, 1152}, {710, 392, 624, 351}),
+                     {713.65625, 405.7109375, 616.6875, 330.5859375},
+                     "dock-hidden window should map into the fixed monitor viewport");
+    ok &= expectRect(transformLiveOverviewRect({1932, 55, 2024, 1012}, {1920, 10, 2048, 1152}, {710, 392, 624, 351}),
+                     {713.65625, 405.7109375, 616.6875, 308.34375},
+                     "dock-visible window should keep its top edge while freeing dock space");
     ok &= expect(authoritativeOverviewWorkspaceId(true, 7, 3) == 7,
                  "active transition destination should remain authoritative during close");
     ok &= expect(authoritativeOverviewWorkspaceId(false, 7, 3) == 3,
