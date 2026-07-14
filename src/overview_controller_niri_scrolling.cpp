@@ -5356,6 +5356,10 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
     const bool isDirectResizeColumnDispatcher = dispatcherNameLower == "resizecol" || dispatcherNameLower == "resizecolumn";
     const bool isDirectResizeActiveDispatcher = dispatcherNameLower == "resizeactive" || dispatcherNameLower.starts_with("resizeactive") ||
         dispatcherNameLower.find("window.resize") != std::string::npos;
+    const bool isMoveWindowDispatcher = dispatcherNameLower == "movewindow" || dispatcherNameLower == "movewindoworgroup" ||
+        dispatcherNameLower == "window.move";
+    const bool isDirectionalMoveWindowDispatcher = isMoveWindowDispatcher && !dispatcherArgsLower.empty() &&
+        std::string_view{"lrud"}.find(dispatcherArgsLower.front()) != std::string_view::npos;
     const bool isFloatTileDispatcher = dispatcherNameLower == "togglefloating" || dispatcherNameLower == "setfloating" ||
         dispatcherNameLower == "settiled" || dispatcherNameLower.starts_with("togglefloating") ||
         dispatcherNameLower.starts_with("setfloating") || dispatcherNameLower.starts_with("settiled") ||
@@ -5368,7 +5372,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         dispatcherNameLower.find("window.workspace") != std::string::npos;
     const bool isFocusOrMovementDispatcher = isMoveFocusDispatcher || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage ||
         isResizeColumnLayoutMessage || isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher ||
-        isDirectResizeActiveDispatcher;
+        isDirectResizeActiveDispatcher || isDirectionalMoveWindowDispatcher;
 
     const bool niriSingleWorkspaceTransition = timedNiriSingleWorkspaceTransitionActive();
     const auto transitionAction = resolveOverviewEditTransitionAction(
@@ -5655,14 +5659,15 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         std::ranges::all_of(m_state.windows, [&](const ManagedWindow& managed) {
             return !managed.window || !managed.window->m_isMapped || static_cast<bool>(livePreviewRectForManagedWindow(managed));
         });
-    const bool directNiriFocusOrColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+    const bool directNiriFocusOrLayoutRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (dispatcherNameLower == "movefocus" || isMoveColumnLayoutMessage || isSwapColumnLayoutMessage || isResizeColumnLayoutMessage ||
-         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
-    const bool directNiriColumnRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
+         isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher ||
+         isDirectionalMoveWindowDispatcher);
+    const bool directNiriLayoutRelayout = overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         (isMoveColumnLayoutMessage || isSwapColumnLayoutMessage || isResizeColumnLayoutMessage ||
          isDirectMoveColumnDispatcher || isDirectSwapColumnDispatcher || isDirectResizeColumnDispatcher || isDirectResizeActiveDispatcher);
     const bool animateDirectStripRelayout = niriOverviewAnimationsEnabled() &&
-        ((directLiveGeometryAvailable && directNiriFocusOrColumnRelayout) || directNiriColumnRelayout);
+        ((directLiveGeometryAvailable && directNiriFocusOrLayoutRelayout) || directNiriLayoutRelayout);
     const bool commitInterruptedMovecolRelayout = moveColumnDispatcherForEdge && overviewActive && activeDirectNiriSingleWorkspaceOverview() &&
         m_state.phase == Phase::Active && m_state.relayoutActive;
     if (commitInterruptedMovecolRelayout && debugLogsEnabled()) {
@@ -5720,7 +5725,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0);
             debugLog(out.str());
 
-            if (activeDirectNiriSingleWorkspaceOverview() && (directNiriFocusOrColumnRelayout || directNiriColumnRelayout)) {
+            if (activeDirectNiriSingleWorkspaceOverview() && (directNiriFocusOrLayoutRelayout || directNiriLayoutRelayout)) {
                 const auto workspace = activeLayoutWorkspace();
                 auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
                 std::ostringstream stateOut;
@@ -5803,9 +5808,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         }
     };
 
-    const bool directNiriGeometryEditNeedsHardRecalc = forceGeometryRefocus && !directNiriFocusOrColumnRelayout;
+    const bool directNiriGeometryEditNeedsHardRecalc = forceGeometryRefocus && !directNiriFocusOrLayoutRelayout;
     const bool runDirectNiriDispatcherPath = !isCenterWindowDispatcher &&
-        (directNiriFocusOrColumnRelayout || (directLiveGeometryAvailable && !directNiriGeometryEditNeedsHardRecalc));
+        (directNiriFocusOrLayoutRelayout || (directLiveGeometryAvailable && !directNiriGeometryEditNeedsHardRecalc));
     const bool runCenterWindowFloatingGeometryPath = overviewActive && activeDirectNiriSingleWorkspaceOverview() && isCenterWindowDispatcher;
 
     if (overviewActive && activeDirectNiriSingleWorkspaceOverview() && isMoveToWorkspaceDispatcher) {
@@ -6035,7 +6040,7 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 (moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower) && !moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower) ?
                      "movecol-edge-release-prev" : "movecol-edge-release-next") :
                 (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
-                 (movecolStyleRelayout ? "movecol" : "movefocus"));
+                 (isDirectionalMoveWindowDispatcher ? "movewindow" : (movecolStyleRelayout ? "movecol" : "movefocus")));
             const bool nativeEdgeCameraTransitionAfterDispatch = nativeEdgeCameraTransition || nativeEdgeCameraFocusReleased || enteredNativeEdgeCameraAfterDispatch;
 
             if (nativeEdgeCameraTransitionAfterDispatch) {
