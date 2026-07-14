@@ -109,6 +109,8 @@ class OverviewController {
     [[nodiscard]] SDispatchResult layoutMessageDispatcherHook(std::string args);
     [[nodiscard]] SDispatchResult moveFocusDispatcherHook(std::string args);
     [[nodiscard]] std::optional<Config::Actions::ActionResult> layoutMessageActionHook(const std::string& msg);
+    [[nodiscard]] std::optional<Config::Actions::ActionResult> moveInDirectionActionHook(Math::eDirection direction,
+                                                                                        std::optional<PHLWINDOW> window);
     [[nodiscard]] std::optional<Config::Actions::ActionResult> floatWindowActionHook(Config::Actions::eTogglableAction action,
                                                                                     std::optional<PHLWINDOW> window);
     [[nodiscard]] Config::Actions::ActionResult moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window);

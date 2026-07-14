@@ -459,6 +459,11 @@ Config::Actions::ActionResult hkMoveInDirectionAction(Math::eDirection direction
     if (shouldSuppressNativeActionDuringOverviewOpen())
         return {};
 
+    if (g_controller) {
+        if (auto handled = g_controller->moveInDirectionActionHook(direction, window); handled)
+            return std::move(*handled);
+    }
+
     return g_moveInDirectionActionOriginal ? g_moveInDirectionActionOriginal(direction, std::move(window)) : Config::Actions::ActionResult{};
 }
 
@@ -3253,6 +3258,47 @@ std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActi
 OverviewController::OverviewController(HANDLE handle) : m_handle(handle) {
     g_controller = this;
     g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
+}
+
+std::optional<Config::Actions::ActionResult> OverviewController::moveInDirectionActionHook(Math::eDirection direction,
+                                                                                            std::optional<PHLWINDOW> window) {
+    if (!g_moveInDirectionActionOriginal || m_overviewEditingDispatcherInProgress ||
+        (!activeDirectNiriSingleWorkspaceOverview() && !timedNiriSingleWorkspaceTransitionActive()))
+        return std::nullopt;
+
+    const auto explicitWindow = window.value_or(PHLWINDOW{});
+    if (explicitWindow && explicitWindow != selectedWindow())
+        return std::nullopt;
+
+    const std::string directionName = Math::toString(direction);
+    if (directionName == "default")
+        return std::nullopt;
+
+    DispatcherHandler nativeMove = [direction, window](std::string) -> SDispatchResult {
+        const auto result = g_moveInDirectionActionOriginal(direction, window);
+        if (!result)
+            return {.success = false, .error = result.error().message};
+
+        return {.passEvent = result->passEvent};
+    };
+
+    const auto result = runOverviewEditingDispatcher("movewindow", &nativeMove, directionName);
+    if (debugLogsEnabled()) {
+        std::ostringstream out;
+        out << "[hymission] routed move direction action through overview"
+            << " direction=" << directionName
+            << " explicitWindow=" << debugWindowLabel(explicitWindow)
+            << " success=" << (result.success ? 1 : 0)
+            << " passEvent=" << (result.passEvent ? 1 : 0);
+        if (!result.error.empty())
+            out << " error=" << result.error;
+        debugLog(out.str());
+    }
+
+    if (!result.success)
+        return Config::Actions::actionError(result.error.empty() ? "move window failed" : result.error);
+
+    return Config::Actions::SActionResult{.passEvent = result.passEvent};
 }
 
 OverviewController::~OverviewController() {
