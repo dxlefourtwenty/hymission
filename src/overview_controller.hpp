@@ -236,6 +236,12 @@ class OverviewController {
         SP<Render::IFramebuffer> framebuffer;
     };
 
+    struct NiriOverviewWorkAreaSnapshot {
+        MONITORID monitorId = MONITOR_INVALID;
+        Rect      workAreaGlobal;
+        bool      changeLogged = false;
+    };
+
     struct NiriDragTarget {
         PHLWORKSPACE                workspace;
         PHLMONITOR                  monitor;
@@ -766,6 +772,9 @@ class OverviewController {
     void                                        startNiriWallpaperLayoutLayerRefresh();
     void                                        clearNiriWallpaperLayoutLayerRefresh();
     void                                        clearNiriWallpaperSnapshots();
+    void                                        captureNiriOverviewWorkAreas();
+    void                                        clearNiriOverviewWorkAreas();
+    [[nodiscard]] Rect                          niriOverviewWorkAreaForWorkspace(const PHLWORKSPACE& workspace) const;
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
     [[nodiscard]] SP<Render::IFramebuffer>       captureLayerFramebuffer(const PHLLS& layer);
@@ -1162,6 +1171,7 @@ class OverviewController {
     StripPreviewContext      m_stripPreviewContext;
     std::vector<HiddenStripLayerProxy> m_hiddenStripLayerProxies;
     std::vector<NiriWallpaperSnapshot> m_niriWallpaperSnapshots;
+    mutable std::vector<NiriOverviewWorkAreaSnapshot> m_niriOverviewWorkAreaSnapshots;
     PHLLS                    m_layerSnapshotCaptureLayer;
     bool                     m_applyingWorkspaceTransitionCommit = false;
     bool                     m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;
