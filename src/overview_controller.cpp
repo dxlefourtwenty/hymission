@@ -11222,17 +11222,8 @@ void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
             continue;
 
         desired.emplace_back(layer, monitor);
-        if (!isNiriWallpaperLayoutLayer(layer, monitor)) {
-            const Rect currentRect = makeRect(layer->m_geometry.x, layer->m_geometry.y, layer->m_geometry.w, layer->m_geometry.h);
-            const WORKSPACEID workspaceId = niriWallpaperWorkspaceIdForMonitor(monitor);
-            const auto retainedProxy = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(), [&](const HiddenStripLayerProxy& proxy) {
-                return proxy.layer == layer && proxy.monitor == monitor && proxy.niriWallpaperLayoutLayer &&
-                    proxy.niriWallpaperWorkspaceId == workspaceId;
-            });
-            if (retainedProxy != m_hiddenStripLayerProxies.end() && rectApproxEqual(retainedProxy->capturedRectGlobal, currentRect, 0.5))
-                continue;
-        }
-
+        // Hidden layer surfaces need repeated snapshot renders to receive frame
+        // feedback and begin a later client-side show animation.
         if (!captureHiddenStripLayerProxy(layer, monitor) && debugLogsEnabled())
             debugLog("[hymission] niri layout layer refresh failed namespace=" + layer->m_namespace + " monitor=" + monitor->m_name);
     }
