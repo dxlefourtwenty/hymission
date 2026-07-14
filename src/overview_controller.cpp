@@ -10821,8 +10821,18 @@ bool OverviewController::isNiriWallpaperLayoutLayer(const PHLLS& layer, const PH
         layer->m_layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && layerResource->m_current.exclusive > 0;
 }
 
-bool OverviewController::isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
+bool OverviewController::isNiriWallpaperLayoutLayerCandidate(const PHLLS& layer, const PHLMONITOR& monitor) const {
     if (isNiriWallpaperLayoutLayer(layer, monitor))
+        return true;
+    if (!layer || !monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor) || !layer->m_mapped || layer->m_readyToDelete ||
+        layer->m_monitor.lock() != monitor || layer->m_layer != ZWLR_LAYER_SHELL_V1_LAYER_TOP)
+        return false;
+
+    return shouldHideLayerSurfaceNamespace(layer, hideBarNamespaces());
+}
+
+bool OverviewController::isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const {
+    if (isNiriWallpaperLayoutLayerCandidate(layer, monitor))
         return true;
     if (!layer || !monitor || !niriWallpaperZoomAppliesToMonitor(m_state, monitor) || !layer->m_mapped || layer->m_readyToDelete ||
         layer->m_monitor.lock() != monitor)
@@ -10830,6 +10840,16 @@ bool OverviewController::isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, 
 
     const auto* proxy = hiddenStripLayerProxyFor(layer, monitor);
     return proxy && proxy->niriWallpaperLayoutLayer;
+}
+
+WORKSPACEID OverviewController::niriWallpaperWorkspaceIdForMonitor(const PHLMONITOR& monitor) const {
+    if (!monitor)
+        return WORKSPACE_INVALID;
+    if (monitor->m_activeWorkspace && !monitor->m_activeWorkspace->m_isSpecialWorkspace)
+        return monitor->m_activeWorkspace->m_id;
+    if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == monitor && !m_state.ownerWorkspace->m_isSpecialWorkspace)
+        return m_state.ownerWorkspace->m_id;
+    return WORKSPACE_INVALID;
 }
 
 void OverviewController::syncNiriWallpaperSnapshots() {
@@ -10900,6 +10920,39 @@ const OverviewController::HiddenStripLayerProxy* OverviewController::hiddenStrip
     return it == m_hiddenStripLayerProxies.end() ? nullptr : &*it;
 }
 
+bool OverviewController::hasNiriWallpaperLayoutLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) const {
+    return std::any_of(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(), [&](const HiddenStripLayerProxy& proxy) {
+        return proxy.layer == layer && proxy.monitor == monitor && proxy.niriWallpaperLayoutLayer;
+    });
+}
+
+OverviewController::HiddenStripLayerProxy* OverviewController::hiddenStripLayerProxyForCapture(const PHLLS& layer, const PHLMONITOR& monitor,
+                                                                                                 bool trackAsNiriLayoutLayer, WORKSPACEID workspaceId) {
+    const auto findProxy = [&](const auto& predicate) -> HiddenStripLayerProxy* {
+        const auto proxy = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(), predicate);
+        return proxy == m_hiddenStripLayerProxies.end() ? nullptr : &*proxy;
+    };
+
+    if (!trackAsNiriLayoutLayer) {
+        return findProxy([&](const HiddenStripLayerProxy& proxy) {
+            return proxy.layer == layer && proxy.monitor == monitor && !proxy.niriWallpaperLayoutLayer;
+        });
+    }
+
+    if (auto* proxy = findProxy([&](const HiddenStripLayerProxy& candidate) {
+            return candidate.layer == layer && candidate.monitor == monitor && candidate.niriWallpaperLayoutLayer &&
+                candidate.niriWallpaperWorkspaceId == workspaceId;
+        }))
+        return proxy;
+
+    if (hasNiriWallpaperLayoutLayerProxy(layer, monitor))
+        return nullptr;
+
+    return findProxy([&](const HiddenStripLayerProxy& proxy) {
+        return proxy.layer == layer && proxy.monitor == monitor && !proxy.niriWallpaperLayoutLayer;
+    });
+}
+
 bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) {
     const bool allowEmptyDirectNiriLayoutLayerCapture = layer && monitor && monitor == m_state.ownerMonitor &&
         m_state.collectionPolicy.onlyActiveWorkspace && m_state.windows.empty() && niriModeAppliesToState(m_state) &&
@@ -10938,24 +10991,13 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
     }
 
     const bool rawNiriLayoutLayer = isNiriWallpaperLayoutLayer(layer, monitor);
-    WORKSPACEID niriWallpaperWorkspaceId = WORKSPACE_INVALID;
-    if (rawNiriLayoutLayer && monitor) {
-        if (monitor->m_activeWorkspace && !monitor->m_activeWorkspace->m_isSpecialWorkspace)
-            niriWallpaperWorkspaceId = monitor->m_activeWorkspace->m_id;
-        else if (m_state.ownerWorkspace && m_state.ownerWorkspace->m_monitor.lock() == monitor && !m_state.ownerWorkspace->m_isSpecialWorkspace)
-            niriWallpaperWorkspaceId = m_state.ownerWorkspace->m_id;
-    }
-
-    auto existingIt = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(),
-                                   [&](const HiddenStripLayerProxy& proxy) {
-                                       if (proxy.layer != layer || proxy.monitor != monitor)
-                                           return false;
-                                       if (rawNiriLayoutLayer || proxy.niriWallpaperLayoutLayer)
-                                           return proxy.niriWallpaperLayoutLayer && proxy.niriWallpaperWorkspaceId == niriWallpaperWorkspaceId;
-                                       return !proxy.niriWallpaperLayoutLayer;
-                                   });
-    auto*      existing = existingIt == m_hiddenStripLayerProxies.end() ? nullptr : &*existingIt;
-    const bool niriLayoutLayer = rawNiriLayoutLayer || (existing && existing->niriWallpaperLayoutLayer);
+    const bool niriLayoutLayerCandidate = isNiriWallpaperLayoutLayerCandidate(layer, monitor);
+    const WORKSPACEID activeWorkspaceId = niriWallpaperWorkspaceIdForMonitor(monitor);
+    const bool hasRetainedNiriProxy = hasNiriWallpaperLayoutLayerProxy(layer, monitor);
+    const bool trackAsNiriLayoutLayer = niriLayoutLayerCandidate || hasRetainedNiriProxy;
+    auto*      existing = hiddenStripLayerProxyForCapture(layer, monitor, trackAsNiriLayoutLayer, activeWorkspaceId);
+    const bool niriLayoutLayer = trackAsNiriLayoutLayer;
+    const WORKSPACEID niriWallpaperWorkspaceId = niriLayoutLayer ? activeWorkspaceId : WORKSPACE_INVALID;
     if (!existing) {
         HiddenStripLayerProxy proxy;
         proxy.layer = layer;
@@ -11092,6 +11134,10 @@ bool OverviewController::captureHiddenStripLayerProxy(const PHLLS& layer, const 
             << " targetOffset=(" << targetOffsetX << "," << targetOffsetY << ")"
             << " sourceFb=(" << sourceFramebuffer->m_size.x << "x" << sourceFramebuffer->m_size.y << ")"
             << " fb=(" << fbWidth << "x" << fbHeight << ")"
+            << " rawNiriLayout=" << (rawNiriLayoutLayer ? 1 : 0)
+            << " niriLayoutCandidate=" << (niriLayoutLayerCandidate ? 1 : 0)
+            << " niriLayout=" << (niriLayoutLayer ? 1 : 0)
+            << " workspaceId=" << niriWallpaperWorkspaceId
             << " matchProxy=" << sourceMatchesProxy << " matchCaptured=" << sourceMatchesCaptured << " matchMonitor=" << sourceMatchesMonitor
             << " sourceRect=" << rectToString(sourceRect) << " targetRect=" << rectToString(targetRect);
         debugLog(out.str());
@@ -11176,6 +11222,17 @@ void OverviewController::syncNiriWallpaperLayoutLayerProxies() {
             continue;
 
         desired.emplace_back(layer, monitor);
+        if (!isNiriWallpaperLayoutLayer(layer, monitor)) {
+            const Rect currentRect = makeRect(layer->m_geometry.x, layer->m_geometry.y, layer->m_geometry.w, layer->m_geometry.h);
+            const WORKSPACEID workspaceId = niriWallpaperWorkspaceIdForMonitor(monitor);
+            const auto retainedProxy = std::find_if(m_hiddenStripLayerProxies.begin(), m_hiddenStripLayerProxies.end(), [&](const HiddenStripLayerProxy& proxy) {
+                return proxy.layer == layer && proxy.monitor == monitor && proxy.niriWallpaperLayoutLayer &&
+                    proxy.niriWallpaperWorkspaceId == workspaceId;
+            });
+            if (retainedProxy != m_hiddenStripLayerProxies.end() && rectApproxEqual(retainedProxy->capturedRectGlobal, currentRect, 0.5))
+                continue;
+        }
+
         if (!captureHiddenStripLayerProxy(layer, monitor) && debugLogsEnabled())
             debugLog("[hymission] niri layout layer refresh failed namespace=" + layer->m_namespace + " monitor=" + monitor->m_name);
     }

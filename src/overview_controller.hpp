@@ -781,9 +781,14 @@ class OverviewController {
     [[nodiscard]] SP<Render::IFramebuffer>       captureLayerFramebuffer(const PHLLS& layer);
     [[nodiscard]] bool                          isNiriWallpaperLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          isNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] bool                          isNiriWallpaperLayoutLayerCandidate(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          isRetainedNiriWallpaperLayoutLayer(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] WORKSPACEID                   niriWallpaperWorkspaceIdForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] SP<Render::ITexture>           niriWallpaperTextureForMonitor(const PHLMONITOR& monitor) const;
     [[nodiscard]] bool                          captureHiddenStripLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor);
+    [[nodiscard]] bool                          hasNiriWallpaperLayoutLayerProxy(const PHLLS& layer, const PHLMONITOR& monitor) const;
+    [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyForCapture(const PHLLS& layer, const PHLMONITOR& monitor,
+                                                                                bool trackAsNiriLayoutLayer, WORKSPACEID workspaceId);
     [[nodiscard]] HiddenStripLayerProxy*        hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor);
     [[nodiscard]] const HiddenStripLayerProxy*  hiddenStripLayerProxyFor(const PHLLS& layer, const PHLMONITOR& monitor) const;
     [[nodiscard]] Rect                          hiddenStripLayerProxyRect(const HiddenStripLayerProxy& proxy) const;
