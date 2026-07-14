@@ -12910,19 +12910,19 @@ void OverviewController::beginOpen(const PHLMONITOR& monitor, ScopeOverride requ
     recordWindowActivation(Desktop::focusState()->window());
     closeActiveSpecialWorkspaces();
     if (freshOpen)
-        captureNiriOverviewWorkAreas();
+        captureNiriOverviewViewports();
     const auto preferredSelectedWindow = expandSelectedWindowEnabled() ? Desktop::focusState()->window() : PHLWINDOW{};
     State next = buildState(monitor, requestedScope, {}, false, false, preferredSelectedWindow);
     if (next.windows.empty() && next.stripEntries.empty() && !next.ownerMonitor) {
         if (freshOpen)
-            clearNiriOverviewWorkAreas();
+            clearNiriOverviewViewports();
         setDamageTrackingOverride(false);
         return;
     }
 
     if (!activateHooks()) {
         if (freshOpen)
-            clearNiriOverviewWorkAreas();
+            clearNiriOverviewViewports();
         setDamageTrackingOverride(false);
         return;
     }
@@ -13496,7 +13496,7 @@ void OverviewController::deactivate() {
     clearDirectNiriDndState();
     clearHiddenStripLayerProxies();
     clearNiriWallpaperSnapshots();
-    clearNiriOverviewWorkAreas();
+    clearNiriOverviewViewports();
     clearNiriWallpaperLayoutLayerRefresh();
     restoreOverviewRenderState();
     deactivateHooks();

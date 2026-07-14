@@ -236,9 +236,10 @@ class OverviewController {
         SP<Render::IFramebuffer> framebuffer;
     };
 
-    struct NiriOverviewWorkAreaSnapshot {
+    struct NiriOverviewViewportSnapshot {
         MONITORID monitorId = MONITOR_INVALID;
-        Rect      workAreaGlobal;
+        Rect      viewportGlobal;
+        Rect      initialWorkAreaGlobal;
         bool      changeLogged = false;
     };
 
@@ -772,9 +773,9 @@ class OverviewController {
     void                                        startNiriWallpaperLayoutLayerRefresh();
     void                                        clearNiriWallpaperLayoutLayerRefresh();
     void                                        clearNiriWallpaperSnapshots();
-    void                                        captureNiriOverviewWorkAreas();
-    void                                        clearNiriOverviewWorkAreas();
-    [[nodiscard]] Rect                          niriOverviewWorkAreaForWorkspace(const PHLWORKSPACE& workspace) const;
+    void                                        captureNiriOverviewViewports();
+    void                                        clearNiriOverviewViewports();
+    [[nodiscard]] Rect                          niriOverviewViewportForWorkspace(const PHLWORKSPACE& workspace) const;
     void                                        resetDirectNiriWorkspaceLanes();
     void                                        syncNiriWallpaperSnapshots();
     [[nodiscard]] SP<Render::IFramebuffer>       captureLayerFramebuffer(const PHLLS& layer);
@@ -1171,7 +1172,7 @@ class OverviewController {
     StripPreviewContext      m_stripPreviewContext;
     std::vector<HiddenStripLayerProxy> m_hiddenStripLayerProxies;
     std::vector<NiriWallpaperSnapshot> m_niriWallpaperSnapshots;
-    mutable std::vector<NiriOverviewWorkAreaSnapshot> m_niriOverviewWorkAreaSnapshots;
+    mutable std::vector<NiriOverviewViewportSnapshot> m_niriOverviewViewportSnapshots;
     PHLLS                    m_layerSnapshotCaptureLayer;
     bool                     m_applyingWorkspaceTransitionCommit = false;
     bool                     m_rebuildVisibleStateAfterWorkspaceTransitionCommit = false;

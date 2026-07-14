@@ -172,20 +172,6 @@ Rect transformLiveOverviewRect(const Rect& liveRect, const Rect& desktopViewport
     };
 }
 
-Rect transformRectBetweenWorkAreas(const Rect& rect, const Rect& sourceWorkArea, const Rect& targetWorkArea) {
-    if (sourceWorkArea.width <= 0.0 || sourceWorkArea.height <= 0.0 || targetWorkArea.width <= 0.0 || targetWorkArea.height <= 0.0)
-        return {};
-
-    const double scaleX = targetWorkArea.width / sourceWorkArea.width;
-    const double scaleY = targetWorkArea.height / sourceWorkArea.height;
-    return {
-        targetWorkArea.x + (rect.x - sourceWorkArea.x) * scaleX,
-        targetWorkArea.y + (rect.y - sourceWorkArea.y) * scaleY,
-        std::max(0.0, rect.width * scaleX),
-        std::max(0.0, rect.height * scaleY),
-    };
-}
-
 int64_t authoritativeOverviewWorkspaceId(bool transitionActive, int64_t transitionTargetId, int64_t committedWorkspaceId) {
     if (transitionActive)
         return transitionTargetId;
