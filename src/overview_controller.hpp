@@ -1074,6 +1074,7 @@ class OverviewController {
     bool                      m_animationsEnabledOverridden = false;
     long                      m_animationsEnabledBackup = 1;
     PHLANIMVAR<float>         m_relayoutProgressAnimation;
+    bool                      m_relayoutFillsWindowSurface = false;
     PHLANIMVAR<float>         m_overviewVisibilityAnimation;
     SP<Hyprutils::Animation::SAnimationPropertyConfig> m_overviewVisibilityAnimationConfig;
     PHLANIMVAR<float>         m_workspaceTransitionAnimation;

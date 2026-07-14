@@ -10197,6 +10197,7 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     m_state.relayoutActive = false;
     m_state.relayoutProgress = 1.0;
     m_state.relayoutStart = {};
+    m_relayoutFillsWindowSurface = false;
     clearDirectNiriNativeFloatingGeometryPreview();
 
     if (debugLogsEnabled()) {
@@ -10672,9 +10673,14 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
     const double actualWidth = std::max(1.0, actual.width);
     const double actualHeight = std::max(1.0, actual.height);
 
-    const double uniformScale = std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
-    const Rect   fitted = makeRect(current.centerX() - actualWidth * uniformScale * 0.5, current.centerY() - actualHeight * uniformScale * 0.5,
-                                   actualWidth * uniformScale, actualHeight * uniformScale);
+    const bool fillRelayoutSurface = m_relayoutFillsWindowSurface && m_state.phase == Phase::Active && m_state.relayoutActive &&
+        usesDirectNiriScrollingOverview(m_state);
+    const double scaleX = fillRelayoutSurface ? std::max(0.0, current.width / actualWidth) :
+                                               std::max(0.0, std::min(current.width / actualWidth, current.height / actualHeight));
+    const double scaleY = fillRelayoutSurface ? std::max(0.0, current.height / actualHeight) : scaleX;
+    const Rect   fitted = fillRelayoutSurface ? current :
+        makeRect(current.centerX() - actualWidth * scaleX * 0.5, current.centerY() - actualHeight * scaleY * 0.5,
+                 actualWidth * scaleX, actualHeight * scaleY);
     if (debugLogsEnabled() && window->m_workspace && consumeTwoColumnSwapPreviewTrace(window->m_workspace)) {
         std::ostringstream out;
         out << "[hymission] swapcol window-transform"
@@ -10685,14 +10691,16 @@ std::optional<OverviewController::WindowTransform> OverviewController::windowTra
             << " targetGlobal=" << rectToString(managed->targetGlobal)
             << " relayoutFrom=" << rectToString(managed->relayoutFromGlobal)
             << " relayoutActive=" << (m_state.relayoutActive ? 1 : 0)
+            << " fillRelayoutSurface=" << (fillRelayoutSurface ? 1 : 0)
+            << " scale=(" << scaleX << "," << scaleY << ")"
             << " stripPreview=" << (m_stripPreviewContext.active ? 1 : 0);
         debugLog(out.str());
     }
     return WindowTransform{
         .actualGlobal = actual,
         .targetGlobal = fitted,
-        .scaleX = uniformScale,
-        .scaleY = uniformScale,
+        .scaleX = scaleX,
+        .scaleY = scaleY,
     };
 }
 
@@ -11623,6 +11631,7 @@ void OverviewController::beginOverviewRelayoutAnimation(const char* source) {
     m_state.relayoutProgress = 0.0;
     m_state.relayoutStart = std::chrono::steady_clock::now();
     m_relayoutProgressAnimation.reset();
+    m_relayoutFillsWindowSurface = source && std::string_view{source} == "movewindow";
 
     const auto config = windowsMoveAnimationConfig();
     if (!g_pAnimationManager || !config) {
@@ -11664,6 +11673,7 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutProgress = 1.0;
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
+    m_relayoutFillsWindowSurface = false;
     clearDirectNiriNativeFloatingGeometryPreview();
 }
 
