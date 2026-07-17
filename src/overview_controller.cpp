@@ -15356,17 +15356,21 @@ bool OverviewController::carryOverWorkspaceStripRelayout(State& next, const Stat
 
 void OverviewController::renderBackdrop() const {
     const double progress = visualProgress();
-    if (progress <= 0.0)
-        return;
-
     const auto monitor = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!monitor)
         return;
 
+    const bool niriWallpaperZoom = niriWallpaperZoomAppliesToMonitor(m_state, monitor);
+    const bool opaqueNiriAnimationBackdrop = niriWallpaperZoom &&
+        (m_state.phase == Phase::Opening || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing);
+    if (progress <= 0.0 && !opaqueNiriAnimationBackdrop)
+        return;
+
     CHyprColor color = CHyprColor(0.05, 0.06, 0.08, BACKDROP_ALPHA * progress);
-    if (niriWallpaperZoomAppliesToMonitor(m_state, monitor)) {
+    if (niriWallpaperZoom) {
         color = niriModeWallpaperZoomBackgroundColor();
-        color.a *= progress;
+        if (!opaqueNiriAnimationBackdrop)
+            color.a *= progress;
     }
 
     g_pHyprOpenGL->renderRect(
