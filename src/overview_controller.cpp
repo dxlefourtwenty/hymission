@@ -15361,14 +15361,15 @@ void OverviewController::renderBackdrop() const {
         return;
 
     const bool niriWallpaperZoom = niriWallpaperZoomAppliesToMonitor(m_state, monitor);
-    const bool opaqueNiriOpeningBackdrop = m_state.phase == Phase::Opening && niriWallpaperZoom;
-    if (progress <= 0.0 && !opaqueNiriOpeningBackdrop)
+    const bool opaqueNiriAnimationBackdrop = niriWallpaperZoom &&
+        (m_state.phase == Phase::Opening || m_state.phase == Phase::ClosingSettle || m_state.phase == Phase::Closing);
+    if (progress <= 0.0 && !opaqueNiriAnimationBackdrop)
         return;
 
     CHyprColor color = CHyprColor(0.05, 0.06, 0.08, BACKDROP_ALPHA * progress);
     if (niriWallpaperZoom) {
         color = niriModeWallpaperZoomBackgroundColor();
-        if (!opaqueNiriOpeningBackdrop)
+        if (!opaqueNiriAnimationBackdrop)
             color.a *= progress;
     }
 
