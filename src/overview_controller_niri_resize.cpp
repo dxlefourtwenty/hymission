@@ -2,6 +2,7 @@
 #include <sstream>
 
 #define private public
+#include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
 #include <hyprland/src/layout/supplementary/DragController.hpp>
 #undef private
 
@@ -12,6 +13,7 @@
 #include <limits>
 
 #include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/managers/cursor/CursorShapeOverrideController.hpp>
@@ -59,6 +61,40 @@ Vector2D resizePreviewScale(const Rect& preview, const CBox& nativeBox) {
 Vector2D nativeResizePointer(const Vector2D& start, const Vector2D& pointer, const Vector2D& scale) {
     const Vector2D delta = pointer - start;
     return start + Vector2D{delta.x / scale.x, delta.y / scale.y};
+}
+
+Layout::Tiled::CScrollingAlgorithm* scrollingForWorkspace(const PHLWORKSPACE& workspace) {
+    if (!workspace || !workspace->m_space)
+        return nullptr;
+
+    const auto algorithm = workspace->m_space->algorithm();
+    if (!algorithm || !algorithm->tiledAlgo())
+        return nullptr;
+
+    return dynamic_cast<Layout::Tiled::CScrollingAlgorithm*>(algorithm->tiledAlgo().get());
+}
+
+bool resizeTiledTargetPreservingCamera(const PHLWINDOW& window, const SP<Layout::ITarget>& target, const Vector2D& pointer) {
+    auto* const scrolling = scrollingForWorkspace(window ? window->m_workspace : nullptr);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    const auto targetData = scrolling->dataFor(target);
+    if (!targetData || !targetData->column)
+        return false;
+
+    const auto column = targetData->column.lock();
+    if (!column)
+        return false;
+
+    const double cameraOffset = scrolling->m_scrollingData->controller->getOffset();
+    scrolling->m_scrollingData->centerCol(column);
+    scrolling->m_scrollingData->recalculate(true);
+    g_layoutManager->moveMouse(pointer);
+    scrolling->m_scrollingData->controller->setOffset(cameraOffset);
+    scrolling->m_scrollingData->recalculate(true);
+    target->warpPositionSize();
+    return true;
 }
 
 void resizeFloatingTargetWithoutWorkspaceTransfer(const PHLWINDOW& window, const SP<Layout::ITarget>& target,
@@ -219,7 +255,8 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
         (void)commitActiveNiriRelayoutForRetarget();
 
     const bool preserveWorkspace = window->m_workspace != activeLayoutWorkspace();
-    if (!preserveWorkspace) {
+    const bool preserveFocus = preserveWorkspace || Desktop::focusState()->window() != window;
+    if (!preserveFocus) {
         selectWindowInState(m_state, window);
         m_state.focusDuringOverview = window;
         m_queuedOverviewSelectionTarget.reset();
@@ -234,11 +271,12 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
     m_directNiriMouseResizePointer = pointer;
     m_directNiriMouseResizeScale = resizePreviewScale(preview, window->layoutTarget()->position());
     m_directNiriMouseResizeThresholdReached = nativeWindowDragThreshold() <= 0.0;
+    m_directNiriMouseResizePreservesFocus = preserveFocus;
     m_directNiriMouseResizePreservesWorkspace = preserveWorkspace;
     m_directNiriMouseResizeWindow = window;
 
     const auto& dragController = g_layoutManager->dragController();
-    if (preserveWorkspace) {
+    if (preserveFocus) {
         const auto target = window->layoutTarget();
         dragController->m_target = target;
         dragController->m_dragMode = mode;
@@ -265,6 +303,7 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
             << " workspace=" << debugWorkspaceLabel(window->m_workspace)
             << " mode=" << static_cast<int>(mode)
             << " corner=" << static_cast<int>(dragController->m_grabbedCorner)
+            << " preserveFocus=" << (preserveFocus ? 1 : 0)
             << " preserveWorkspace=" << (preserveWorkspace ? 1 : 0)
             << " scale=(" << m_directNiriMouseResizeScale.x << ',' << m_directNiriMouseResizeScale.y << ')';
         debugLog(out.str());
@@ -300,7 +339,8 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
     const auto target = window->layoutTarget();
     if (m_directNiriMouseResizePreservesWorkspace && target->floating()) {
         resizeFloatingTargetWithoutWorkspaceTransfer(window, target, *dragController, nativePointer);
-    } else {
+    } else if (!m_directNiriMouseResizePreservesFocus || target->floating() ||
+               !resizeTiledTargetPreservingCamera(window, target, nativePointer)) {
         g_layoutManager->moveMouse(nativePointer);
     }
     logDirectNiriMouseResizeGeometry(window, target);
@@ -310,11 +350,11 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
 
 void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     const auto window = m_directNiriMouseResizeWindow.lock();
-    const bool preserveWorkspace = m_directNiriMouseResizePreservesWorkspace;
+    const bool preserveFocus = m_directNiriMouseResizePreservesFocus;
     if (window) {
         const auto dragTarget = g_layoutManager->dragController()->target();
         if (dragTarget && dragTarget == window->layoutTarget()) {
-            if (preserveWorkspace) {
+            if (preserveFocus) {
                 Cursor::overrideController->unsetOverride(Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
                 dragTarget->damageEntire();
                 g_layoutManager->setTargetGeom(dragTarget->position(), dragTarget);
@@ -336,6 +376,7 @@ void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     m_directNiriMouseResizePointer = {};
     m_directNiriMouseResizeScale = {1.0, 1.0};
     m_directNiriMouseResizeThresholdReached = false;
+    m_directNiriMouseResizePreservesFocus = false;
     m_directNiriMouseResizePreservesWorkspace = false;
     if (!previewRects)
         return;
@@ -343,7 +384,7 @@ void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     if (window->m_workspace)
         refreshWorkspaceLayoutSnapshot(window->m_workspace);
     refreshNiriScrollingOverviewAfterLayoutScroll("mouse-resize", &*previewRects);
-    if (!preserveWorkspace) {
+    if (!preserveFocus) {
         selectWindowInState(m_state, window);
         m_state.focusDuringOverview = window;
     }

@@ -3273,7 +3273,7 @@ bool OverviewController::forwardDirectNiriMouseResizeBind(const IPointer::SButto
         return false;
 
     updateHoveredFromPointer(false, false, false, false, "mouse-resize-bind");
-    if (event.state == WL_POINTER_BUTTON_STATE_RELEASED && m_directNiriMouseResizePreservesWorkspace)
+    if (event.state == WL_POINTER_BUTTON_STATE_RELEASED && m_directNiriMouseResizePreservesFocus)
         finishDirectNiriMouseResize(true);
 
     const ScopedFlag forwardingGuard(m_forwardingOverviewMouseBind);
