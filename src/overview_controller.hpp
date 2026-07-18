@@ -943,6 +943,7 @@ class OverviewController {
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
     [[nodiscard]] bool forwardDirectNiriMouseResizeBind(const IPointer::SButtonEvent& event);
     [[nodiscard]] bool directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] bool suppressWorkspaceChangeForDirectNiriMouseResize(const PHLWORKSPACE& workspace) const;
     [[nodiscard]] std::optional<std::pair<PHLWINDOW, Rect>> directNiriMouseResizeTargetAtPointer() const;
     void beginDirectNiriMouseResize(const PHLWINDOW& window, const Rect& preview, eMouseBindMode mode);
     [[nodiscard]] bool updateDirectNiriMouseResize(const Vector2D& pointer);

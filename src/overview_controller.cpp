@@ -5667,6 +5667,17 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
 }
 
 void OverviewController::handleWorkspaceChange(PHLWORKSPACE workspace) {
+    if (suppressWorkspaceChangeForDirectNiriMouseResize(workspace)) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] suppress workspace.active owned by adjacent niri mouse resize"
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " target=" << debugWindowLabel(m_directNiriMouseResizeWindow.lock());
+            debugLog(out.str());
+        }
+        return;
+    }
+
     const bool liveFocusWorkspaceChange = matchesPendingLiveFocusWorkspaceChange(workspace);
     const bool stripWorkspaceChange = matchesPendingStripWorkspaceChange(workspace);
     const auto action = resolveOverviewWorkspaceChangeAction(isVisible(), m_applyingWorkspaceTransitionCommit, m_workspaceTransition.active,

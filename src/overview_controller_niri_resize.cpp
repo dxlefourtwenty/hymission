@@ -117,6 +117,12 @@ bool OverviewController::directNiriMouseResizeOwnsWindow(const PHLWINDOW& window
     return window && m_directNiriMouseResizeWindow.lock() == window;
 }
 
+bool OverviewController::suppressWorkspaceChangeForDirectNiriMouseResize(const PHLWORKSPACE& workspace) const {
+    const auto window = m_directNiriMouseResizeWindow.lock();
+    return m_directNiriMouseResizePreservesWorkspace && window && workspace && window->m_workspace == workspace &&
+        activeDirectNiriSingleWorkspaceOverview() && m_state.phase == Phase::Active;
+}
+
 std::optional<std::pair<PHLWINDOW, Rect>> OverviewController::directNiriMouseResizeTargetAtPointer() const {
     const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
     const auto eligible = [&](const PHLWINDOW& window) {
