@@ -3273,6 +3273,9 @@ bool OverviewController::forwardDirectNiriMouseResizeBind(const IPointer::SButto
         return false;
 
     updateHoveredFromPointer(false, false, false, false, "mouse-resize-bind");
+    if (event.state == WL_POINTER_BUTTON_STATE_RELEASED && m_directNiriMouseResizePreservesWorkspace)
+        finishDirectNiriMouseResize(true);
+
     const ScopedFlag forwardingGuard(m_forwardingOverviewMouseBind);
     const auto pointer = g_pSeatManager ? g_pSeatManager->m_mouse.lock() : SP<IPointer>{};
     (void)g_pKeybindManager->onMouseEvent(event, pointer);
@@ -5664,6 +5667,17 @@ void OverviewController::handleWindowSetChange(PHLWINDOW window, WindowSetChange
 }
 
 void OverviewController::handleWorkspaceChange(PHLWORKSPACE workspace) {
+    if (suppressWorkspaceChangeForDirectNiriMouseResize(workspace)) {
+        if (debugLogsEnabled()) {
+            std::ostringstream out;
+            out << "[hymission] suppress workspace.active owned by adjacent niri mouse resize"
+                << " workspace=" << debugWorkspaceLabel(workspace)
+                << " target=" << debugWindowLabel(m_directNiriMouseResizeWindow.lock());
+            debugLog(out.str());
+        }
+        return;
+    }
+
     const bool liveFocusWorkspaceChange = matchesPendingLiveFocusWorkspaceChange(workspace);
     const bool stripWorkspaceChange = matchesPendingStripWorkspaceChange(workspace);
     const auto action = resolveOverviewWorkspaceChangeAction(isVisible(), m_applyingWorkspaceTransitionCommit, m_workspaceTransition.active,
@@ -10804,8 +10818,14 @@ bool OverviewController::transformSurfaceRenderDataForWindow(const PHLWINDOW& wi
 }
 
 bool OverviewController::adjustTransformedSurfaceBoxSize(const CSurfacePassElement::SRenderData& renderData, const PHLMONITOR& monitor, CBox& box) const {
-    if (renderData.mainSurface)
-        return false;
+    if (renderData.mainSurface) {
+        if (!directNiriAdjacentTiledMouseResizeActive(renderData.pWindow))
+            return false;
+
+        box.width = std::max(1.0, renderData.w);
+        box.height = std::max(1.0, renderData.h);
+        return true;
+    }
 
     const auto transform = windowTransformFor(renderData.pWindow, monitor);
     if (!transform)
@@ -11581,6 +11601,11 @@ std::optional<std::size_t> OverviewController::hitTestTarget(double x, double y)
 
 std::optional<std::size_t> OverviewController::hitTestStripTarget(double x, double y) const {
     return hitTestWorkspaceStrip(stripRects(), x, y);
+}
+
+std::optional<Rect> OverviewController::workspaceStripWindowPreviewRect(const WorkspaceStripEntry& entry, const Rect& stripRect,
+                                                                         const PHLWINDOW& window) const {
+    return stripWindowPreviewRectForHitTest(entry, stripRect, window);
 }
 
 std::optional<Rect> OverviewController::workspaceTransitionRectForWindow(const PHLWINDOW& window) const {
