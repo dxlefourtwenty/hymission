@@ -316,6 +316,7 @@ using MoveFocusActionFn = Config::Actions::ActionResult (*)(Math::eDirection);
 using MoveInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
 using SwapInDirectionActionFn = Config::Actions::ActionResult (*)(Math::eDirection, std::optional<PHLWINDOW>);
 using ResizeActionFn = Config::Actions::ActionResult (*)(const Vector2D&, bool, std::optional<PHLWINDOW>);
+using MouseActionFn = Config::Actions::ActionResult (*)(const std::string&);
 using FloatWindowActionFn = Config::Actions::ActionResult (*)(Config::Actions::eTogglableAction, std::optional<PHLWINDOW>);
 
 CFunctionHook* g_layoutMessageActionHook = nullptr;
@@ -323,12 +324,14 @@ CFunctionHook* g_moveFocusActionHook = nullptr;
 CFunctionHook* g_moveInDirectionActionHook = nullptr;
 CFunctionHook* g_swapInDirectionActionHook = nullptr;
 CFunctionHook* g_resizeActionHook = nullptr;
+CFunctionHook* g_mouseActionHook = nullptr;
 CFunctionHook* g_floatWindowActionHook = nullptr;
 LayoutMessageActionFn g_layoutMessageActionOriginal = nullptr;
 MoveFocusActionFn g_moveFocusActionOriginal = nullptr;
 MoveInDirectionActionFn g_moveInDirectionActionOriginal = nullptr;
 SwapInDirectionActionFn g_swapInDirectionActionOriginal = nullptr;
 ResizeActionFn g_resizeActionOriginal = nullptr;
+MouseActionFn g_mouseActionOriginal = nullptr;
 FloatWindowActionFn g_floatWindowActionOriginal = nullptr;
 
 bool& g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
@@ -479,6 +482,15 @@ Config::Actions::ActionResult hkResizeAction(const Vector2D& size, bool relative
         return {};
 
     return g_resizeActionOriginal ? g_resizeActionOriginal(size, relative, std::move(window)) : Config::Actions::ActionResult{};
+}
+
+Config::Actions::ActionResult hkMouseAction(const std::string& action) {
+    if (g_controller) {
+        if (auto handled = g_controller->mouseActionHook(action); handled)
+            return std::move(*handled);
+    }
+
+    return g_mouseActionOriginal ? g_mouseActionOriginal(action) : Config::Actions::ActionResult{};
 }
 
 Config::Actions::ActionResult hkFloatWindowAction(Config::Actions::eTogglableAction action, std::optional<PHLWINDOW> window) {
@@ -3255,6 +3267,18 @@ std::optional<Config::Actions::ActionResult> OverviewController::floatWindowActi
     return result;
 }
 
+bool OverviewController::forwardDirectNiriMouseResizeBind(const IPointer::SButtonEvent& event) {
+    if (!g_mouseActionOriginal || !g_pKeybindManager || event.button != BTN_RIGHT ||
+        (event.state != WL_POINTER_BUTTON_STATE_PRESSED && event.state != WL_POINTER_BUTTON_STATE_RELEASED))
+        return false;
+
+    updateHoveredFromPointer(false, false, false, false, "mouse-resize-bind");
+    const ScopedFlag forwardingGuard(m_forwardingOverviewMouseBind);
+    const auto pointer = g_pSeatManager ? g_pSeatManager->m_mouse.lock() : SP<IPointer>{};
+    (void)g_pKeybindManager->onMouseEvent(event, pointer);
+    return true;
+}
+
 OverviewController::OverviewController(HANDLE handle) : m_handle(handle) {
     g_controller = this;
     g_openOverviewLayoutConfigSignatures[this] = layoutAffectingConfigSignature(m_handle);
@@ -3302,6 +3326,7 @@ std::optional<Config::Actions::ActionResult> OverviewController::moveInDirection
 }
 
 OverviewController::~OverviewController() {
+    finishDirectNiriMouseResize(false);
     g_openOverviewLayoutConfigSignatures.erase(this);
     setDamageTrackingOverride(false);
     destroyGaussianBlurPipeline();
@@ -3356,6 +3381,8 @@ OverviewController::~OverviewController() {
         g_swapInDirectionActionHook->unhook();
     if (g_resizeActionHook)
         g_resizeActionHook->unhook();
+    if (g_mouseActionHook)
+        g_mouseActionHook->unhook();
     if (g_floatWindowActionHook)
         g_floatWindowActionHook->unhook();
 
@@ -3426,6 +3453,11 @@ OverviewController::~OverviewController() {
         g_resizeActionHook = nullptr;
         g_resizeActionOriginal = nullptr;
     }
+    if (g_mouseActionHook) {
+        HyprlandAPI::removeFunctionHook(m_handle, g_mouseActionHook);
+        g_mouseActionHook = nullptr;
+        g_mouseActionOriginal = nullptr;
+    }
     if (g_floatWindowActionHook) {
         HyprlandAPI::removeFunctionHook(m_handle, g_floatWindowActionHook);
         g_floatWindowActionHook = nullptr;
@@ -3491,6 +3523,11 @@ bool OverviewController::initialize() {
         recordWindowActivation(window);
         if (m_applyingWorkspaceTransitionCommit)
             return;
+        if (directNiriMouseResizeOwnsWindow(window) && activeDirectNiriSingleWorkspaceOverview()) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] skip window.active refresh owned by direct niri mouse resize target=" + debugWindowLabel(window));
+            return;
+        }
         if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview()) {
             if (debugLogsEnabled()) {
                 std::ostringstream out;
@@ -4831,6 +4868,9 @@ bool OverviewController::handleMouseMove() {
     if (!shouldHandleInput())
         return false;
 
+    if (updateDirectNiriMouseResize(pointer))
+        return true;
+
     if (m_pressedWindowIndex || m_draggedWindowIndex) {
         updateHoveredFromPointer(false, false, false, false, "mouse-move-drag");
 
@@ -4918,6 +4958,14 @@ bool OverviewController::handleMouseButton(const IPointer::SButtonEvent& event) 
             << " synthesizedButton=" << (synthesizedButton ? 1 : 0) << " synthesizedState=" << (synthesizedState ? 1 : 0)
             << " primaryDownBefore=" << (m_primaryButtonPressed ? 1 : 0);
         debugLog(out.str());
+    }
+
+    if (effectiveButton == BTN_RIGHT && m_state.phase == Phase::Active && activeDirectNiriSingleWorkspaceOverview()) {
+        auto forwardedEvent = event;
+        forwardedEvent.button = effectiveButton;
+        forwardedEvent.state = effectiveState;
+        (void)forwardDirectNiriMouseResizeBind(forwardedEvent);
+        return true;
     }
 
     if (effectiveButton != BTN_LEFT)
@@ -9651,6 +9699,7 @@ bool OverviewController::installHooks() {
     (void)hookFunction("moveInDirection", "Config::Actions::moveInDirection(", g_moveInDirectionActionHook, reinterpret_cast<void*>(&hkMoveInDirectionAction));
     (void)hookFunction("swapInDirection", "Config::Actions::swapInDirection(", g_swapInDirectionActionHook, reinterpret_cast<void*>(&hkSwapInDirectionAction));
     (void)hookFunction("resize", "Config::Actions::resize(", g_resizeActionHook, reinterpret_cast<void*>(&hkResizeAction));
+    (void)hookFunction("mouse", "Config::Actions::mouse(", g_mouseActionHook, reinterpret_cast<void*>(&hkMouseAction));
     (void)hookFunction("floatWindow", "Config::Actions::floatWindow(", g_floatWindowActionHook, reinterpret_cast<void*>(&hkFloatWindowAction));
 
     m_shouldRenderWindowOriginal = nullptr;
@@ -9688,6 +9737,7 @@ bool OverviewController::installHooks() {
     g_moveInDirectionActionOriginal = nullptr;
     g_swapInDirectionActionOriginal = nullptr;
     g_resizeActionOriginal = nullptr;
+    g_mouseActionOriginal = nullptr;
     g_floatWindowActionOriginal = nullptr;
 
     activateOptionalHook(m_workspaceSwipeBeginFunctionHook, m_workspaceSwipeBeginOriginal, "workspace swipe begin");
@@ -9705,6 +9755,7 @@ bool OverviewController::installHooks() {
     activateOptionalHook(g_moveInDirectionActionHook, g_moveInDirectionActionOriginal, "move window action");
     activateOptionalHook(g_swapInDirectionActionHook, g_swapInDirectionActionOriginal, "swap window action");
     activateOptionalHook(g_resizeActionHook, g_resizeActionOriginal, "resize window action");
+    activateOptionalHook(g_mouseActionHook, g_mouseActionOriginal, "mouse action");
     activateOptionalHook(g_floatWindowActionHook, g_floatWindowActionOriginal, "float window action");
     return true;
 }
@@ -15020,6 +15071,7 @@ void OverviewController::activateSelection() {
 }
 
 void OverviewController::clearStripWindowDragState() {
+    finishDirectNiriMouseResize(false);
     cancelDirectNiriWindowDrag();
     m_pressedStripIndex.reset();
     m_pressedWindowIndex.reset();

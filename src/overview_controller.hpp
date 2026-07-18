@@ -111,6 +111,7 @@ class OverviewController {
     [[nodiscard]] std::optional<Config::Actions::ActionResult> layoutMessageActionHook(const std::string& msg);
     [[nodiscard]] std::optional<Config::Actions::ActionResult> moveInDirectionActionHook(Math::eDirection direction,
                                                                                         std::optional<PHLWINDOW> window);
+    [[nodiscard]] std::optional<Config::Actions::ActionResult> mouseActionHook(const std::string& action);
     [[nodiscard]] std::optional<Config::Actions::ActionResult> floatWindowActionHook(Config::Actions::eTogglableAction action,
                                                                                     std::optional<PHLWINDOW> window);
     [[nodiscard]] Config::Actions::ActionResult moveToWorkspaceActionHook(PHLWORKSPACE workspace, bool silent, std::optional<PHLWINDOW> window);
@@ -938,6 +939,12 @@ class OverviewController {
     [[nodiscard]] bool          shouldSuppressPostCloseOpen(ScopeOverride requestedScope) const;
     void latchHoverSelectionAnchor(const Vector2D& pointer);
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
+    [[nodiscard]] bool forwardDirectNiriMouseResizeBind(const IPointer::SButtonEvent& event);
+    [[nodiscard]] bool directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const;
+    [[nodiscard]] PHLWINDOW directNiriMouseResizeTargetAtPointer() const;
+    void beginDirectNiriMouseResize(const PHLWINDOW& window, eMouseBindMode mode);
+    [[nodiscard]] bool updateDirectNiriMouseResize(const Vector2D& pointer);
+    void finishDirectNiriMouseResize(bool refreshLayout);
     [[nodiscard]] bool workspaceStripEntriesMatchForSnapshot(const WorkspaceStripEntry& lhs, const WorkspaceStripEntry& rhs) const;
     void carryOverWorkspaceStripSnapshots(State& next, const State& previous) const;
     [[nodiscard]] bool carryOverWorkspaceStripRelayout(State& next, const State& previous) const;
@@ -1094,6 +1101,10 @@ class OverviewController {
     SP<Hyprutils::Animation::SAnimationPropertyConfig> m_overviewVisibilityAnimationConfig;
     PHLANIMVAR<float>         m_workspaceTransitionAnimation;
     PHLWINDOWREF              m_directNiriNativeFloatingGeometryPreview;
+    PHLWINDOWREF              m_directNiriMouseResizeWindow;
+    Vector2D                  m_directNiriMouseResizePointer;
+    Vector2D                  m_directNiriMouseResizeScale = {1.0, 1.0};
+    bool                      m_directNiriMouseResizeThresholdReached = false;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;
@@ -1200,6 +1211,7 @@ class OverviewController {
     bool                     m_lastStripThemeColorValid = false;
     uint64_t                 m_lastStripThemeColor = 0;
     bool                     m_primaryButtonPressed = false;
+    bool                     m_forwardingOverviewMouseBind = false;
     bool                     m_clickedWindowWasAlreadySelected = false;
     std::optional<std::size_t> m_pressedStripIndex;
     std::optional<std::size_t> m_pressedWindowIndex;
