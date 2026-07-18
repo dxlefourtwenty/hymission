@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
@@ -60,53 +61,152 @@ Vector2D nativeResizePointer(const Vector2D& start, const Vector2D& pointer, con
     return start + Vector2D{delta.x / scale.x, delta.y / scale.y};
 }
 
+void resizeFloatingTargetWithoutWorkspaceTransfer(const PHLWINDOW& window, const SP<Layout::ITarget>& target,
+                                                  Layout::Supplementary::CDragStateController& dragController, const Vector2D& pointer) {
+    Vector2D newSize = dragController.m_beginDragSizeXY;
+    Vector2D newPosition = dragController.m_beginDragPositionXY;
+    const Vector2D delta = pointer - dragController.m_beginDragXY;
+
+    if (dragController.m_grabbedCorner == Layout::CORNER_BOTTOMRIGHT)
+        newSize += delta;
+    else if (dragController.m_grabbedCorner == Layout::CORNER_TOPLEFT)
+        newSize -= delta;
+    else if (dragController.m_grabbedCorner == Layout::CORNER_TOPRIGHT)
+        newSize += Vector2D{delta.x, -delta.y};
+    else if (dragController.m_grabbedCorner == Layout::CORNER_BOTTOMLEFT)
+        newSize += Vector2D{-delta.x, delta.y};
+
+    Vector2D minimumSize = target->minSize().value_or(Vector2D{MIN_WINDOW_SIZE, MIN_WINDOW_SIZE});
+    Vector2D maximumSize = target->maxSize().value_or(Math::VECTOR2D_MAX);
+    auto mode = dragController.m_dragMode;
+    if (window->m_ruleApplicator->keepAspectRatio().valueOrDefault() && mode != MBIND_RESIZE_BLOCK_RATIO)
+        mode = MBIND_RESIZE_FORCE_RATIO;
+    if (dragController.m_beginDragSizeXY.x >= 1.0 && dragController.m_beginDragSizeXY.y >= 1.0 && mode == MBIND_RESIZE_FORCE_RATIO) {
+        const double ratio = dragController.m_beginDragSizeXY.y / dragController.m_beginDragSizeXY.x;
+        minimumSize = minimumSize.x * ratio > minimumSize.y ? Vector2D{minimumSize.x, minimumSize.x * ratio} :
+                                                                Vector2D{minimumSize.y / ratio, minimumSize.y};
+        maximumSize = maximumSize.x * ratio < maximumSize.y ? Vector2D{maximumSize.x, maximumSize.x * ratio} :
+                                                                Vector2D{maximumSize.y / ratio, maximumSize.y};
+        newSize = newSize.x * ratio > newSize.y ? Vector2D{newSize.x, newSize.x * ratio} : Vector2D{newSize.y / ratio, newSize.y};
+    }
+
+    newSize = newSize.clamp(minimumSize, maximumSize);
+    if (dragController.m_grabbedCorner == Layout::CORNER_TOPLEFT)
+        newPosition = newPosition - newSize + dragController.m_beginDragSizeXY;
+    else if (dragController.m_grabbedCorner == Layout::CORNER_TOPRIGHT)
+        newPosition += Vector2D{0.0, (dragController.m_beginDragSizeXY - newSize).y};
+    else if (dragController.m_grabbedCorner == Layout::CORNER_BOTTOMLEFT)
+        newPosition += Vector2D{(dragController.m_beginDragSizeXY - newSize).x, 0.0};
+
+    static auto SNAPENABLED = CConfigValue<Config::INTEGER>("general:snap:enabled");
+    if (*SNAPENABLED) {
+        g_layoutManager->performSnap(newPosition, newSize, target, mode, dragController.m_grabbedCorner, dragController.m_beginDragSizeXY);
+        newSize = newSize.clamp(minimumSize, maximumSize);
+    }
+
+    CBox geometry{newPosition, newSize};
+    geometry.round();
+    target->setPositionGlobal(geometry);
+    target->warpPositionSize();
+    dragController.m_lastDragXY = pointer;
+}
+
 } // namespace
 
 bool OverviewController::directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const {
     return window && m_directNiriMouseResizeWindow.lock() == window;
 }
 
-PHLWINDOW OverviewController::directNiriMouseResizeTargetAtPointer() const {
+std::optional<std::pair<PHLWINDOW, Rect>> OverviewController::directNiriMouseResizeTargetAtPointer() const {
     const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
+    const auto eligible = [&](const PHLWINDOW& window) {
+        return window && window->m_isMapped && !window->m_fadingOut && !window->m_pinned && !window->onSpecialWorkspace() && window->m_workspace &&
+            isScrollingWorkspace(window->m_workspace) && hasManagedWindow(window) && window->layoutTarget();
+    };
+
+    if (const auto stripIndex = hitTestStripTarget(pointer.x, pointer.y); stripIndex && *stripIndex < m_state.stripEntries.size()) {
+        const auto& entry = m_state.stripEntries[*stripIndex];
+        if (entry.monitor && !entry.newWorkspaceSlot) {
+            const Rect stripRect = animatedWorkspaceStripRect(currentWorkspaceStripRect(entry), entry.monitor);
+            std::optional<std::pair<PHLWINDOW, Rect>> bestTarget;
+            double bestDistance = std::numeric_limits<double>::infinity();
+            for (const auto& candidate : entry.windows) {
+                if (!eligible(candidate.window))
+                    continue;
+
+                const auto preview = workspaceStripWindowPreviewRect(entry, stripRect, candidate.window);
+                if (!preview || pointer.x < preview->x || pointer.y < preview->y || pointer.x > preview->x + preview->width ||
+                    pointer.y > preview->y + preview->height)
+                    continue;
+
+                const double dx = preview->centerX() - pointer.x;
+                const double dy = preview->centerY() - pointer.y;
+                const double distance = dx * dx + dy * dy;
+                if (!bestTarget || distance < bestDistance) {
+                    bestTarget = std::pair{candidate.window, *preview};
+                    bestDistance = distance;
+                }
+            }
+
+            if (bestTarget)
+                return bestTarget;
+        }
+    }
+
     const auto index = hitTestTarget(pointer.x, pointer.y);
     if (!index || *index >= m_state.windows.size())
-        return {};
+        return std::nullopt;
 
-    const auto window = m_state.windows[*index].window;
-    if (!window || !window->m_isMapped || window->m_fadingOut || window->m_pinned || !window->m_workspace ||
-        window->m_workspace != activeLayoutWorkspace() || !isScrollingWorkspace(window->m_workspace) || !hasManagedWindow(window) || !window->layoutTarget())
-        return {};
+    const auto& managed = m_state.windows[*index];
+    if (!eligible(managed.window))
+        return std::nullopt;
 
-    return window;
+    return std::pair{managed.window, currentPreviewRect(managed)};
 }
 
-void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, eMouseBindMode mode) {
-    if (!window || !window->layoutTarget() || g_layoutManager->dragController()->target())
+void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, const Rect& preview, eMouseBindMode mode) {
+    if (!window || !window->layoutTarget() || preview.width <= 1.0 || preview.height <= 1.0 || g_layoutManager->dragController()->target())
         return;
 
     clearStripWindowDragState();
     if (m_state.relayoutActive)
         (void)commitActiveNiriRelayoutForRetarget();
 
-    selectWindowInState(m_state, window);
-    m_state.focusDuringOverview = window;
-    m_queuedOverviewSelectionTarget.reset();
-    m_queuedOverviewSelectionSyncScrollingSpot = false;
-    m_queuedOverviewSelectionCenterCursor = false;
-    m_queuedOverviewLiveFocusTarget.reset();
-    m_queuedOverviewLiveFocusSyncScrollingSpot = false;
-    m_queuedOverviewLiveFocusCenterCursor = false;
+    const bool preserveWorkspace = window->m_workspace != activeLayoutWorkspace();
+    if (!preserveWorkspace) {
+        selectWindowInState(m_state, window);
+        m_state.focusDuringOverview = window;
+        m_queuedOverviewSelectionTarget.reset();
+        m_queuedOverviewSelectionSyncScrollingSpot = false;
+        m_queuedOverviewSelectionCenterCursor = false;
+        m_queuedOverviewLiveFocusTarget.reset();
+        m_queuedOverviewLiveFocusSyncScrollingSpot = false;
+        m_queuedOverviewLiveFocusCenterCursor = false;
+    }
 
     const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
-    const auto* managed = managedWindowFor(m_state, window, true);
-    const Rect preview = managed ? currentPreviewRect(*managed) : liveGlobalRectForWindow(window);
     m_directNiriMouseResizePointer = pointer;
     m_directNiriMouseResizeScale = resizePreviewScale(preview, window->layoutTarget()->position());
     m_directNiriMouseResizeThresholdReached = nativeWindowDragThreshold() <= 0.0;
+    m_directNiriMouseResizePreservesWorkspace = preserveWorkspace;
     m_directNiriMouseResizeWindow = window;
-    g_layoutManager->beginDragTarget(window->layoutTarget(), mode);
 
     const auto& dragController = g_layoutManager->dragController();
+    if (preserveWorkspace) {
+        const auto target = window->layoutTarget();
+        dragController->m_target = target;
+        dragController->m_dragMode = mode;
+        dragController->m_draggingTiled = false;
+        dragController->m_wasDraggingWindow = false;
+        dragController->m_mouseMoveEventCount = 1;
+        dragController->m_beginDragXY = pointer;
+        dragController->m_lastDragXY = pointer;
+        dragController->m_beginDragPositionXY = target->position().pos();
+        dragController->m_beginDragSizeXY = target->position().size();
+        dragController->m_draggingWindowOriginalFloatSize = target->lastFloatingSize();
+    } else {
+        g_layoutManager->beginDragTarget(window->layoutTarget(), mode);
+    }
     dragController->m_dragThresholdReached = true;
     dragController->m_grabbedCorner = resizeCornerForPreview(preview, pointer, window->layoutTarget()->floating());
     Cursor::overrideController->setOverride(resizeCursorName(dragController->m_grabbedCorner), Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
@@ -119,6 +219,7 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, eMo
             << " workspace=" << debugWorkspaceLabel(window->m_workspace)
             << " mode=" << static_cast<int>(mode)
             << " corner=" << static_cast<int>(dragController->m_grabbedCorner)
+            << " preserveWorkspace=" << (preserveWorkspace ? 1 : 0)
             << " scale=(" << m_directNiriMouseResizeScale.x << ',' << m_directNiriMouseResizeScale.y << ')';
         debugLog(out.str());
     }
@@ -149,32 +250,56 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
         return true;
     }
 
-    g_layoutManager->moveMouse(nativeResizePointer(m_directNiriMouseResizePointer, pointer, m_directNiriMouseResizeScale));
+    const Vector2D nativePointer = nativeResizePointer(m_directNiriMouseResizePointer, pointer, m_directNiriMouseResizeScale);
+    const auto target = window->layoutTarget();
+    if (m_directNiriMouseResizePreservesWorkspace && target->floating()) {
+        resizeFloatingTargetWithoutWorkspaceTransfer(window, target, *dragController, nativePointer);
+    } else {
+        g_layoutManager->moveMouse(nativePointer);
+    }
     damageOwnedMonitors();
     return true;
 }
 
 void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     const auto window = m_directNiriMouseResizeWindow.lock();
+    const bool preserveWorkspace = m_directNiriMouseResizePreservesWorkspace;
     if (window) {
         const auto dragTarget = g_layoutManager->dragController()->target();
-        if (dragTarget && dragTarget == window->layoutTarget())
-            g_layoutManager->endDragTarget();
+        if (dragTarget && dragTarget == window->layoutTarget()) {
+            if (preserveWorkspace) {
+                Cursor::overrideController->unsetOverride(Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
+                dragTarget->damageEntire();
+                g_layoutManager->setTargetGeom(dragTarget->position(), dragTarget);
+                const auto& dragController = g_layoutManager->dragController();
+                dragController->m_target.reset();
+                dragController->m_wasDraggingWindow = false;
+                dragController->m_dragMode = MBIND_INVALID;
+            } else {
+                g_layoutManager->endDragTarget();
+            }
+        }
     }
+
+    std::optional<PreviewRectSnapshot> previewRects;
+    if (window && refreshLayout && isVisible() && m_state.phase == Phase::Active && window->m_isMapped && hasManagedWindow(window))
+        previewRects = captureCurrentPreviewRects();
 
     m_directNiriMouseResizeWindow.reset();
     m_directNiriMouseResizePointer = {};
     m_directNiriMouseResizeScale = {1.0, 1.0};
     m_directNiriMouseResizeThresholdReached = false;
-    if (!window || !refreshLayout || !isVisible() || m_state.phase != Phase::Active || !window->m_isMapped || !hasManagedWindow(window))
+    m_directNiriMouseResizePreservesWorkspace = false;
+    if (!previewRects)
         return;
 
-    const auto previewRects = captureCurrentPreviewRects();
     if (window->m_workspace)
         refreshWorkspaceLayoutSnapshot(window->m_workspace);
-    refreshNiriScrollingOverviewAfterLayoutScroll("mouse-resize", &previewRects);
-    selectWindowInState(m_state, window);
-    m_state.focusDuringOverview = window;
+    refreshNiriScrollingOverviewAfterLayoutScroll("mouse-resize", &*previewRects);
+    if (!preserveWorkspace) {
+        selectWindowInState(m_state, window);
+        m_state.focusDuringOverview = window;
+    }
     damageOwnedMonitors();
 
     if (debugLogsEnabled()) {
@@ -202,8 +327,8 @@ std::optional<Config::Actions::ActionResult> OverviewController::mouseActionHook
     if (actionState != 1)
         return Config::Actions::SActionResult{};
 
-    const auto window = directNiriMouseResizeTargetAtPointer();
-    if (!window)
+    const auto target = directNiriMouseResizeTargetAtPointer();
+    if (!target)
         return Config::Actions::SActionResult{};
 
     eMouseBindMode mode = MBIND_RESIZE;
@@ -216,7 +341,7 @@ std::optional<Config::Actions::ActionResult> OverviewController::mouseActionHook
             mode = MBIND_RESIZE_BLOCK_RATIO;
     }
 
-    beginDirectNiriMouseResize(window, mode);
+    beginDirectNiriMouseResize(target->first, target->second, mode);
     return Config::Actions::SActionResult{};
 }
 

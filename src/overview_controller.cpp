@@ -11583,6 +11583,11 @@ std::optional<std::size_t> OverviewController::hitTestStripTarget(double x, doub
     return hitTestWorkspaceStrip(stripRects(), x, y);
 }
 
+std::optional<Rect> OverviewController::workspaceStripWindowPreviewRect(const WorkspaceStripEntry& entry, const Rect& stripRect,
+                                                                         const PHLWINDOW& window) const {
+    return stripWindowPreviewRectForHitTest(entry, stripRect, window);
+}
+
 std::optional<Rect> OverviewController::workspaceTransitionRectForWindow(const PHLWINDOW& window) const {
     if (!m_workspaceTransition.active)
         return std::nullopt;

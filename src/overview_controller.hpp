@@ -828,6 +828,8 @@ class OverviewController {
     [[nodiscard]] Vector2D     workspaceStripEnterOffset(const PHLMONITOR& monitor) const;
     [[nodiscard]] Rect         currentWorkspaceStripRect(const WorkspaceStripEntry& entry) const;
     [[nodiscard]] Rect         animatedWorkspaceStripRect(const Rect& rect, const PHLMONITOR& monitor) const;
+    [[nodiscard]] std::optional<Rect> workspaceStripWindowPreviewRect(const WorkspaceStripEntry& entry, const Rect& stripRect,
+                                                                      const PHLWINDOW& window) const;
     [[nodiscard]] bool         transformBoxForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, CBox& box, bool scaled) const;
     [[nodiscard]] CRegion      transformRegionForWindow(const PHLWINDOW& window, const PHLMONITOR& monitor, const CRegion& region, bool scaled) const;
     [[nodiscard]] PHLWINDOW    resolveExitFocus(CloseMode mode) const;
@@ -941,8 +943,8 @@ class OverviewController {
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
     [[nodiscard]] bool forwardDirectNiriMouseResizeBind(const IPointer::SButtonEvent& event);
     [[nodiscard]] bool directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const;
-    [[nodiscard]] PHLWINDOW directNiriMouseResizeTargetAtPointer() const;
-    void beginDirectNiriMouseResize(const PHLWINDOW& window, eMouseBindMode mode);
+    [[nodiscard]] std::optional<std::pair<PHLWINDOW, Rect>> directNiriMouseResizeTargetAtPointer() const;
+    void beginDirectNiriMouseResize(const PHLWINDOW& window, const Rect& preview, eMouseBindMode mode);
     [[nodiscard]] bool updateDirectNiriMouseResize(const Vector2D& pointer);
     void finishDirectNiriMouseResize(bool refreshLayout);
     [[nodiscard]] bool workspaceStripEntriesMatchForSnapshot(const WorkspaceStripEntry& lhs, const WorkspaceStripEntry& rhs) const;
@@ -1105,6 +1107,7 @@ class OverviewController {
     Vector2D                  m_directNiriMouseResizePointer;
     Vector2D                  m_directNiriMouseResizeScale = {1.0, 1.0};
     bool                      m_directNiriMouseResizeThresholdReached = false;
+    bool                      m_directNiriMouseResizePreservesWorkspace = false;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
     std::size_t               m_themeSurfaceFeedbackFrames = 0;

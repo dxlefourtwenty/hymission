@@ -7486,14 +7486,23 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             }
         }
 
-        PHLWINDOW anchorWindow;
-        if (m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
+        PHLWINDOW anchorWindow = m_directNiriMouseResizeWindow.lock();
+        if (!anchorWindow || !anchorWindow->m_isMapped || anchorWindow->m_pinned || anchorWindow->m_workspace != workspace ||
+            isFloatingOverviewWindow(anchorWindow))
+            anchorWindow.reset();
+
+        if (!anchorWindow && m_state.focusDuringOverview && m_state.focusDuringOverview->m_isMapped && !m_state.focusDuringOverview->m_pinned &&
             m_state.focusDuringOverview->m_workspace == workspace && !isFloatingOverviewWindow(m_state.focusDuringOverview)) {
             anchorWindow = m_state.focusDuringOverview;
-        } else if (const auto selected = selectedWindow(); selected && selected->m_isMapped && !selected->m_pinned && selected->m_workspace == workspace &&
-                   !isFloatingOverviewWindow(selected)) {
-            anchorWindow = selected;
-        } else {
+        }
+
+        if (!anchorWindow) {
+            const auto selected = selectedWindow();
+            if (selected && selected->m_isMapped && !selected->m_pinned && selected->m_workspace == workspace && !isFloatingOverviewWindow(selected))
+                anchorWindow = selected;
+        }
+
+        if (!anchorWindow) {
             anchorWindow = focusCandidateForWorkspace(workspace);
             const auto anchorTarget = anchorWindow ? anchorWindow->layoutTarget() : nullptr;
             if (!anchorWindow || !anchorWindow->m_isMapped || anchorWindow->m_pinned || isFloatingOverviewWindow(anchorWindow) || !anchorTarget || anchorTarget->floating())
@@ -7816,7 +7825,7 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
         if (m_state.phase != Phase::Active || !usesDirectNiriScrollingOverview(m_state) || !window.window || !window.window->m_isMapped)
             return std::nullopt;
 
-        PHLWINDOW floatingWindow = selectedWindow();
+        PHLWINDOW floatingWindow = m_directNiriMouseResizeWindow.lock();
         const auto isPinnedOrWasPinnedFloating = [&](const PHLWINDOW& candidate) {
             const auto* managed = managedWindowFor(m_state, candidate, true);
             return candidate && (candidate->m_pinned || (managed && managed->isPinned));
@@ -7825,6 +7834,8 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
             return candidate && (isFloatingOverviewWindow(candidate) || isPinnedOrWasPinnedFloating(candidate));
         };
 
+        if (!isFloatingOrPinnedCandidate(floatingWindow))
+            floatingWindow = selectedWindow();
         if ((!floatingWindow || !isFloatingOrPinnedCandidate(floatingWindow)) && m_state.focusDuringOverview)
             floatingWindow = m_state.focusDuringOverview;
         if (!isFloatingOrPinnedCandidate(floatingWindow))
