@@ -12,6 +12,7 @@
 #include <limits>
 
 #include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/managers/cursor/CursorShapeOverrideController.hpp>
@@ -219,7 +220,8 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
         (void)commitActiveNiriRelayoutForRetarget();
 
     const bool preserveWorkspace = window->m_workspace != activeLayoutWorkspace();
-    if (!preserveWorkspace) {
+    const bool preserveFocus = preserveWorkspace || Desktop::focusState()->window() != window;
+    if (!preserveFocus) {
         selectWindowInState(m_state, window);
         m_state.focusDuringOverview = window;
         m_queuedOverviewSelectionTarget.reset();
@@ -234,11 +236,12 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
     m_directNiriMouseResizePointer = pointer;
     m_directNiriMouseResizeScale = resizePreviewScale(preview, window->layoutTarget()->position());
     m_directNiriMouseResizeThresholdReached = nativeWindowDragThreshold() <= 0.0;
+    m_directNiriMouseResizePreservesFocus = preserveFocus;
     m_directNiriMouseResizePreservesWorkspace = preserveWorkspace;
     m_directNiriMouseResizeWindow = window;
 
     const auto& dragController = g_layoutManager->dragController();
-    if (preserveWorkspace) {
+    if (preserveFocus) {
         const auto target = window->layoutTarget();
         dragController->m_target = target;
         dragController->m_dragMode = mode;
@@ -265,6 +268,7 @@ void OverviewController::beginDirectNiriMouseResize(const PHLWINDOW& window, con
             << " workspace=" << debugWorkspaceLabel(window->m_workspace)
             << " mode=" << static_cast<int>(mode)
             << " corner=" << static_cast<int>(dragController->m_grabbedCorner)
+            << " preserveFocus=" << (preserveFocus ? 1 : 0)
             << " preserveWorkspace=" << (preserveWorkspace ? 1 : 0)
             << " scale=(" << m_directNiriMouseResizeScale.x << ',' << m_directNiriMouseResizeScale.y << ')';
         debugLog(out.str());
@@ -310,11 +314,11 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
 
 void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     const auto window = m_directNiriMouseResizeWindow.lock();
-    const bool preserveWorkspace = m_directNiriMouseResizePreservesWorkspace;
+    const bool preserveFocus = m_directNiriMouseResizePreservesFocus;
     if (window) {
         const auto dragTarget = g_layoutManager->dragController()->target();
         if (dragTarget && dragTarget == window->layoutTarget()) {
-            if (preserveWorkspace) {
+            if (preserveFocus) {
                 Cursor::overrideController->unsetOverride(Cursor::CURSOR_OVERRIDE_SPECIAL_ACTION);
                 dragTarget->damageEntire();
                 g_layoutManager->setTargetGeom(dragTarget->position(), dragTarget);
@@ -336,6 +340,7 @@ void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     m_directNiriMouseResizePointer = {};
     m_directNiriMouseResizeScale = {1.0, 1.0};
     m_directNiriMouseResizeThresholdReached = false;
+    m_directNiriMouseResizePreservesFocus = false;
     m_directNiriMouseResizePreservesWorkspace = false;
     if (!previewRects)
         return;
@@ -343,7 +348,7 @@ void OverviewController::finishDirectNiriMouseResize(bool refreshLayout) {
     if (window->m_workspace)
         refreshWorkspaceLayoutSnapshot(window->m_workspace);
     refreshNiriScrollingOverviewAfterLayoutScroll("mouse-resize", &*previewRects);
-    if (!preserveWorkspace) {
+    if (!preserveFocus) {
         selectWindowInState(m_state, window);
         m_state.focusDuringOverview = window;
     }

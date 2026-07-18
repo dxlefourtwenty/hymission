@@ -1110,6 +1110,7 @@ class OverviewController {
     Vector2D                  m_directNiriMouseResizePointer;
     Vector2D                  m_directNiriMouseResizeScale = {1.0, 1.0};
     bool                      m_directNiriMouseResizeThresholdReached = false;
+    bool                      m_directNiriMouseResizePreservesFocus = false;
     bool                      m_directNiriMouseResizePreservesWorkspace = false;
     SP<CEventLoopTimer>       m_animationsEnabledRestoreTimer;
     SP<CEventLoopTimer>       m_themeSurfaceFeedbackTimer;
