@@ -3273,6 +3273,9 @@ bool OverviewController::forwardDirectNiriMouseResizeBind(const IPointer::SButto
         return false;
 
     updateHoveredFromPointer(false, false, false, false, "mouse-resize-bind");
+    if (event.state == WL_POINTER_BUTTON_STATE_RELEASED && m_directNiriMouseResizePreservesWorkspace)
+        finishDirectNiriMouseResize(true);
+
     const ScopedFlag forwardingGuard(m_forwardingOverviewMouseBind);
     const auto pointer = g_pSeatManager ? g_pSeatManager->m_mouse.lock() : SP<IPointer>{};
     (void)g_pKeybindManager->onMouseEvent(event, pointer);
