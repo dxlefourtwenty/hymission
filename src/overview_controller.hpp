@@ -940,6 +940,7 @@ class OverviewController {
     void latchHoverSelectionAnchor(const Vector2D& pointer);
     [[nodiscard]] bool hoverSelectionRetargetLocked(const Vector2D& pointer, const std::optional<std::size_t>& hoveredIndex) const;
     [[nodiscard]] bool forwardDirectNiriMouseResizeBind(const IPointer::SButtonEvent& event);
+    [[nodiscard]] bool directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const;
     [[nodiscard]] PHLWINDOW directNiriMouseResizeTargetAtPointer() const;
     void beginDirectNiriMouseResize(const PHLWINDOW& window, eMouseBindMode mode);
     [[nodiscard]] bool updateDirectNiriMouseResize(const Vector2D& pointer);

@@ -62,6 +62,10 @@ Vector2D nativeResizePointer(const Vector2D& start, const Vector2D& pointer, con
 
 } // namespace
 
+bool OverviewController::directNiriMouseResizeOwnsWindow(const PHLWINDOW& window) const {
+    return window && m_directNiriMouseResizeWindow.lock() == window;
+}
+
 PHLWINDOW OverviewController::directNiriMouseResizeTargetAtPointer() const {
     const Vector2D pointer = g_pInputManager->getMouseCoordsInternal();
     const auto index = hitTestTarget(pointer.x, pointer.y);

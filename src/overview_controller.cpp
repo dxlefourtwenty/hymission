@@ -3523,6 +3523,11 @@ bool OverviewController::initialize() {
         recordWindowActivation(window);
         if (m_applyingWorkspaceTransitionCommit)
             return;
+        if (directNiriMouseResizeOwnsWindow(window) && activeDirectNiriSingleWorkspaceOverview()) {
+            if (debugLogsEnabled())
+                debugLog("[hymission] skip window.active refresh owned by direct niri mouse resize target=" + debugWindowLabel(window));
+            return;
+        }
         if (m_overviewEditingDispatcherInProgress && activeDirectNiriSingleWorkspaceOverview()) {
             if (debugLogsEnabled()) {
                 std::ostringstream out;
