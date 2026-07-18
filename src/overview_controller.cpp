@@ -10818,8 +10818,14 @@ bool OverviewController::transformSurfaceRenderDataForWindow(const PHLWINDOW& wi
 }
 
 bool OverviewController::adjustTransformedSurfaceBoxSize(const CSurfacePassElement::SRenderData& renderData, const PHLMONITOR& monitor, CBox& box) const {
-    if (renderData.mainSurface)
-        return false;
+    if (renderData.mainSurface) {
+        if (!directNiriMouseResizeNeedsMainSurfaceFill(renderData.pWindow))
+            return false;
+
+        box.width = std::max(1.0, renderData.w);
+        box.height = std::max(1.0, renderData.h);
+        return true;
+    }
 
     const auto transform = windowTransformFor(renderData.pWindow, monitor);
     if (!transform)

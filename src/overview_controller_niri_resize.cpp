@@ -117,10 +117,49 @@ bool OverviewController::directNiriMouseResizeOwnsWindow(const PHLWINDOW& window
     return window && m_directNiriMouseResizeWindow.lock() == window;
 }
 
+bool OverviewController::directNiriMouseResizeNeedsMainSurfaceFill(const PHLWINDOW& window) const {
+    const auto target = window ? window->layoutTarget() : nullptr;
+    return m_directNiriMouseResizePreservesWorkspace && directNiriMouseResizeOwnsWindow(window) && target && !target->floating() &&
+        activeDirectNiriSingleWorkspaceOverview() && m_state.phase == Phase::Active;
+}
+
 bool OverviewController::suppressWorkspaceChangeForDirectNiriMouseResize(const PHLWORKSPACE& workspace) const {
     const auto window = m_directNiriMouseResizeWindow.lock();
     return m_directNiriMouseResizePreservesWorkspace && window && workspace && window->m_workspace == workspace &&
         activeDirectNiriSingleWorkspaceOverview() && m_state.phase == Phase::Active;
+}
+
+void OverviewController::logDirectNiriMouseResizeGeometry(const PHLWINDOW& window, const SP<Layout::ITarget>& target) const {
+    if (!debugLogsEnabled() || !m_directNiriMouseResizePreservesWorkspace || !window || !target)
+        return;
+
+    const auto* managed = managedWindowFor(m_state, window, true);
+    if (!managed)
+        return;
+
+    const Rect preview = currentPreviewRect(*managed);
+    const CBox layoutBox = target->position();
+    const Vector2D livePosition = window->m_realPosition->value();
+    const Vector2D liveSize = window->m_realSize->value();
+    const Vector2D goalPosition = window->m_realPosition->goal();
+    const Vector2D goalSize = window->m_realSize->goal();
+    const Vector2D reportedSize = window->getReportedSize();
+    const auto root = window->wlSurface() ? window->wlSurface()->resource() : nullptr;
+    const Vector2D bufferSize = root ? root->m_current.size : Vector2D{};
+    const double scaleX = liveSize.x > 1.0 ? preview.width / liveSize.x : 0.0;
+    const double scaleY = liveSize.y > 1.0 ? preview.height / liveSize.y : 0.0;
+
+    std::ostringstream out;
+    out << "[hymission] adjacent niri mouse resize geometry"
+        << " target=" << debugWindowLabel(window)
+        << " layout=" << layoutBox.x << ',' << layoutBox.y << ' ' << layoutBox.width << 'x' << layoutBox.height
+        << " live=" << livePosition.x << ',' << livePosition.y << ' ' << liveSize.x << 'x' << liveSize.y
+        << " goal=" << goalPosition.x << ',' << goalPosition.y << ' ' << goalSize.x << 'x' << goalSize.y
+        << " preview=" << preview.x << ',' << preview.y << ' ' << preview.width << 'x' << preview.height
+        << " previewScale=(" << scaleX << ',' << scaleY << ')'
+        << " reported=" << reportedSize.x << 'x' << reportedSize.y
+        << " buffer=" << bufferSize.x << 'x' << bufferSize.y;
+    debugLog(out.str());
 }
 
 std::optional<std::pair<PHLWINDOW, Rect>> OverviewController::directNiriMouseResizeTargetAtPointer() const {
@@ -263,6 +302,7 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
     } else {
         g_layoutManager->moveMouse(nativePointer);
     }
+    logDirectNiriMouseResizeGeometry(window, target);
     damageOwnedMonitors();
     return true;
 }
