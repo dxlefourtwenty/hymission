@@ -2,6 +2,7 @@
 #include <sstream>
 
 #define private public
+#include <hyprland/src/layout/algorithm/tiled/scrolling/ScrollingAlgorithm.hpp>
 #include <hyprland/src/layout/supplementary/DragController.hpp>
 #undef private
 
@@ -60,6 +61,40 @@ Vector2D resizePreviewScale(const Rect& preview, const CBox& nativeBox) {
 Vector2D nativeResizePointer(const Vector2D& start, const Vector2D& pointer, const Vector2D& scale) {
     const Vector2D delta = pointer - start;
     return start + Vector2D{delta.x / scale.x, delta.y / scale.y};
+}
+
+Layout::Tiled::CScrollingAlgorithm* scrollingForWorkspace(const PHLWORKSPACE& workspace) {
+    if (!workspace || !workspace->m_space)
+        return nullptr;
+
+    const auto algorithm = workspace->m_space->algorithm();
+    if (!algorithm || !algorithm->tiledAlgo())
+        return nullptr;
+
+    return dynamic_cast<Layout::Tiled::CScrollingAlgorithm*>(algorithm->tiledAlgo().get());
+}
+
+bool resizeTiledTargetPreservingCamera(const PHLWINDOW& window, const SP<Layout::ITarget>& target, const Vector2D& pointer) {
+    auto* const scrolling = scrollingForWorkspace(window ? window->m_workspace : nullptr);
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return false;
+
+    const auto targetData = scrolling->dataFor(target);
+    if (!targetData || !targetData->column)
+        return false;
+
+    const auto column = targetData->column.lock();
+    if (!column)
+        return false;
+
+    const double cameraOffset = scrolling->m_scrollingData->controller->getOffset();
+    scrolling->m_scrollingData->centerCol(column);
+    scrolling->m_scrollingData->recalculate(true);
+    g_layoutManager->moveMouse(pointer);
+    scrolling->m_scrollingData->controller->setOffset(cameraOffset);
+    scrolling->m_scrollingData->recalculate(true);
+    target->warpPositionSize();
+    return true;
 }
 
 void resizeFloatingTargetWithoutWorkspaceTransfer(const PHLWINDOW& window, const SP<Layout::ITarget>& target,
@@ -304,7 +339,8 @@ bool OverviewController::updateDirectNiriMouseResize(const Vector2D& pointer) {
     const auto target = window->layoutTarget();
     if (m_directNiriMouseResizePreservesWorkspace && target->floating()) {
         resizeFloatingTargetWithoutWorkspaceTransfer(window, target, *dragController, nativePointer);
-    } else {
+    } else if (!m_directNiriMouseResizePreservesFocus || target->floating() ||
+               !resizeTiledTargetPreservingCamera(window, target, nativePointer)) {
         g_layoutManager->moveMouse(nativePointer);
     }
     logDirectNiriMouseResizeGeometry(window, target);
