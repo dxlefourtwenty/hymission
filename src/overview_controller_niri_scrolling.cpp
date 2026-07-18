@@ -7920,6 +7920,12 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 }
                 if (m_state.relayoutActive)
                     return activeBaseRect();
+                if (m_directNiriMouseResizePreservesWorkspace) {
+                    if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
+                        return *dynamicRect;
+                    if (const auto dynamicRect = dynamicNiriTiledResizeRect(); dynamicRect)
+                        return *dynamicRect;
+                }
                 if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
                     return *liveRect;
                 if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
