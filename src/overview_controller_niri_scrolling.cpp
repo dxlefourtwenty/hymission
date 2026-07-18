@@ -7267,7 +7267,8 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
     if (!workspace || !workspace->m_space || !isScrollingWorkspace(workspace))
         return std::nullopt;
 
-    if (!window.window->m_pinned && !window.isPinned && window.targetMonitor->m_activeWorkspace != workspace)
+    const bool adjacentTiledResize = directNiriAdjacentTiledMouseResizeActive(window.window);
+    if (!window.window->m_pinned && !window.isPinned && window.targetMonitor->m_activeWorkspace != workspace && !adjacentTiledResize)
         return window.targetGlobal;
 
     const auto placeholder = std::find_if(m_state.emptyWorkspacePlaceholders.begin(), m_state.emptyWorkspacePlaceholders.end(),
@@ -7279,7 +7280,7 @@ std::optional<Rect> OverviewController::livePreviewRectForManagedWindow(const Ma
         return std::nullopt;
 
     const Rect desktopViewport = niriOverviewViewportForWorkspace(workspace);
-    const Rect liveRect = renderGlobalRectForWindow(window.window);
+    const Rect liveRect = adjacentTiledResize ? stateSnapshotGlobalRectForWindow(window.window) : renderGlobalRectForWindow(window.window);
     if (desktopViewport.width <= 1.0 || desktopViewport.height <= 1.0 || liveRect.width <= 0.0 || liveRect.height <= 0.0)
         return std::nullopt;
 
@@ -7920,6 +7921,10 @@ Rect OverviewController::currentPreviewRect(const ManagedWindow& window) const {
                 }
                 if (m_state.relayoutActive)
                     return activeBaseRect();
+                if (directNiriAdjacentTiledMouseResizeActive(window.window)) {
+                    if (const auto liveRect = livePreviewRectForManagedWindow(window); liveRect)
+                        return *liveRect;
+                }
                 if (m_directNiriMouseResizePreservesWorkspace) {
                     if (const auto dynamicRect = dynamicNiriFloatingResizeRect(); dynamicRect)
                         return *dynamicRect;

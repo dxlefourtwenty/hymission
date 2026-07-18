@@ -117,7 +117,7 @@ bool OverviewController::directNiriMouseResizeOwnsWindow(const PHLWINDOW& window
     return window && m_directNiriMouseResizeWindow.lock() == window;
 }
 
-bool OverviewController::directNiriMouseResizeNeedsMainSurfaceFill(const PHLWINDOW& window) const {
+bool OverviewController::directNiriAdjacentTiledMouseResizeActive(const PHLWINDOW& window) const {
     const auto target = window ? window->layoutTarget() : nullptr;
     return m_directNiriMouseResizePreservesWorkspace && directNiriMouseResizeOwnsWindow(window) && target && !target->floating() &&
         activeDirectNiriSingleWorkspaceOverview() && m_state.phase == Phase::Active;
@@ -130,7 +130,7 @@ bool OverviewController::suppressWorkspaceChangeForDirectNiriMouseResize(const P
 }
 
 void OverviewController::logDirectNiriMouseResizeGeometry(const PHLWINDOW& window, const SP<Layout::ITarget>& target) const {
-    if (!debugLogsEnabled() || !m_directNiriMouseResizePreservesWorkspace || !window || !target)
+    if (!debugLogsEnabled() || !window || !target)
         return;
 
     const auto* managed = managedWindowFor(m_state, window, true);
@@ -150,8 +150,9 @@ void OverviewController::logDirectNiriMouseResizeGeometry(const PHLWINDOW& windo
     const double scaleY = liveSize.y > 1.0 ? preview.height / liveSize.y : 0.0;
 
     std::ostringstream out;
-    out << "[hymission] adjacent niri mouse resize geometry"
+    out << "[hymission] direct niri mouse resize geometry"
         << " target=" << debugWindowLabel(window)
+        << " preserveWorkspace=" << (m_directNiriMouseResizePreservesWorkspace ? 1 : 0)
         << " layout=" << layoutBox.x << ',' << layoutBox.y << ' ' << layoutBox.width << 'x' << layoutBox.height
         << " live=" << livePosition.x << ',' << livePosition.y << ' ' << liveSize.x << 'x' << liveSize.y
         << " goal=" << goalPosition.x << ',' << goalPosition.y << ' ' << goalSize.x << 'x' << goalSize.y
