@@ -61,6 +61,7 @@
 #include <hyprland/src/protocols/LayerShell.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/PassElement.hpp>
 #include <hyprutils/math/Region.hpp>
 
@@ -6009,10 +6010,14 @@ void OverviewController::borderDrawHook(void* borderDecorationThisptr, const PHL
         return;
     }
 
-    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !renderableManagedWindowFor(window, monitor)) {
+    const auto* managed = window && monitor ? renderableManagedWindowFor(window, monitor) : nullptr;
+    if (!window || !monitor || !isVisible() || !ownsMonitor(monitor) || !managed) {
         m_borderDrawOriginal(borderDecorationThisptr, monitor, alpha);
         return;
     }
+
+    if (usesStackedSwapBorder(m_state, *managed, monitor))
+        queueStackedSwapBorder(m_state, *managed, monitor);
 }
 
 void OverviewController::shadowDrawHook(void* shadowDecorationThisptr, const PHLMONITOR& monitor, const float& alpha) {
@@ -10263,6 +10268,7 @@ OverviewController::PreviewRectSnapshot OverviewController::commitActiveNiriRela
     m_state.relayoutProgress = 1.0;
     m_state.relayoutStart = {};
     m_relayoutFillsWindowSurface = false;
+    m_relayoutStacksWindowBorders = false;
     clearDirectNiriNativeFloatingGeometryPreview();
 
     if (debugLogsEnabled()) {
@@ -11751,11 +11757,12 @@ double OverviewController::relayoutVisualProgress() const {
     return clampUnit(m_state.relayoutProgress);
 }
 
-void OverviewController::beginOverviewRelayoutAnimation(const char* source) {
+void OverviewController::beginOverviewRelayoutAnimation(const char* source, bool stackWindowBorders) {
     m_state.relayoutProgress = 0.0;
     m_state.relayoutStart = std::chrono::steady_clock::now();
     m_relayoutProgressAnimation.reset();
     m_relayoutFillsWindowSurface = source && std::string_view{source} == "movewindow";
+    m_relayoutStacksWindowBorders = stackWindowBorders;
 
     const auto config = windowsMoveAnimationConfig();
     if (!g_pAnimationManager || !config) {
@@ -11777,7 +11784,8 @@ void OverviewController::beginOverviewRelayoutAnimation(const char* source) {
 
     if (debugLogsEnabled()) {
         std::ostringstream out;
-        out << "[hymission] relayout anim start source=" << (source ? source : "?");
+        out << "[hymission] relayout anim start source=" << (source ? source : "?")
+            << " stackWindowBorders=" << (m_relayoutStacksWindowBorders ? 1 : 0);
         if (const auto values = config->pValues.lock()) {
             out << " enabled=" << values->internalEnabled
                 << " speed=" << values->internalSpeed
@@ -11798,6 +11806,7 @@ void OverviewController::finishOverviewRelayoutAnimation() {
     m_state.relayoutActive = false;
     m_state.relayoutStart = {};
     m_relayoutFillsWindowSurface = false;
+    m_relayoutStacksWindowBorders = false;
     clearDirectNiriNativeFloatingGeometryPreview();
 }
 
@@ -15523,7 +15532,8 @@ void OverviewController::renderSelectionChrome() const {
         std::size_t skipped = 0;
         static std::size_t s_directNiriSurfaceOverlayLogBudget = 320;
 
-        for (const auto& currentManaged : m_state.windows) {
+        for (const auto* currentManagedPtr : directNiriSurfaceOverlayOrder(m_state, renderMonitor)) {
+            const auto& currentManaged = *currentManagedPtr;
             const auto window = currentManaged.window;
             const State* fallbackState = &m_state;
             const ManagedWindow* fallbackManaged = &currentManaged;
@@ -15778,6 +15788,91 @@ float OverviewController::managedWindowBorderRoundingPower(const ManagedWindow& 
     return std::max(0.01F, managed.window->roundingPower());
 }
 
+bool OverviewController::usesStackedSwapBorder(const State& state, const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const {
+    if (&state != &m_state || !m_relayoutStacksWindowBorders || state.phase != Phase::Active || !state.relayoutActive ||
+        !usesDirectNiriScrollingOverview(state) || m_stripPreviewContext.active || !managed.window || managed.targetMonitor != renderMonitor)
+        return false;
+
+    const auto workspace = activeLayoutWorkspace();
+    return workspace && managed.window->m_workspace == workspace;
+}
+
+std::vector<const OverviewController::ManagedWindow*> OverviewController::directNiriSurfaceOverlayOrder(const State& state,
+                                                                                                         const PHLMONITOR& renderMonitor) const {
+    std::vector<const ManagedWindow*> ordered;
+    ordered.reserve(state.windows.size());
+
+    const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
+    const bool  focusedIsTiled = focusedManaged && !focusedManaged->isNiriFloatingOverlay && !isFloatingOverviewWindow(focusedManaged->window);
+    const bool  deferFocused = focusedIsTiled && usesStackedSwapBorder(state, *focusedManaged, renderMonitor);
+    const ManagedWindow* deferred = nullptr;
+
+    for (const auto& managed : state.windows) {
+        if (deferFocused && managed.window == focusedManaged->window) {
+            deferred = &managed;
+            continue;
+        }
+        ordered.push_back(&managed);
+    }
+
+    if (deferred) {
+        // Match Hyprland's tiled render pass: the focused window is drawn after
+        // its peers so a crossing inactive window cannot overwrite it.
+        ordered.push_back(deferred);
+        if (debugLogsEnabled()) {
+            static std::size_t s_stackedSwapSurfaceOrderLogBudget = 12;
+            if (s_stackedSwapSurfaceOrderLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] swapcol surface overlay order focused-last"
+                    << " window=" << debugWindowLabel(deferred->window)
+                    << " monitor=" << renderMonitor->m_name
+                    << " windows=" << ordered.size();
+                debugLog(out.str());
+                --s_stackedSwapSurfaceOrderLogBudget;
+            }
+        }
+    }
+
+    return ordered;
+}
+
+void OverviewController::queueStackedSwapBorder(const State& state, const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const {
+    if (!usesStackedSwapBorder(state, managed, renderMonitor))
+        return;
+
+    const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
+    const bool  focused = focusedManaged && managed.window == focusedManaged->window;
+    const double configuredWidth = focused ? activeBorderWidth() : inactiveBorderWidth();
+    if (configuredWidth <= 0.0)
+        return;
+
+    const double thickness = focused ? std::max(1.0, configuredWidth - focusedBorderThicknessReduction()) : configuredWidth;
+    const Rect   local = rectToMonitorRenderLocal(managedWindowBorderRect(managed, renderMonitor, state, false, true), renderMonitor);
+    if (local.width <= 0.0 || local.height <= 0.0)
+        return;
+
+    constexpr double BORDER_INSET_PX = 1.0;
+    const double     x1 = std::floor(local.x);
+    const double     y1 = std::floor(local.y);
+    const double     x2 = std::ceil(local.x + local.width);
+    const double     y2 = std::ceil(local.y + local.height);
+    const Rect       aligned = makeRect(x1 + BORDER_INSET_PX, y1 + BORDER_INSET_PX,
+                                  std::max(0.0, (x2 - x1) - BORDER_INSET_PX * 2.0),
+                                  std::max(0.0, (y2 - y1) - BORDER_INSET_PX * 2.0));
+    if (aligned.width <= 0.0 || aligned.height <= 0.0)
+        return;
+
+    CBorderPassElement::SBorderData data;
+    data.box = toBox(aligned);
+    data.grad1 = focused ? activeBorderGradient() : inactiveBorderGradient();
+    data.round = managedWindowBorderRound(managed, renderMonitor);
+    data.roundingPower = managedWindowBorderRoundingPower(managed);
+    data.a = 0.95F;
+    data.borderSize = std::max(1, static_cast<int>(std::lround(thickness)));
+    data.window = managed.window;
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
+}
+
 void OverviewController::renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const {
     if (progress <= 0.0)
         return;
@@ -15792,10 +15887,13 @@ void OverviewController::renderInactiveWindowBorders(const State& state, double 
 
     const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
     const auto inactiveGradient = inactiveBorderGradient();
+
     for (const auto& managed : state.windows) {
         if (!managed.window || managed.targetMonitor != renderMonitor)
             continue;
         if (focusedManaged && managed.window == focusedManaged->window)
+            continue;
+        if (usesStackedSwapBorder(state, managed, renderMonitor))
             continue;
 
         renderOutline(managedWindowBorderRect(managed, renderMonitor, state, useTargetGeometry, true), inactiveGradient, thickness, 0.95 * progress,
@@ -15819,6 +15917,8 @@ void OverviewController::renderFocusedWindowBorder(const State& state, double pr
 
     const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
     if (!focusedManaged)
+        return;
+    if (usesStackedSwapBorder(state, *focusedManaged, renderMonitor))
         return;
 
     renderOutline(managedWindowBorderRect(*focusedManaged, renderMonitor, state, useTargetGeometry), activeBorderGradient(), thickness, 0.95 * progress,
