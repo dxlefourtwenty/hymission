@@ -6559,6 +6559,28 @@ CRegion OverviewController::surfaceOpaqueRegionHook(void* surfacePassThisptr) {
     if (!prepareSurfaceRenderData(surfacePassThisptr, "opaqueRegion", renderData, monitor, snapshot))
         return m_surfaceOpaqueRegionOriginal(surfacePassThisptr);
 
+    if (stackedSwapSurfaceOccludesUnderlay(*renderData, monitor)) {
+        ++m_surfaceRenderDataTransformDepth;
+        CBox opaqueBox = m_surfaceTexBoxOriginal(surfacePassThisptr);
+        adjustTransformedSurfaceBoxSize(*renderData, monitor, opaqueBox);
+        --m_surfaceRenderDataTransformDepth;
+        if (debugLogsEnabled()) {
+            static std::size_t s_stackedSwapOcclusionLogBudget = 12;
+            if (s_stackedSwapOcclusionLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] swapcol surface occlusion"
+                    << " window=" << debugWindowLabel(renderData->pWindow)
+                    << " box=" << boxToString(opaqueBox)
+                    << " alpha=" << renderData->alpha
+                    << " fadeAlpha=" << renderData->fadeAlpha;
+                debugLog(out.str());
+                --s_stackedSwapOcclusionLogBudget;
+            }
+        }
+        restoreSurfaceRenderData(renderData, snapshot);
+        return opaqueBox.width > 0.0 && opaqueBox.height > 0.0 ? CRegion(opaqueBox) : CRegion{};
+    }
+
     // Overview already damages the full monitor while animating, and the transformed preview
     // geometry is temporary. Returning an empty opaque region avoids pass simplification
     // incorrectly occluding lower previews and causing one-frame flashes.
@@ -15794,6 +15816,19 @@ bool OverviewController::usesStackedSwapBorder(const State& state, const Managed
 
     const auto workspace = activeLayoutWorkspace();
     return workspace && managed.window->m_workspace == workspace;
+}
+
+bool OverviewController::stackedSwapSurfaceOccludesUnderlay(const CSurfacePassElement::SRenderData& renderData, const PHLMONITOR& renderMonitor) const {
+    if (!renderData.mainSurface || renderData.popup || !renderData.pWindow || !renderMonitor)
+        return false;
+
+    const auto* managed = renderableManagedWindowFor(renderData.pWindow, renderMonitor);
+    if (!managed || managed->isNiriFloatingOverlay || isFloatingOverviewWindow(renderData.pWindow) ||
+        !usesStackedSwapBorder(m_state, *managed, renderMonitor))
+        return false;
+
+    const auto* focusedManaged = focusedManagedForBorder(m_state, renderMonitor);
+    return focusedManaged && focusedManaged->window == renderData.pWindow;
 }
 
 void OverviewController::queueStackedSwapBorder(const State& state, const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const {
