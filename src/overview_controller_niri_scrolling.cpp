@@ -2257,6 +2257,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
     const std::size_t columnCount = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
+    const bool stackWindowBorders = sourceView == "swapcol" || (m_state.relayoutActive && m_relayoutStacksWindowBorders);
     const bool traceColumnRefresh = debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && columnCount >= 2 && columnCount <= 3 &&
         sourceView.find("opening-complete") == std::string_view::npos;
     if (traceColumnRefresh) {
@@ -2869,7 +2870,7 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
     m_state.relayoutStart = {};
     if (m_state.relayoutActive)
-        beginOverviewRelayoutAnimation(source ? source : "niri-refresh");
+        beginOverviewRelayoutAnimation(source ? source : "niri-refresh", stackWindowBorders);
     if (debugLogsEnabled()) {
         std::ostringstream out;
         out << "[hymission] niri scrolling overview refresh source=" << (source ? source : "?") << " updated=" << updated
@@ -6118,7 +6119,8 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
                 (moveColumnCommandPrefersPrevious(dispatcherNameLower, dispatcherArgsLower) && !moveColumnCommandPrefersNext(dispatcherNameLower, dispatcherArgsLower) ?
                      "movecol-edge-release-prev" : "movecol-edge-release-next") :
                 (edgeMoveColumnAwayFromEdge ? "movecol-edge-return" :
-                 (isDirectionalMoveWindowDispatcher ? "movewindow" : (movecolStyleRelayout ? "movecol" : "movefocus")));
+                 (isDirectionalMoveWindowDispatcher ? "movewindow" :
+                  (swapColumnDispatcher ? "swapcol" : (movecolStyleRelayout ? "movecol" : "movefocus"))));
             const bool nativeEdgeCameraTransitionAfterDispatch = nativeEdgeCameraTransition || nativeEdgeCameraFocusReleased || enteredNativeEdgeCameraAfterDispatch;
 
             if (nativeEdgeCameraTransitionAfterDispatch) {
@@ -6664,7 +6666,9 @@ SDispatchResult OverviewController::runOverviewEditingDispatcher(const char* dis
         m_state.relayoutActive = niriOverviewAnimationsEnabled();
         m_state.relayoutProgress = m_state.relayoutActive ? 0.0 : 1.0;
         m_state.relayoutStart = {};
-        if (!m_state.relayoutActive) {
+        if (m_state.relayoutActive) {
+            beginOverviewRelayoutAnimation("swapcol", true);
+        } else {
             for (auto& managed : m_state.windows)
                 managed.relayoutFromGlobal = managed.targetGlobal;
         }

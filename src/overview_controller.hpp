@@ -801,7 +801,10 @@ class OverviewController {
                                                                         bool useTargetGeometry, bool forceTransformedGeometry = false) const;
     [[nodiscard]] int                           managedWindowBorderRound(const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const;
     [[nodiscard]] float                         managedWindowBorderRoundingPower(const ManagedWindow& managed) const;
-    [[nodiscard]] bool                          shouldOccludeInactiveBordersBehindFocusedSwap(const State& state) const;
+    [[nodiscard]] bool                          usesStackedSwapBorder(const State& state, const ManagedWindow& managed,
+                                                                    const PHLMONITOR& renderMonitor) const;
+    void                                        queueStackedSwapBorder(const State& state, const ManagedWindow& managed,
+                                                                      const PHLMONITOR& renderMonitor) const;
     void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
     void                                        renderFocusedWindowBorder(const State& state, double progress, bool useTargetGeometry) const;
     [[nodiscard]] bool                          suppressSurfaceBlur(void* surfacePassThisptr) const;
@@ -819,7 +822,7 @@ class OverviewController {
     [[nodiscard]] bool         directNiriNativeFloatingGeometryPreviewActive(const ManagedWindow& window) const;
     [[nodiscard]] double       visualProgress() const;
     [[nodiscard]] double       relayoutVisualProgress() const;
-    void                       beginOverviewRelayoutAnimation(const char* source = "?");
+    void                       beginOverviewRelayoutAnimation(const char* source = "?", bool stackWindowBorders = false);
     void                       finishOverviewRelayoutAnimation();
     void                       beginOverviewVisibilityAnimation(const char* source = "?");
     void                       finishOverviewVisibilityAnimation();
@@ -1103,6 +1106,7 @@ class OverviewController {
     long                      m_animationsEnabledBackup = 1;
     PHLANIMVAR<float>         m_relayoutProgressAnimation;
     bool                      m_relayoutFillsWindowSurface = false;
+    bool                      m_relayoutStacksWindowBorders = false;
     PHLANIMVAR<float>         m_overviewVisibilityAnimation;
     SP<Hyprutils::Animation::SAnimationPropertyConfig> m_overviewVisibilityAnimationConfig;
     PHLANIMVAR<float>         m_workspaceTransitionAnimation;
