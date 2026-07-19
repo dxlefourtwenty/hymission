@@ -6559,28 +6559,6 @@ CRegion OverviewController::surfaceOpaqueRegionHook(void* surfacePassThisptr) {
     if (!prepareSurfaceRenderData(surfacePassThisptr, "opaqueRegion", renderData, monitor, snapshot))
         return m_surfaceOpaqueRegionOriginal(surfacePassThisptr);
 
-    if (stackedSwapSurfaceOccludesUnderlay(*renderData, monitor)) {
-        ++m_surfaceRenderDataTransformDepth;
-        CBox opaqueBox = m_surfaceTexBoxOriginal(surfacePassThisptr);
-        adjustTransformedSurfaceBoxSize(*renderData, monitor, opaqueBox);
-        --m_surfaceRenderDataTransformDepth;
-        if (debugLogsEnabled()) {
-            static std::size_t s_stackedSwapOcclusionLogBudget = 12;
-            if (s_stackedSwapOcclusionLogBudget > 0) {
-                std::ostringstream out;
-                out << "[hymission] swapcol surface occlusion"
-                    << " window=" << debugWindowLabel(renderData->pWindow)
-                    << " box=" << boxToString(opaqueBox)
-                    << " alpha=" << renderData->alpha
-                    << " fadeAlpha=" << renderData->fadeAlpha;
-                debugLog(out.str());
-                --s_stackedSwapOcclusionLogBudget;
-            }
-        }
-        restoreSurfaceRenderData(renderData, snapshot);
-        return opaqueBox.width > 0.0 && opaqueBox.height > 0.0 ? CRegion(opaqueBox) : CRegion{};
-    }
-
     // Overview already damages the full monitor while animating, and the transformed preview
     // geometry is temporary. Returning an empty opaque region avoids pass simplification
     // incorrectly occluding lower previews and causing one-frame flashes.
@@ -15554,7 +15532,8 @@ void OverviewController::renderSelectionChrome() const {
         std::size_t skipped = 0;
         static std::size_t s_directNiriSurfaceOverlayLogBudget = 320;
 
-        for (const auto& currentManaged : m_state.windows) {
+        for (const auto* currentManagedPtr : directNiriSurfaceOverlayOrder(m_state, renderMonitor)) {
+            const auto& currentManaged = *currentManagedPtr;
             const auto window = currentManaged.window;
             const State* fallbackState = &m_state;
             const ManagedWindow* fallbackManaged = &currentManaged;
@@ -15818,17 +15797,43 @@ bool OverviewController::usesStackedSwapBorder(const State& state, const Managed
     return workspace && managed.window->m_workspace == workspace;
 }
 
-bool OverviewController::stackedSwapSurfaceOccludesUnderlay(const CSurfacePassElement::SRenderData& renderData, const PHLMONITOR& renderMonitor) const {
-    if (!renderData.mainSurface || renderData.popup || !renderData.pWindow || !renderMonitor)
-        return false;
+std::vector<const OverviewController::ManagedWindow*> OverviewController::directNiriSurfaceOverlayOrder(const State& state,
+                                                                                                         const PHLMONITOR& renderMonitor) const {
+    std::vector<const ManagedWindow*> ordered;
+    ordered.reserve(state.windows.size());
 
-    const auto* managed = renderableManagedWindowFor(renderData.pWindow, renderMonitor);
-    if (!managed || managed->isNiriFloatingOverlay || isFloatingOverviewWindow(renderData.pWindow) ||
-        !usesStackedSwapBorder(m_state, *managed, renderMonitor))
-        return false;
+    const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
+    const bool  focusedIsTiled = focusedManaged && !focusedManaged->isNiriFloatingOverlay && !isFloatingOverviewWindow(focusedManaged->window);
+    const bool  deferFocused = focusedIsTiled && usesStackedSwapBorder(state, *focusedManaged, renderMonitor);
+    const ManagedWindow* deferred = nullptr;
 
-    const auto* focusedManaged = focusedManagedForBorder(m_state, renderMonitor);
-    return focusedManaged && focusedManaged->window == renderData.pWindow;
+    for (const auto& managed : state.windows) {
+        if (deferFocused && managed.window == focusedManaged->window) {
+            deferred = &managed;
+            continue;
+        }
+        ordered.push_back(&managed);
+    }
+
+    if (deferred) {
+        // Match Hyprland's tiled render pass: the focused window is drawn after
+        // its peers so a crossing inactive window cannot overwrite it.
+        ordered.push_back(deferred);
+        if (debugLogsEnabled()) {
+            static std::size_t s_stackedSwapSurfaceOrderLogBudget = 12;
+            if (s_stackedSwapSurfaceOrderLogBudget > 0) {
+                std::ostringstream out;
+                out << "[hymission] swapcol surface overlay order focused-last"
+                    << " window=" << debugWindowLabel(deferred->window)
+                    << " monitor=" << renderMonitor->m_name
+                    << " windows=" << ordered.size();
+                debugLog(out.str());
+                --s_stackedSwapSurfaceOrderLogBudget;
+            }
+        }
+    }
+
+    return ordered;
 }
 
 void OverviewController::queueStackedSwapBorder(const State& state, const ManagedWindow& managed, const PHLMONITOR& renderMonitor) const {

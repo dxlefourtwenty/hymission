@@ -803,8 +803,7 @@ class OverviewController {
     [[nodiscard]] float                         managedWindowBorderRoundingPower(const ManagedWindow& managed) const;
     [[nodiscard]] bool                          usesStackedSwapBorder(const State& state, const ManagedWindow& managed,
                                                                     const PHLMONITOR& renderMonitor) const;
-    [[nodiscard]] bool                          stackedSwapSurfaceOccludesUnderlay(const CSurfacePassElement::SRenderData& renderData,
-                                                                                  const PHLMONITOR& renderMonitor) const;
+    [[nodiscard]] std::vector<const ManagedWindow*> directNiriSurfaceOverlayOrder(const State& state, const PHLMONITOR& renderMonitor) const;
     void                                        queueStackedSwapBorder(const State& state, const ManagedWindow& managed,
                                                                       const PHLMONITOR& renderMonitor) const;
     void                                        renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const;
