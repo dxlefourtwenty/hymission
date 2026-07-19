@@ -2257,7 +2257,8 @@ void OverviewController::refreshNiriScrollingOverviewAfterLayoutScroll(const cha
     auto* const scrolling = workspace ? scrollingAlgorithmForWorkspace(workspace) : nullptr;
     const std::size_t columnCount = scrolling && scrolling->m_scrollingData ? scrolling->m_scrollingData->columns.size() : 0;
     const std::string_view sourceView = source ? std::string_view{source} : std::string_view{};
-    const bool stackWindowBorders = sourceView == "swapcol" || (m_state.relayoutActive && m_relayoutStacksWindowBorders);
+    const bool stackWindowBorders = sourceView == "swapcol" || sourceView == "movecol" ||
+        (m_state.relayoutActive && m_relayoutStacksWindowBorders);
     const bool traceColumnRefresh = debugLogsEnabled() && usesDirectNiriScrollingOverview(m_state) && columnCount >= 2 && columnCount <= 3 &&
         sourceView.find("opening-complete") == std::string_view::npos;
     if (traceColumnRefresh) {
