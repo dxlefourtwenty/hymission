@@ -15778,6 +15778,14 @@ float OverviewController::managedWindowBorderRoundingPower(const ManagedWindow& 
     return std::max(0.01F, managed.window->roundingPower());
 }
 
+bool OverviewController::shouldOccludeInactiveBordersBehindFocusedSwap(const State& state) const {
+    if (&state != &m_state || state.phase != Phase::Active || !state.relayoutActive || !usesDirectNiriScrollingOverview(state))
+        return false;
+
+    const auto workspace = activeLayoutWorkspace();
+    return workspace && hasPendingSwapColumnRelayoutCommit(workspace);
+}
+
 void OverviewController::renderInactiveWindowBorders(const State& state, double progress, bool useTargetGeometry) const {
     if (progress <= 0.0)
         return;
@@ -15792,6 +15800,22 @@ void OverviewController::renderInactiveWindowBorders(const State& state, double 
 
     const auto* focusedManaged = focusedManagedForBorder(state, renderMonitor);
     const auto inactiveGradient = inactiveBorderGradient();
+
+    const bool occludeBehindFocusedSwap = focusedManaged && shouldOccludeInactiveBordersBehindFocusedSwap(state);
+    CRegion    frameDamage;
+    if (occludeBehindFocusedSwap) {
+        // Hyprland renders the focused tiled window last; keep the later border overlay in that same stack order while swap previews cross.
+        frameDamage = g_pHyprRenderer->m_renderData.damage.copy();
+        CRegion inactiveBorderDamage = frameDamage.copy();
+        const Rect focusedRect = managedWindowBorderRect(*focusedManaged, renderMonitor, state, useTargetGeometry, true);
+        inactiveBorderDamage.subtract(CRegion{toBox(rectToMonitorRenderLocal(focusedRect, renderMonitor))});
+        g_pHyprRenderer->m_renderData.damage = inactiveBorderDamage;
+    }
+    Hyprutils::Utils::CScopeGuard restoreDamage([&] {
+        if (occludeBehindFocusedSwap)
+            g_pHyprRenderer->m_renderData.damage = frameDamage;
+    });
+
     for (const auto& managed : state.windows) {
         if (!managed.window || managed.targetMonitor != renderMonitor)
             continue;
