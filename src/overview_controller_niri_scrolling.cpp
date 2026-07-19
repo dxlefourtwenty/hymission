@@ -37,9 +37,54 @@ using Render::GL::g_pHyprOpenGL;
 namespace {
 
 constexpr double RELAYOUT_DURATION_MS = 140.0;
+constexpr float  MIN_REPAIRED_SCROLLING_COLUMN_WIDTH = 0.05F;
+constexpr float  MIN_REPAIRED_SCROLLING_TARGET_SIZE = 0.1F;
 bool&            g_niriStripSnapshotSingleWorkspaceOnly = niri_scrolling_detail::stripSnapshotSingleWorkspaceOnly;
 bool             g_forceScrollingFinalLayoutBoxForOverview = false;
 std::chrono::steady_clock::time_point g_multiColumnEdgeFocusOverrideUntil;
+
+struct ScrollingGeometryRepairResult {
+    std::size_t columns = 0;
+    std::size_t targets = 0;
+};
+
+ScrollingGeometryRepairResult repairInvalidOccupiedScrollingGeometry(Layout::Tiled::CScrollingAlgorithm* scrolling) {
+    ScrollingGeometryRepairResult result;
+    if (!scrolling || !scrolling->m_scrollingData || !scrolling->m_scrollingData->controller)
+        return result;
+
+    for (const auto& column : scrolling->m_scrollingData->columns) {
+        if (!column || column->targetDatas.empty())
+            continue;
+
+        const bool occupied = std::ranges::any_of(column->targetDatas, [](const auto& targetData) {
+            return targetData && static_cast<bool>(targetData->target.lock());
+        });
+        if (!occupied)
+            continue;
+
+        const float columnWidth = column->getColumnWidth();
+        if (!std::isfinite(columnWidth) || columnWidth <= 0.0F) {
+            // Hyprland normally clamps interactive column resizes to this minimum.
+            column->setColumnWidth(MIN_REPAIRED_SCROLLING_COLUMN_WIDTH);
+            ++result.columns;
+        }
+
+        for (const auto& targetData : column->targetDatas) {
+            if (!targetData || !targetData->target.lock())
+                continue;
+
+            const float targetSize = column->getTargetSize(targetData);
+            if (std::isfinite(targetSize) && targetSize > 0.0F)
+                continue;
+
+            column->setTargetSize(targetData, MIN_REPAIRED_SCROLLING_TARGET_SIZE);
+            ++result.targets;
+        }
+    }
+
+    return result;
+}
 
 bool multiColumnEdgeFocusOverrideActive() {
     if (g_multiColumnEdgeFocusOverrideUntil == std::chrono::steady_clock::time_point{})
@@ -7232,6 +7277,17 @@ void OverviewController::refreshWorkspaceLayoutSnapshot(const PHLWORKSPACE& work
             debugLog(out.str());
             if (hydrated.added > 0)
                 debugLog("[hymission] refresh workspace layout snapshot hydrated missing scrolling columns workspace=" + debugWorkspaceLabel(workspace));
+        }
+
+        if (isVisible() && niriModeAppliesToState(m_state)) {
+            const auto repaired = repairInvalidOccupiedScrollingGeometry(scrolling);
+            if (debugLogsEnabled() && (repaired.columns > 0 || repaired.targets > 0)) {
+                std::ostringstream out;
+                out << "[hymission] niri occupied geometry guard repaired workspace=" << debugWorkspaceLabel(workspace)
+                    << " columns=" << repaired.columns
+                    << " targets=" << repaired.targets;
+                debugLog(out.str());
+            }
         }
 
         scrolling->m_scrollingData->recalculate(true);
